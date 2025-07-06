@@ -1,0 +1,168 @@
+#!/system/bin/sh
+# This script is intended to be directly executable by ReTerminal
+# to set up and enter a Debian proot environment.
+
+# $PREFIX should be set by the terminal environment.
+# Example: /data/user/0/com.rk.terminal.debug/local
+if [ -z "$PREFIX" ]; then
+    echo "ERROR: PREFIX environment variable is not set."
+    exit 1
+fi
+
+DEBIAN_DIR="$PREFIX/debian" # Changed from $PREFIX/local/debian to $PREFIX/debian for simplicity
+TARBALL_PATH="$PREFIX/files/debian-rootfs.tar.gz"
+PROOT_BINARY_SOURCE="$PREFIX/files/proot"
+PROOT_BINARY_DEST="$PREFIX/bin/proot" # Changed from $PREFIX/local/bin to $PREFIX/bin
+LIB_DIR_DEST="$PREFIX/lib" # Changed from $PREFIX/local/lib to $PREFIX/lib
+INIT_DEBIAN_SCRIPT="$PREFIX/bin/init-debian" # Script to run inside proot
+
+# Ensure target directories exist
+mkdir -p "$DEBIAN_DIR"
+mkdir -p "$PREFIX/bin"
+mkdir -p "$LIB_DIR_DEST"
+mkdir -p "$DEBIAN_DIR/tmp" # Ensure tmp dir for proot exists
+
+# Check for and extract Debian rootfs
+if [ ! -f "$TARBALL_PATH" ]; then
+    echo "ERROR: Debian rootfs tarball not found at $TARBALL_PATH"
+    echo "Please ensure it is present before running this script."
+    exit 1
+fi
+
+# Check if extraction is needed (e.g., by checking for a key file like /bin/bash)
+if [ ! -f "$DEBIAN_DIR/bin/bash" ]; then
+    echo "Debian rootfs not found or incomplete in $DEBIAN_DIR, extracting..."
+    if tar -xf "$TARBALL_PATH" -C "$DEBIAN_DIR"; then
+        echo "Extraction successful."
+    else
+        echo "ERROR: Extraction failed. Please check the tarball and permissions."
+        exit 1
+    fi
+else
+    echo "Debian rootfs already extracted in $DEBIAN_DIR."
+fi
+
+# Copy proot and ensure it's executable
+if [ -f "$PROOT_BINARY_SOURCE" ]; then
+    if cp "$PROOT_BINARY_SOURCE" "$PROOT_BINARY_DEST"; then
+        chmod 755 "$PROOT_BINARY_DEST"
+    else
+        echo "ERROR: Failed to copy proot to $PROOT_BINARY_DEST."
+        exit 1
+    fi
+else
+    echo "ERROR: proot binary not found at $PROOT_BINARY_SOURCE!"
+    echo "Please ensure it is present before running this script."
+    exit 1
+fi
+
+# Copy shared libraries for proot (e.g., libtalloc.so)
+# Assuming .so files needed by proot are in $PREFIX/files/
+# This is a simple copy; a more robust solution might check dependencies.
+copied_libs=0
+for sofile_source in "$PREFIX/files/"lib*.so*; do # More general pattern
+    if [ -f "$sofile_source" ]; then
+        sofile_dest="$LIB_DIR_DEST/$(basename "$sofile_source")"
+        if [ ! -e "$sofile_dest" ]; then # Copy only if it doesn't exist
+            if cp "$sofile_source" "$sofile_dest"; then
+                echo "Copied $(basename "$sofile_source") to $LIB_DIR_DEST"
+                copied_libs=$((copied_libs + 1))
+            else
+                echo "WARNING: Failed to copy $(basename "$sofile_source") to $LIB_DIR_DEST."
+                # Not exiting here, as some libs might be optional or already present via other means
+            fi
+        fi
+    fi
+done
+
+if [ $copied_libs -gt 0 ]; then
+    echo "Shared libraries copied. Ensure LD_LIBRARY_PATH is set correctly if proot needs them from a non-standard location, or that they are in a standard search path for the dynamic linker."
+    # For proot, typically it's best if its dependencies are in the same directory or a standard system path.
+    # The proot binary itself often has rpath set or it can find libs in usual places.
+    # Forcing LD_LIBRARY_PATH might be needed if they are in $PREFIX/lib and that's not standard for the Android linker.
+    # However, proot often bundles its needed libs or is statically linked.
+fi
+
+
+# Prepare proot arguments
+# Removed --sysvipc as it caused an error; add back if your proot supports it and it's needed.
+# Removed explicit $LINKER call; proot should be executable directly.
+
+ARGS="--kill-on-exit"
+ARGS="$ARGS -w /" # Start in root of the chroot
+
+# Bind essential Android directories
+# Use realpath to resolve symlinks for mount points
+for system_mnt_path in /apex /odm /product /system /system_ext /vendor \
+ /linkerconfig/ld.config.txt \
+ /linkerconfig/com.android.art/ld.config.txt \
+ /plat_property_contexts /property_contexts; do
+ if [ -e "$system_mnt_path" ]; then
+  resolved_path=$(realpath "$system_mnt_path")
+  ARGS="$ARGS -b ${resolved_path}"
+ fi
+done
+unset system_mnt_path resolved_path
+
+ARGS="$ARGS -b /sdcard"
+ARGS="$ARGS -b /storage"
+ARGS="$ARGS -b /dev"
+ARGS="$ARGS -b /data" # Be cautious with binding all of /data
+ARGS="$ARGS -b /dev/urandom:/dev/random" # Ensure /dev/random is available
+ARGS="$ARGS -b /proc"
+
+# Bind specific proc files if they exist to emulate a more complete /proc
+# Some apps inside proot might need these.
+[ -e "$PREFIX/local/stat" ] && ARGS="$ARGS -b $PREFIX/local/stat:/proc/stat"
+[ -e "$PREFIX/local/vmstat" ] && ARGS="$ARGS -b $PREFIX/local/vmstat:/proc/vmstat"
+
+# Bind /dev/fd, /dev/stdin, /dev/stdout, /dev/stderr
+# These are important for interactive shells and process I/O redirection.
+if [ -e "/proc/self/fd" ]; then ARGS="$ARGS -b /proc/self/fd:/dev/fd"; fi
+if [ -e "/proc/self/fd/0" ]; then ARGS="$ARGS -b /proc/self/fd/0:/dev/stdin"; fi
+if [ -e "/proc/self/fd/1" ]; then ARGS="$ARGS -b /proc/self/fd/1:/dev/stdout"; fi
+if [ -e "/proc/self/fd/2" ]; then ARGS="$ARGS -b /proc/self/fd/2:/dev/stderr"; fi
+
+ARGS="$ARGS -b $PREFIX" # Bind the app's home directory ($PREFIX)
+ARGS="$ARGS -b /sys"    # Bind /sys for system information
+
+# Ensure tmpfs for /dev/shm
+chmod 1777 "$DEBIAN_DIR/tmp" # Set sticky bit for /tmp inside chroot
+ARGS="$ARGS -b $DEBIAN_DIR/tmp:/dev/shm" # Use the tmp inside the chroot as /dev/shm
+
+# Set the root directory for proot
+ARGS="$ARGS -r $DEBIAN_DIR"
+ARGS="$ARGS -0" # Run as root (UID 0) inside proot
+ARGS="$ARGS --link2symlink" # Improve compatibility with some file operations
+# ARGS="$ARGS --sysvipc" # Add back if your proot supports it and it's needed
+ARGS="$ARGS -L" # Make /dev/shm, /dev, etc. look more like a real Linux
+
+# Check if init-debian script exists and is executable
+if [ ! -f "$INIT_DEBIAN_SCRIPT" ]; then
+    echo "ERROR: The init script for Debian environment ($INIT_DEBIAN_SCRIPT) not found."
+    # As a fallback, try to launch sh directly if init-debian is missing
+    # This might not give you the fully configured environment init-debian would set up.
+    INIT_DEBIAN_SCRIPT="/bin/sh" # Fallback to basic shell within proot
+    echo "Attempting to fall back to /bin/sh inside proot."
+    if [ ! -f "$DEBIAN_DIR/$INIT_DEBIAN_SCRIPT" ]; then
+        echo "ERROR: Fallback /bin/sh not found in $DEBIAN_DIR. Cannot start proot session."
+        exit 1
+    fi
+elif [ ! -x "$INIT_DEBIAN_SCRIPT" ]; then
+    echo "WARNING: $INIT_DEBIAN_SCRIPT is not executable. Attempting to run with sh."
+    # Prepend 'sh' if the script itself isn't executable
+    # This assumes init-debian is a shell script.
+    set -- sh "$INIT_DEBIAN_SCRIPT" "$@"
+else
+    set -- "$INIT_DEBIAN_SCRIPT" "$@"
+fi
+
+
+echo "Starting proot with rootfs: $DEBIAN_DIR"
+echo "Executing: $PROOT_BINARY_DEST $ARGS $@"
+# Use exec to replace the current script process with proot
+exec "$PROOT_BINARY_DEST" $ARGS "$@"
+
+# If exec fails, this part will be reached.
+echo "ERROR: Failed to execute proot!"
+exit 1
