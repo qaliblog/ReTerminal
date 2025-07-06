@@ -59,8 +59,10 @@ class AssetDeployer(private val context: Context) {
             AssetDetail(assetSourceName = "libtalloc.so.2", targetDir = filesDir, targetName = "libtalloc.so.2", executable = false),
             // Add other .so files here if needed, e.g.:
             // AssetDetail(assetSourceName = "another-lib.so", targetDir = filesDir, targetName = "another-lib.so", executable = false),
-            AssetDetail(assetSourceName = "init-debian", targetDir = localBinDir, targetName = "init-debian", executable = true),
-            AssetDetail(assetSourceName = "init-host-debian", targetDir = localBinDir, targetName = "init-host-debian", executable = true)
+            AssetDetail(assetSourceName = "init-debian.sh", targetDir = localBinDir, targetName = "init-debian", executable = true),
+            AssetDetail(assetSourceName = "init-host-debian.sh", targetDir = localBinDir, targetName = "init-host-debian", executable = true),
+            AssetDetail(assetSourceName = "loader", targetDir = localBinDir, targetName = "loader", executable = true),
+            AssetDetail(assetSourceName = "loader32", targetDir = localBinDir, targetName = "loader32", executable = true)
         )
 
         val assetManager = context.assets
@@ -88,7 +90,9 @@ class AssetDeployer(private val context: Context) {
         val executablesToVerify = listOf(
             File(filesDir, "proot"),
             File(localBinDir, "init-debian"),
-            File(localBinDir, "init-host-debian")
+            File(localBinDir, "init-host-debian"),
+            File(localBinDir, "loader"),
+            File(localBinDir, "loader32")
         )
 
         executablesToVerify.forEach { file ->
