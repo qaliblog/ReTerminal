@@ -161,29 +161,32 @@ Updating : apk update && apk upgrade
             }
 
             val args: Array<String>
-            // Make the initHostFile (init-host-debian.sh) the main executable.
-            // It must have a shebang like #!/system/bin/sh or #!/bin/sh (if proot provides /bin/sh early)
-            // Assuming init-host-debian.sh starts with #!/system/bin/sh or similar.
-            val shellPath: String = initHostFile.absolutePath
+            // Revert to using /system/bin/sh as the main executable,
+            // and pass the script as an argument to it.
+            val shellPath: String = "/system/bin/sh"
 
             if (pendingCommand == null) {
-                // Default execution: run init-host-debian.sh.
-                // Pass its own path as argv[0], no other arguments initially.
+                // Default execution: /system/bin/sh will execute initHostFile.
+                // initHostFile.absolutePath becomes $0 for the script if no other args are given to sh.
+                // Or, if sh needs -c, it would be arrayOf("-c", initHostFile.absolutePath),
+                // but that treats the file content as a command string, which is not what we want for a full script.
+                // Standard way: sh <script_file> <arg1_to_script> ...
+                // So, initHostFile.absolutePath is the first argument to /system/bin/sh.
                 args = arrayOf(initHostFile.absolutePath)
             } else {
                 // Handle pendingCommand:
-                // init-host-debian.sh will be executed.
-                // Its argv[0] will be its own path.
-                // Subsequent arguments (argv[1], argv[2], ...) will be the pending command and its arguments.
-                // init-host-debian.sh needs to be able_to handle these and pass them to init-debian.sh.
+                // /system/bin/sh will execute initHostFile.
+                // initHostFile.absolutePath is $0 to the script.
+                // Subsequent arguments are the pending command and its arguments, passed to initHostFile.
                 val commandParts = mutableListOf(pendingCommand!!.shell)
                 commandParts.addAll(pendingCommand!!.args)
+                // The script path comes first, then arguments for that script
                 args = arrayOf(initHostFile.absolutePath) + commandParts.toTypedArray()
             }
 
             pendingCommand = null // Clear it after use
             return TerminalSession(
-                shellPath, // This is now initHostFile.absolutePath
+                shellPath, // This is now /system/bin/sh
                 workingDir,
                 args,
                 env.toTypedArray(),
