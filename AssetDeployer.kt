@@ -54,7 +54,7 @@ class AssetDeployer(private val context: Context) {
 
         // IMPORTANT: Adjust assetSourceName to the actual name of your files in the assets folder
         val assetsToDeploy = listOf(
-            AssetDetail(assetSourceName = "1640716280-1-linux-rootfs-sid-bookworm-debootstrap-5.14.0-4-arm64-cln-nokern-2021.tar.gz", targetDir = filesDir, targetName = "debian-rootfs.tar.gz", executable = false),
+            AssetDetail(assetSourceName = "debian-rootfs-main.tar.gz", targetDir = filesDir, targetName = "debian-rootfs.tar.gz", executable = false),
             AssetDetail(assetSourceName = "proot", targetDir = filesDir, targetName = "proot", executable = true),
             AssetDetail(assetSourceName = "libtalloc.so.2", targetDir = filesDir, targetName = "libtalloc.so.2", executable = false),
             // Add other .so files here if needed, e.g.:
