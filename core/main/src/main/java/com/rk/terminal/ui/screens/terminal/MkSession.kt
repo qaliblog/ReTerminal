@@ -13,7 +13,6 @@ import com.rk.settings.Settings
 import com.rk.terminal.App.Companion.getTempDir
 import com.rk.terminal.BuildConfig
 import com.rk.terminal.ui.activities.terminal.MainActivity
-import com.rk.terminal.ui.screens.settings.WorkingMode
 import android.content.Context
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
@@ -41,7 +40,7 @@ object MkSession {
     }
 
     fun createSession(
-        activity: MainActivity, sessionClient: TerminalSessionClient, session_id: String,workingMode:Int
+        activity: MainActivity, sessionClient: TerminalSessionClient, session_id: String /* workingMode:Int - Removed as we only support Debian */
     ): TerminalSession {
         with(activity) {
 
@@ -88,29 +87,21 @@ object MkSession {
 
             val workingDir = pendingCommand?.workingDir ?: "/sdcard" // Or Environment.getExternalStorageDirectory().path
 
-            // Determine which init scripts to use based on workingMode or a new flag
-            // For now, we assume workingMode == WorkingMode.ALPINE implies Debian as per plan simplification
-            // A more robust solution would be a dedicated WorkingMode.DEBIAN
-            val isDebianMode = (workingMode == WorkingMode.ALPINE) // Repurposing ALPINE for DEBIAN
-
-            val initHostScriptName = if (isDebianMode) "init-host-debian.sh" else "init-host.sh" // Fallback to old if not Debian
-            val initScriptInsideProotName = if (isDebianMode) "init-debian.sh" else "init.sh"
-            val initHostFileBaseName = if (isDebianMode) "init-host-debian" else "init-host"
-            val initFileInsideProotBaseName = if (isDebianMode) "init-debian" else "init"
-
+            // Always use Debian settings
+            val initHostScriptName = "init-host-debian.sh"
+            val initScriptInsideProotName = "init-debian.sh"
+            val initHostFileBaseName = "init-host-debian"
+            val initFileInsideProotBaseName = "init-debian"
 
             val initHostFile: File = localInternalBinDir.child(initHostFileBaseName)
-            if (!initHostFile.exists()) {
-                initHostFile.createFileIfNot()
-                copyAssetToFile(this, initHostScriptName, initHostFile, overwrite = true) // Overwrite to ensure it's the correct version
-            }
+            // Always copy/overwrite to ensure the correct version is present and executable
+            initHostFile.createFileIfNot() // Ensure it exists before copy, or copyAssetToFile handles it
+            copyAssetToFile(this, initHostScriptName, initHostFile, overwrite = true)
 
             val initFileInsideProot: File = localInternalBinDir.child(initFileInsideProotBaseName)
-            if(!initFileInsideProot.exists()){
-                initFileInsideProot.createFileIfNot()
-                copyAssetToFile(this, initScriptInsideProotName, initFileInsideProot, overwrite = true)
-            }
-
+            // Always copy/overwrite
+            initFileInsideProot.createFileIfNot()
+            copyAssetToFile(this, initScriptInsideProotName, initFileInsideProot, overwrite = true)
 
             val env = mutableListOf(
                 "PATH=${System.getenv("PATH")}:/sbin:${localBinDir().absolutePath}",
@@ -170,23 +161,29 @@ Updating : apk update && apk upgrade
             }
 
             val args: Array<String>
-            val shellPath: String
+            // Make the initHostFile (init-host-debian.sh) the main executable.
+            // It must have a shebang like #!/system/bin/sh or #!/bin/sh (if proot provides /bin/sh early)
+            // Assuming init-host-debian.sh starts with #!/system/bin/sh or similar.
+            val shellPath: String = initHostFile.absolutePath
 
             if (pendingCommand == null) {
-                shellPath = "/system/bin/sh"
-                args = if (isDebianMode) { // True if workingMode == WorkingMode.ALPINE (repurposed)
-                    arrayOf("-c", initHostFile.absolutePath)
-                } else { // Android Mode
-                    arrayOf()
-                }
+                // Default execution: run init-host-debian.sh.
+                // Pass its own path as argv[0], no other arguments initially.
+                args = arrayOf(initHostFile.absolutePath)
             } else {
-                shellPath = pendingCommand!!.shell
-                args = pendingCommand!!.args
+                // Handle pendingCommand:
+                // init-host-debian.sh will be executed.
+                // Its argv[0] will be its own path.
+                // Subsequent arguments (argv[1], argv[2], ...) will be the pending command and its arguments.
+                // init-host-debian.sh needs to be able_to handle these and pass them to init-debian.sh.
+                val commandParts = mutableListOf(pendingCommand!!.shell)
+                commandParts.addAll(pendingCommand!!.args)
+                args = arrayOf(initHostFile.absolutePath) + commandParts.toTypedArray()
             }
 
             pendingCommand = null // Clear it after use
             return TerminalSession(
-                shellPath,
+                shellPath, // This is now initHostFile.absolutePath
                 workingDir,
                 args,
                 env.toTypedArray(),

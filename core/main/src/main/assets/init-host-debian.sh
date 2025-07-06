@@ -1,12 +1,36 @@
+#!/system/bin/sh
+# This script is now intended to be directly executable by TerminalSession
+
 DEBIAN_DIR=$PREFIX/local/debian
 
 mkdir -p $DEBIAN_DIR
 
-if [ -z "$(ls -A "$DEBIAN_DIR" | grep -vE '^(root|tmp)$')" ]; then
-    tar -xf "$PREFIX/files/debian-rootfs.tar.gz" -C "$DEBIAN_DIR"
+# More robust check for extraction: check for a key file like /bin/bash.
+# Also, ensure the tarball actually exists before trying to extract.
+if [ -f "$PREFIX/files/debian-rootfs.tar.gz" ]; then
+    if [ ! -f "$DEBIAN_DIR/bin/bash" ]; then
+        echo "Debian rootfs not found or incomplete, extracting..."
+        # Clear out the directory before extracting to ensure a clean state,
+        # but preserve tmp and root if they exist and have special permissions/content.
+        # A simpler approach for now: just extract. If issues persist, explore partial cleanup.
+        tar -xf "$PREFIX/files/debian-rootfs.tar.gz" -C "$DEBIAN_DIR"
+    else
+        echo "Debian rootfs already extracted."
+    fi
+else
+    echo "ERROR: $PREFIX/files/debian-rootfs.tar.gz not found!"
+    # Optionally, exit here if this is a fatal error.
+    # exit 1
 fi
 
-[ ! -e "$PREFIX/local/bin/proot" ] && cp "$PREFIX/files/proot" "$PREFIX/local/bin"
+# Ensure proot and libtalloc are in place and executable
+# Copy from $PREFIX/files (where MkSession places them) to $PREFIX/local/bin and $PREFIX/local/lib
+if [ -f "$PREFIX/files/proot" ]; then
+    cp "$PREFIX/files/proot" "$PREFIX/local/bin/proot"
+    chmod 755 "$PREFIX/local/bin/proot"
+else
+    echo "ERROR: $PREFIX/files/proot not found!"
+fi
 
 for sofile in "$PREFIX/files/"*.so.2; do
     dest="$PREFIX/local/lib/$(basename "$sofile")"

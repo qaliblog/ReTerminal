@@ -1,31 +1,16 @@
 package com.rk.update
 
-import com.rk.libcommons.application
-import com.rk.libcommons.child
-import com.rk.libcommons.createFileIfNot
-import com.rk.libcommons.localBinDir
-import java.io.File
+//import com.rk.libcommons.application // No longer needed
+//import com.rk.libcommons.child // No longer needed
+//import com.rk.libcommons.createFileIfNot // No longer needed
+//import com.rk.libcommons.localBinDir // No longer needed
+//import java.io.File // No longer needed
 
 class UpdateManager {
     fun onUpdate(){
-        val initFile: File = localBinDir().child("init-host")
-        if(initFile.exists()){
-            initFile.delete()
-        }
-
-        if (initFile.exists().not()){
-            initFile.createFileIfNot()
-            initFile.writeText(application!!.assets.open("init-host.sh").bufferedReader().use { it.readText() })
-        }
-
-        val initFilex: File = localBinDir().child("init")
-        if(initFilex.exists()){
-            initFilex.delete()
-        }
-
-        if (initFilex.exists().not()){
-            initFilex.createFileIfNot()
-            initFilex.writeText(application!!.assets.open("init.sh").bufferedReader().use { it.readText() })
-        }
+        // This class previously copied init-host.sh and init.sh from assets.
+        // This functionality is now handled by MkSession.kt for init-host-debian.sh and init-debian.sh,
+        // and the old init scripts are no longer used.
+        // Clearing this method prevents writing unused files.
     }
 }

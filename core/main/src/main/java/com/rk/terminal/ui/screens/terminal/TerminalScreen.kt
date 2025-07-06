@@ -252,7 +252,7 @@ fun TerminalScreen(
                 }
             ) {
 
-                fun createSession(workingMode:Int){
+                fun createSession(/* workingMode:Int removed */){
                     fun generateUniqueString(existingStrings: List<String>): String {
                         var index = 1
                         var newString: String
@@ -273,7 +273,7 @@ fun TerminalScreen(
                             mainActivityActivity.sessionBinder!!.createSession(
                                 sessionId,
                                 client,
-                                mainActivityActivity, workingMode = workingMode
+                                mainActivityActivity /* workingMode removed */
                             )
                         }
 
@@ -285,19 +285,12 @@ fun TerminalScreen(
                 PreferenceGroup {
                     SettingsCard(
                         title = { Text("Debian") },
-                        description = {Text("Debian GNU/Linux")},
+                        description = {Text("Debian GNU/Linux Session")}, // Updated description
                         onClick = {
-                           createSession(workingMode = WorkingMode.ALPINE) // Repurposing ALPINE for DEBIAN
+                           createSession() // workingMode removed
                             showAddDialog = false
                         })
-
-                    SettingsCard(
-                        title = { Text("Android") },
-                        description = {Text("ReTerminal Android shell")},
-                        onClick = {
-                            createSession(workingMode = WorkingMode.ANDROID)
-                            showAddDialog = false
-                        })
+                    // "Android" session option removed as per requirements
                 }
             }
         }
@@ -407,16 +400,8 @@ fun TerminalScreen(
                         BackgroundImage()
                         val color = getComposeColor()
                         Column {
-
-                            fun getNameOfWorkingMode(workingMode:Int?):String{
-                                return when(workingMode){
-                                    WorkingMode.ALPINE -> "DEBIAN".lowercase() // Repurposed
-                                    WorkingMode.ANDROID -> "ANDROID".lowercase()
-                                    null -> "null"
-                                    else -> "unknown"
-                                }
-                            }
-
+                            // Removed getNameOfWorkingMode function as it's no longer needed.
+                            // All sessions are Debian.
 
                             if (showToolbar.value && (LocalConfiguration.current.orientation != Configuration.ORIENTATION_LANDSCAPE || showHorizontalToolbar.value)){
                                 TopAppBar(
@@ -427,7 +412,10 @@ fun TerminalScreen(
                                     title = {
                                         Column {
                                             Text(text = "ReTerminal",color = color)
-                                            Text(style = MaterialTheme.typography.bodySmall,text = mainActivityActivity.sessionBinder?.getService()?.currentSession?.value?.first + " (${getNameOfWorkingMode(mainActivityActivity.sessionBinder?.getService()?.currentSession?.value?.second)})",color = color)
+                                            // Display session ID and "Debian"
+                                            val currentSessionInfo = mainActivityActivity.sessionBinder?.getService()?.currentSession?.value
+                                            val sessionText = currentSessionInfo?.first + if (currentSessionInfo != null) " (Debian)" else " (Debian)"
+                                            Text(style = MaterialTheme.typography.bodySmall, text = sessionText, color = color)
                                         }
                                     },
                                     navigationIcon = {
@@ -466,15 +454,17 @@ fun TerminalScreen(
                                             val client = TerminalBackEnd(this, mainActivityActivity)
 
                                             val session = if (pendingCommand != null) {
+                                                // If there's a pending command, associate it with "Debian" mode.
+                                                // The pendingCommand.workingMode is no longer used.
                                                 mainActivityActivity.sessionBinder!!.getService().currentSession.value = Pair(
-                                                    pendingCommand!!.id, pendingCommand!!.workingMode)
+                                                    pendingCommand!!.id, "Debian") // Store "Debian"
                                                 mainActivityActivity.sessionBinder!!.getSession(
                                                     pendingCommand!!.id
                                                 )
                                                     ?: mainActivityActivity.sessionBinder!!.createSession(
                                                         pendingCommand!!.id,
                                                         client,
-                                                        mainActivityActivity, workingMode = Settings.working_Mode
+                                                        mainActivityActivity /* workingMode removed */
                                                     )
                                             } else {
                                                 mainActivityActivity.sessionBinder!!.getSession(
@@ -483,7 +473,7 @@ fun TerminalScreen(
                                                     ?: mainActivityActivity.sessionBinder!!.createSession(
                                                         mainActivityActivity.sessionBinder!!.getService().currentSession.value.first,
                                                         client,
-                                                        mainActivityActivity,workingMode = Settings.working_Mode
+                                                        mainActivityActivity /* workingMode removed */
                                                     )
                                             }
 
@@ -661,7 +651,7 @@ fun changeSession(mainActivityActivity: MainActivity, session_id: String) {
                 ?: mainActivityActivity.sessionBinder!!.createSession(
                     session_id,
                     client,
-                    mainActivityActivity,workingMode = Settings.working_Mode
+                        mainActivityActivity /* workingMode removed */
                 )
         session.updateTerminalSessionClient(client)
         attachSession(session)

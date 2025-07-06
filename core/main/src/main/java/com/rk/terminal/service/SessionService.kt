@@ -21,8 +21,11 @@ import okhttp3.internal.wait
 
 class SessionService : Service() {
     private val sessions = hashMapOf<String, TerminalSession>()
-    val sessionList = mutableStateMapOf<String,Int>()
-    var currentSession = mutableStateOf(Pair("main",com.rk.settings.Settings.working_Mode))
+    // workingMode is deprecated, only Debian is supported.
+    // sessionList might need rework if it was used to display different types of sessions.
+    // For now, we can use a constant to signify a "Debian" session if the UI relies on this.
+    val sessionList = mutableStateMapOf<String,String>() // Storing "Debian" or session name
+    var currentSession = mutableStateOf(Pair("main","Debian")) // Default to "Debian"
 
     inner class SessionBinder : Binder() {
         fun getService():SessionService{
@@ -36,10 +39,10 @@ class SessionService : Service() {
             sessionList.clear()
             updateNotification()
         }
-        fun createSession(id: String, client: TerminalSessionClient, activity: MainActivity,workingMode:Int): TerminalSession {
-            return MkSession.createSession(activity, client, id, workingMode = workingMode).also {
+        fun createSession(id: String, client: TerminalSessionClient, activity: MainActivity): TerminalSession { // workingMode Int removed
+            return MkSession.createSession(activity, client, id /* workingMode removed */).also {
                 sessions[id] = it
-                sessionList[id] = workingMode
+                sessionList[id] = "Debian" // Store "Debian" or a relevant session identifier
                 updateNotification()
             }
         }

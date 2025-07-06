@@ -1,3 +1,6 @@
+#!/bin/sh
+# This script runs inside the proot Debian environment.
+
 set -e  # Exit immediately on Failure
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
