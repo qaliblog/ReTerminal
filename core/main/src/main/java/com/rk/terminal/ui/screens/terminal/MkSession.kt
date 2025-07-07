@@ -35,7 +35,7 @@ object MkSession {
         var entryCount = 0
         try {
             destDirectory.mkdirs() // Ensure destination exists
-            TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(inputStream))).use { tarInput ->
+            TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(inputStream))).use { tarInput -> // .use block starts
                 var entry = tarInput.nextTarEntry
                 while (entry != null) {
                     entryCount++
@@ -44,19 +44,20 @@ object MkSession {
                     }
                     val destPath = File(destDirectory, entry.name)
                     if (entry.isDirectory) {
-                    destPath.mkdirs()
-                } else {
-                    destPath.parentFile?.mkdirs()
-                    FileOutputStream(destPath).use { fos ->
-                        tarInput.copyTo(fos)
+                        destPath.mkdirs()
+                    } else {
+                        destPath.parentFile?.mkdirs()
+                        FileOutputStream(destPath).use { fos ->
+                            tarInput.copyTo(fos)
+                        }
+                        // Preserve executable permissions if set in the archive
+                        if (entry.mode and "111".toInt(8) != 0) {
+                            destPath.setExecutable(true, (entry.mode and "001".toInt(8)) == 0)
+                        }
                     }
-                    // Preserve executable permissions if set in the archive
-                    if (entry.mode and "111".toInt(8) != 0) {
-                        destPath.setExecutable(true, (entry.mode and "001".toInt(8)) == 0)
-                    }
-                }
-                entry = tarInput.nextTarEntry
-            }
+                    entry = tarInput.nextTarEntry
+                } // while loop ends
+            } // .use block ends HERE
             Log.d(TAG, "Extraction completed. Total entries: $entryCount")
         } catch (e: Exception) { // Catch generic Exception to log any issue
             Log.e(TAG, "Error during extraction to ${destDirectory.absolutePath}", e)
