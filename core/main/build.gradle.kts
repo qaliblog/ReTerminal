@@ -37,10 +37,11 @@ fun getFullGitCommitHash(): String {
 android {
     namespace = "com.rk.terminal"
     android.buildFeatures.buildConfig = true
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         minSdk = 24
+        targetSdk = 34 // Added for consistency
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }
