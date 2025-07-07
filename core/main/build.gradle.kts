@@ -115,4 +115,6 @@ dependencies {
 
     api(project(":core:resources"))
     api(project(":core:components"))
+
+    implementation("org.apache.commons:commons-compress:1.26.1")
 }

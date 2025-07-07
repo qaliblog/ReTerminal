@@ -181,7 +181,6 @@ afterEvaluate {
 dependencies {
     //coreLibraryDesugaring(libs.desugar.jdk.libs)
     implementation(project(":core:main"))
-    implementation("org.apache.commons:commons-compress:1.26.1")
 
 
 
