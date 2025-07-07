@@ -78,4 +78,4 @@ ARGS="$ARGS --link2symlink"
 # ARGS="$ARGS --sysvipc" # Removed as it's an unknown option for the current proot
 ARGS="$ARGS -L"
 
-$LINKER $PREFIX/local/bin/proot $ARGS sh $PREFIX/local/bin/init-debian "$@"
+$LINKER $PREFIX/local/bin/proot $ARGS $PREFIX/local/bin/init-debian "$@"

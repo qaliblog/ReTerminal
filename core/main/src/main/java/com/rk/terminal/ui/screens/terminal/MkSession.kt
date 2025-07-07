@@ -24,16 +24,26 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import android.util.Log // Added for logging
 
 object MkSession {
 
+    private const val TAG = "MkSession" // Added for logging
+
     private fun extractTarGz(inputStream: InputStream, destDirectory: File) {
-        destDirectory.mkdirs()
-        TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(inputStream))).use { tarInput ->
-            var entry = tarInput.nextTarEntry
-            while (entry != null) {
-                val destPath = File(destDirectory, entry.name)
-                if (entry.isDirectory) {
+        Log.d(TAG, "Starting extraction to: ${destDirectory.absolutePath}")
+        var entryCount = 0
+        try {
+            destDirectory.mkdirs() // Ensure destination exists
+            TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(inputStream))).use { tarInput ->
+                var entry = tarInput.nextTarEntry
+                while (entry != null) {
+                    entryCount++
+                    if (entryCount % 100 == 0) { // Log progress every 100 entries
+                        Log.d(TAG, "Extracting entry: ${entry.name}")
+                    }
+                    val destPath = File(destDirectory, entry.name)
+                    if (entry.isDirectory) {
                     destPath.mkdirs()
                 } else {
                     destPath.parentFile?.mkdirs()
@@ -47,6 +57,9 @@ object MkSession {
                 }
                 entry = tarInput.nextTarEntry
             }
+            Log.d(TAG, "Extraction completed. Total entries: $entryCount")
+        } catch (e: Exception) { // Catch generic Exception to log any issue
+            Log.e(TAG, "Error during extraction to ${destDirectory.absolutePath}", e)
         }
     }
 
@@ -85,17 +98,27 @@ object MkSession {
 
             // Extract rootfs directly to the Debian directory
             val debianDir = File(localDir(), "debian")
-            val rootfsAssetName = "debian-rootfs-main.tar.gz" // Corrected asset name
-            // Check if extraction is needed (e.g., by checking for a key file)
-            if (!File(debianDir, "bin/bash").exists()) {
+            val rootfsAssetName = "debian-rootfs-main.tar.gz"
+            val keyFileInRootfs = File(debianDir, "bin/bash")
+
+            Log.d(TAG, "Checking for rootfs key file: ${keyFileInRootfs.absolutePath}")
+            if (!keyFileInRootfs.exists()) {
+                Log.i(TAG, "Rootfs key file not found. Starting extraction of $rootfsAssetName to ${debianDir.absolutePath}")
                 try {
                     assets.open(rootfsAssetName).use { inputStream ->
                         extractTarGz(inputStream, debianDir)
                     }
+                    if (keyFileInRootfs.exists()) {
+                        Log.i(TAG, "Rootfs extraction appears successful. Key file found.")
+                    } else {
+                        Log.e(TAG, "Rootfs extraction completed, but key file ${keyFileInRootfs.absolutePath} still not found. Check archive content and extraction logic.")
+                    }
                 } catch (e: IOException) {
-                    e.printStackTrace() // Handle error appropriately
+                    Log.e(TAG, "IOException during asset opening or extraction for $rootfsAssetName", e)
                     // Consider notifying the user or stopping the session creation
                 }
+            } else {
+                Log.i(TAG, "Rootfs key file found. Skipping extraction.")
             }
 
 
