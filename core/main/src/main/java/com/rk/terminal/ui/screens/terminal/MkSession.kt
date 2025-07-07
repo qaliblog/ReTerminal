@@ -17,11 +17,38 @@ import android.content.Context
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 
 object MkSession {
+
+    private fun extractTarGz(inputStream: InputStream, destDirectory: File) {
+        destDirectory.mkdirs()
+        TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(inputStream))).use { tarInput ->
+            var entry = tarInput.nextTarEntry
+            while (entry != null) {
+                val destPath = File(destDirectory, entry.name)
+                if (entry.isDirectory) {
+                    destPath.mkdirs()
+                } else {
+                    destPath.parentFile?.mkdirs()
+                    FileOutputStream(destPath).use { fos ->
+                        tarInput.copyTo(fos)
+                    }
+                    // Preserve executable permissions if set in the archive
+                    if (entry.mode and "111".toInt(8) != 0) {
+                        destPath.setExecutable(true, (entry.mode and "001".toInt(8)) == 0)
+                    }
+                }
+                entry = tarInput.nextTarEntry
+            }
+        }
+    }
 
     private fun copyAssetToFile(context: Context, assetName: String, targetFile: File, overwrite: Boolean = false) {
         if (!targetFile.exists() || overwrite) {
@@ -56,8 +83,21 @@ object MkSession {
             copyAssetToFile(this, "proot", File(localFilesDir, "proot"))
             copyAssetToFile(this, "libtalloc.so.2", File(localFilesDir, "libtalloc.so.2"))
 
-            // Copy rootfs where init-host-debian.sh expects it
-            copyAssetToFile(this, "1640716280-1-linux-rootfs-sid-bookworm-debootstrap-5.14.0-4-arm64-cln-nokern-2021.tar.gz", File(localFilesDir, "debian-rootfs.tar.gz"))
+            // Extract rootfs directly to the Debian directory
+            val debianDir = File(localDir(), "debian")
+            val rootfsAssetName = "debian-rootfs-main.tar.gz" // Corrected asset name
+            // Check if extraction is needed (e.g., by checking for a key file)
+            if (!File(debianDir, "bin/bash").exists()) {
+                try {
+                    assets.open(rootfsAssetName).use { inputStream ->
+                        extractTarGz(inputStream, debianDir)
+                    }
+                } catch (e: IOException) {
+                    e.printStackTrace() // Handle error appropriately
+                    // Consider notifying the user or stopping the session creation
+                }
+            }
+
 
             // Copy loaders directly to their final destination (as init-host-debian.sh doesn't handle these)
             // and ensure they are executable. PROOT_LOADER variable will point here.
