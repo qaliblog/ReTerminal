@@ -75,7 +75,7 @@ ARGS="$ARGS -b $PREFIX/local/debian/tmp:/dev/shm"
 ARGS="$ARGS -r $PREFIX/local/debian"
 ARGS="$ARGS -0"
 ARGS="$ARGS --link2symlink"
-ARGS="$ARGS --sysvipc"
+# ARGS="$ARGS --sysvipc" # Removed as it's an unknown option for the current proot
 ARGS="$ARGS -L"
 
 $LINKER $PREFIX/local/bin/proot $ARGS sh $PREFIX/local/bin/init-debian "$@"
