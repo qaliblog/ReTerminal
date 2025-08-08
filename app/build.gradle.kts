@@ -16,7 +16,7 @@ plugins {
 
 android {
     namespace = "com.rk.application"
-    compileSdk = 35
+    compileSdk = 34
 
 
     dependenciesInfo {
@@ -81,7 +81,7 @@ android {
     defaultConfig {
         applicationId = "com.rk.terminal"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 34
 
         //versioning
         versionCode = 7
