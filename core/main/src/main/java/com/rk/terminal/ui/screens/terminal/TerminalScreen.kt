@@ -782,6 +782,14 @@ fun TerminalScreen(
                                                     while (candidate.exists()) { candidate = File(dir.value, "NewFolder($i)"); i++ }
                                                     candidate.mkdirs()
                                                 }) { Text("New Folder") }
+                                                Spacer(Modifier.width(8.dp))
+                                                Button(onClick = {
+                                                    val newFile = File(dir.value, "NewFile.txt")
+                                                    var candidate = newFile
+                                                    var i = 1
+                                                    while (candidate.exists()) { candidate = File(dir.value, "NewFile($i).txt"); i++ }
+                                                    candidate.createNewFile()
+                                                }) { Text("New File") }
                                                 Spacer(Modifier.weight(1f))
                                                 if (dir.value.parentFile != null) {
                                                     Button(onClick = { dir.value = dir.value.parentFile!! }) { Text("Up") }
@@ -802,6 +810,15 @@ fun TerminalScreen(
                                                                 scope.launch { pagerState.scrollToPage(2) }
                                                             }) { Text("Edit") }
                                                             Spacer(Modifier.width(8.dp))
+                                                            Button(onClick = {
+                                                                // Rename inline: append .renamed if exists
+                                                                val renamed = File(f.parentFile, f.name + ".renamed")
+                                                                if (!renamed.exists()) {
+                                                                    runCatching { f.renameTo(renamed) }
+                                                                }
+                                                                dir.value = dir.value
+                                                            }) { Text("Rename") }
+                                                            Spacer(Modifier.width(8.dp))
                                                             Button(onClick = { runCatching { f.delete() }.onSuccess { /* refresh */ dir.value = dir.value } }) { Text("Delete") }
                                                         }
                                                     }
@@ -814,21 +831,39 @@ fun TerminalScreen(
                                         val file = selectedFileForEditor.value
                                         Column(modifier = Modifier.fillMaxSize()) {
                                             var editorRef: CodeEditor? = null
+                                            var initialText by remember { mutableStateOf("") }
+                                            val isDirty = remember(file, initialText) { mutableStateOf(false) }
                                             Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                Text(file?.absolutePath ?: "Untitled", modifier = Modifier.weight(1f))
+                                                Text(((if (isDirty.value) "* " else "") + (file?.absolutePath ?: "Untitled")), modifier = Modifier.weight(1f))
+                                                Spacer(Modifier.width(8.dp))
                                                 Button(onClick = {
                                                     if (file != null) {
-                                                        runCatching { file.writeText(editorRef?.text.toString()) }
+                                                        val txt = editorRef?.text.toString()
+                                                        runCatching { file.writeText(txt) }
+                                                        initialText = txt
+                                                        isDirty.value = false
                                                     }
                                                 }, enabled = file != null) { Text("Save") }
+                                                Spacer(Modifier.width(8.dp))
+                                                Button(onClick = {
+                                                    // Save As: write to sibling file with (copy).txt
+                                                    val base = file?.name ?: "Untitled.txt"
+                                                    val target = File(file?.parentFile ?: dir.value, base.removeSuffix(".txt") + " (copy).txt")
+                                                    val txt = editorRef?.text.toString()
+                                                    runCatching { target.writeText(txt) }
+                                                    selectedFileForEditor.value = target
+                                                    initialText = txt
+                                                    isDirty.value = false
+                                                }) { Text("Save As") }
                                             }
                                             AndroidView(factory = { ctx ->
                                                 CodeEditor(ctx).apply {
                                                     editorRef = this
-                                                    if (file != null && file.exists()) {
-                                                        setText(file.readText())
-                                                    } else {
-                                                        setText("")
+                                                    val content = if (file != null && file.exists()) file.readText() else ""
+                                                    setText(content)
+                                                    initialText = content
+                                                    setOnTextChangeListener { _, _ ->
+                                                        isDirty.value = (editorRef?.text.toString() != initialText)
                                                     }
                                                 }
                                             }, modifier = Modifier.fillMaxSize())
