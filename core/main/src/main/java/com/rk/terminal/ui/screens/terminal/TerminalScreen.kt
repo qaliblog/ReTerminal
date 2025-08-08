@@ -990,7 +990,9 @@ fun TerminalScreen(
                                          }
                                      }
                                  }
-                             }
+                             },
+                             pagerState = pagerState
+                         )
                          }
 
 
