@@ -657,9 +657,9 @@ fun TerminalScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 tabs = tabs,
                                 content = { tabIndex ->
-                                when (tabIndex) {
-                                    0 -> {
-                                        Column(modifier = Modifier.imePadding().navigationBarsPadding().padding(top = if (showToolbar.value){0.dp}else{
+                                    when (tabIndex) {
+                                        0 -> {
+                                            Column(modifier = Modifier.imePadding().navigationBarsPadding().padding(top = if (showToolbar.value){0.dp}else{
                                 with(density){
                                     TopAppBarDefaults.windowInsets.getTop(density).toDp()
                                 }
