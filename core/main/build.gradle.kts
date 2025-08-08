@@ -112,6 +112,9 @@ dependencies {
     api(libs.androidx.palette)
     api(libs.accompanist.systemuicontroller)
     api(libs.sshj)
+    // Sora Editor
+    api(platform("io.github.rosemoe:editor-bom:0.23.7"))
+    api("io.github.rosemoe:editor")
 
     api(project(":core:resources"))
     api(project(":core:components"))

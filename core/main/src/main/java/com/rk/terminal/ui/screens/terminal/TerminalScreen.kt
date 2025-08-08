@@ -112,6 +112,7 @@ import com.rk.resources.strings
 import com.rk.settings.Settings
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.components.SettingsToggle
+import com.rk.terminal.ui.components.ScrollableTabLayout
 import com.rk.terminal.ui.routes.MainActivityRoutes
 import com.rk.terminal.ui.screens.settings.SettingsCard
 import com.rk.terminal.ui.screens.settings.WorkingMode
@@ -121,6 +122,12 @@ import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysListener
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysView
 import com.rk.terminal.ui.theme.KarbonTheme
 import com.termux.view.TerminalView
+import io.github.rosemoe.sora.widget.CodeEditor
+import androidx.compose.ui.viewinterop.AndroidViewBinding
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -623,6 +630,156 @@ fun TerminalScreen(
                                     virtualKeysView = WeakReference(null)
                                 }
 
+                            }
+                            // Tabs: Terminal | Files | Editor
+                            var tabs = remember { mutableStateListOf("Terminal","Files","Editor") }
+                            ScrollableTabLayout(modifier = Modifier.fillMaxWidth(), tabs = tabs) { tabIndex ->
+                                when (tabIndex) {
+                                    0 -> {
+                                        Column(modifier = Modifier.imePadding().navigationBarsPadding().padding(top = if (showToolbar.value){0.dp}else{
+                                with(density){
+                                    TopAppBarDefaults.windowInsets.getTop(density).toDp()
+                                }
+                            })) {
+                                AndroidView(
+                                    factory = { context ->
+                                        TerminalView(context, null).apply {
+                                            terminalView = WeakReference(this)
+                                            setTextSize(
+                                                dpToPx(
+                                                    Settings.terminal_font_size.toFloat(),
+                                                    context
+                                                )
+                                            )
+                                            val client = TerminalBackEnd(this, mainActivityActivity)
+
+                                            val session = if (pendingCommand != null) {
+                                                mainActivityActivity.sessionBinder!!.getService().currentSession.value = Pair(
+                                                    pendingCommand!!.id, pendingCommand!!.workingMode)
+                                                mainActivityActivity.sessionBinder!!.getSession(
+                                                    pendingCommand!!.id
+                                                )
+                                                    ?: mainActivityActivity.sessionBinder!!.createSession(
+                                                        pendingCommand!!.id,
+                                                        client,
+                                                        mainActivityActivity, workingMode = Settings.working_Mode
+                                                    )
+                                            } else {
+                                                mainActivityActivity.sessionBinder!!.getSession(
+                                                    mainActivityActivity.sessionBinder!!.getService().currentSession.value.first
+                                                )
+                                                    ?: mainActivityActivity.sessionBinder!!.createSession(
+                                                        mainActivityActivity.sessionBinder!!.getService().currentSession.value.first,
+                                                        client,
+                                                        mainActivityActivity,workingMode = Settings.working_Mode
+                                                    )
+                                            }
+
+                                            session.updateTerminalSessionClient(client)
+                                            attachSession(session)
+                                            setTerminalViewClient(client)
+                                            setTypeface(font)
+
+                                            post {
+                                                val color = getViewColor()
+
+                                                keepScreenOn = true
+                                                requestFocus()
+                                                isFocusableInTouchMode = true
+
+                                                mEmulator?.mColors?.mCurrentColors?.apply {
+                                                    set(256, color)
+                                                    set(258, color)
+                                                }
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f),
+                                    update = { terminalView ->
+                                        terminalView.onScreenUpdated()
+                                       val color = getViewColor()
+
+                                        terminalView.mEmulator?.mColors?.mCurrentColors?.apply {
+                                            set(256, color)
+                                            set(258, color)
+                                        }
+                                    },
+                                )
+
+                                if (showVirtualKeys.value){
+                                    AndroidView(update = {
+                                        it.apply {
+                                            virtualKeysViewClient =
+                                                terminalView.get()?.mTermSession?.let {
+                                                    VirtualKeysListener(
+                                                        it
+                                                    )
+                                                }
+
+
+                                            buttonTextColor = getViewColor()
+
+
+                                            reload(
+                                                VirtualKeysInfo(
+                                                    VIRTUAL_KEYS,
+                                                    "",
+                                                    VirtualKeysConstants.CONTROL_CHARS_ALIASES
+                                                )
+                                            )
+                                        }
+                                    },
+                                        factory = { context ->
+                                            VirtualKeysView(context, null).apply {
+                                                virtualKeysView = WeakReference(this)
+
+                                                virtualKeysViewClient =
+                                                    terminalView.get()?.mTermSession?.let {
+                                                        VirtualKeysListener(
+                                                            it
+                                                        )
+                                                    }
+
+
+                                                buttonTextColor = getViewColor()
+
+
+                                                reload(
+                                                    VirtualKeysInfo(
+                                                        VIRTUAL_KEYS,
+                                                        "",
+                                                        VirtualKeysConstants.CONTROL_CHARS_ALIASES
+                                                    )
+                                                )
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(75.dp)
+                                    )
+                                }else{
+                                    virtualKeysView = WeakReference(null)
+                                }
+
+                            }
+                                    }
+                                    1 -> {
+                                        // Files placeholder (will implement full manager)
+                                        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                                            Text("File Manager (coming next)")
+                                        }
+                                    }
+                                    2 -> {
+                                        // Text editor using Sora CodeEditor
+                                        AndroidView(factory = { ctx ->
+                                            CodeEditor(ctx).apply {
+                                                setText("")
+                                            }
+                                        }, modifier = Modifier.fillMaxSize())
+                                    }
+                                }
                             }
                         }
 
