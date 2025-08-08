@@ -816,10 +816,23 @@ fun TerminalScreen(
                                                         val dst = File(dir.value, src.name)
                                                         if (clipboardAction.value == "copy") {
                                                             runCatching {
-                                                                if (src.isFile) src.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
+                                                                if (src.isDirectory) {
+                                                                    src.copyRecursively(dst, overwrite = false)
+                                                                } else {
+                                                                    src.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
+                                                                }
                                                             }
                                                         } else {
-                                                            if (!dst.exists()) runCatching { src.renameTo(dst) }
+                                                            if (!dst.exists()) {
+                                                                val moved = runCatching { src.renameTo(dst) }.getOrElse { false }
+                                                                if (!moved) {
+                                                                    // Fallback: copy then delete
+                                                                    runCatching {
+                                                                        if (src.isDirectory) src.copyRecursively(dst, overwrite = false) else src.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
+                                                                        src.deleteRecursively()
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                         clipboardFile.value = null
                                                         clipboardAction.value = ""
@@ -973,17 +986,8 @@ fun TerminalScreen(
                                                  }, enabled = file != null) { Text("Save") }
                                                  Spacer(Modifier.width(8.dp))
                                                  Button(onClick = {
-                                                     // Save As: write to sibling file with (copy).txt
-                                                     val base = file?.name ?: "Untitled.txt"
-                                                     val targetParent = file?.parentFile ?: File("/sdcard")
-                                                     val target = File(targetParent, base.removeSuffix(".txt") + " (copy).txt")
-                                                     val txt = editorRef?.text.toString()
-                                                     runCatching { target.writeText(txt) }
-                                                     selectedFileForEditor.value = target
-                                                     initialText = txt
-                                                     isDirty.value = false
-                                                     editorContentState.value = txt
-                                                     isEditorDirty.value = false
+                                                     saveAsName.value = (file?.name ?: "Untitled.txt")
+                                                     showSaveAsDialog.value = true
                                                  }) { Text("Save As") }
                                              }
                                              AndroidView(factory = { ctx ->
@@ -1000,6 +1004,22 @@ fun TerminalScreen(
                                                      }
                                                  }
                                              }, modifier = Modifier.fillMaxSize())
+                                         }
+                                         // Save As Dialog
+                                         if (showSaveAsDialog.value) {
+                                             AlertDialog(onDismissRequest = { showSaveAsDialog.value = false }, confirmButton = {
+                                                 Button(onClick = {
+                                                     val targetParent = file?.parentFile ?: File("/sdcard")
+                                                     val target = File(targetParent, saveAsName.value.ifBlank { "Untitled.txt" })
+                                                     val txt = editorContentState.value
+                                                     runCatching { target.writeText(txt) }
+                                                     selectedFileForEditor.value = target
+                                                     isEditorDirty.value = false
+                                                     showSaveAsDialog.value = false
+                                                 }) { Text("Save") }
+                                             }, dismissButton = { Button(onClick = { showSaveAsDialog.value = false }) { Text("Cancel") } }, title = { Text("Save As") }, text = {
+                                                 OutlinedTextField(value = saveAsName.value, onValueChange = { saveAsName.value = it }, label = { Text("File name") })
+                                             })
                                          }
                                      }
                                  }
