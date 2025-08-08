@@ -319,7 +319,7 @@ fun TerminalScreen(
                             OutlinedTextField(value = sshProfileName, onValueChange = { sshProfileName = it }, label = { Text("Profile name") })
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            FilledTonalButton(onClick = {
+                            Button(onClick = {
                                 // Save profile
                                 val profileId = (System.currentTimeMillis()).toString()
                                 val profile = JSONObject().apply {
@@ -335,12 +335,13 @@ fun TerminalScreen(
                                 arr.put(profile)
                                 Settings.ssh_profiles = arr.toString()
                                 Settings.ssh_last_profile_id = profileId
-                            }) { Text("Save") }
+                            }, enabled = sshHost.isNotBlank() && (sshUsePassword && sshPassword.isNotBlank() || (!sshUsePassword && sshIdentityPath.isNotBlank()))) { Text("Save") }
                             Button(onClick = {
                                 // Launch SSH by running /system/bin/sh -c "ssh ..." via pendingCommand
                                 val port = sshPort.toIntOrNull() ?: 22
-                                val authPart = if (sshUsePassword) "" else "-i \"$sshIdentityPath\""
-                                val cmd = "ssh -p $port $authPart ${'$'}{if (\"$sshUser\".isNotEmpty()) \"$sshUser@\" else \"\"}$sshHost"
+                                val identityPart = if (sshUsePassword) "" else "-i \"$sshIdentityPath\" "
+                                val userPart = if (sshUser.isNotBlank()) "$sshUser@" else ""
+                                val cmd = "ssh -p $port ${identityPart}${userPart}$sshHost"
                                 pendingCommand = com.rk.libcommons.TerminalCommand(
                                     alpine = false,
                                     shell = "/system/bin/sh",
@@ -353,7 +354,7 @@ fun TerminalScreen(
                                 )
                                 createSession(workingMode = WorkingMode.SSH)
                                 showAddDialog = false
-                            }) { Text("Connect") }
+                            }, enabled = sshHost.isNotBlank()) { Text("Connect") }
                         }
                     }
                 }
