@@ -819,6 +819,26 @@ fun TerminalScreen(
                                                                 dir.value = dir.value
                                                             }) { Text("Rename") }
                                                             Spacer(Modifier.width(8.dp))
+                                                            Button(onClick = {
+                                                                // Copy to parent with (copy) suffix
+                                                                val parent = f.parentFile ?: dir.value
+                                                                val target = File(parent, f.nameWithoutExtension + " (copy)" + if (f.extension.isNotEmpty()) ".${f.extension}" else "")
+                                                                runCatching {
+                                                                    if (f.isFile) {
+                                                                        f.inputStream().use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                                                                    }
+                                                                }.onSuccess { dir.value = dir.value }
+                                                            }) { Text("Copy") }
+                                                            Spacer(Modifier.width(8.dp))
+                                                            Button(onClick = {
+                                                                // Move to parent directory
+                                                                val parent = f.parentFile ?: dir.value
+                                                                val target = File(parent, f.name)
+                                                                if (!target.exists()) {
+                                                                    runCatching { f.renameTo(target) }.onSuccess { dir.value = dir.value }
+                                                                }
+                                                            }) { Text("Move") }
+                                                            Spacer(Modifier.width(8.dp))
                                                             Button(onClick = { runCatching { f.delete() }.onSuccess { /* refresh */ dir.value = dir.value } }) { Text("Delete") }
                                                         }
                                                     }
@@ -848,7 +868,8 @@ fun TerminalScreen(
                                                 Button(onClick = {
                                                     // Save As: write to sibling file with (copy).txt
                                                     val base = file?.name ?: "Untitled.txt"
-                                                    val target = File(file?.parentFile ?: dir.value, base.removeSuffix(".txt") + " (copy).txt")
+                                                    val targetParent = file?.parentFile ?: File("/sdcard")
+                                                    val target = File(targetParent, base.removeSuffix(".txt") + " (copy).txt")
                                                     val txt = editorRef?.text.toString()
                                                     runCatching { target.writeText(txt) }
                                                     selectedFileForEditor.value = target
