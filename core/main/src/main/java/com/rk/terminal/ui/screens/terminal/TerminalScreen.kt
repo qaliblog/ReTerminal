@@ -275,20 +275,8 @@ fun TerminalScreen(
                         }
                         changeSession(mainActivityActivity, session_id = sessionId)
                     }
-                    SettingsCard(title = { Text("Create new session") }, description = { Text("Choose environment") }, onClick = {})
-                    SelectableCard(selected = false, onSelect = {
-                        createSession(workingMode = WorkingMode.ALPINE)
-                        showAddDialog = false
-                    }) {
-                        Text(text = "Alpine Linux")
-                    }
-                    SelectableCard(selected = false, onSelect = {
-                        createSession(workingMode = WorkingMode.ANDROID)
-                        showAddDialog = false
-                    }) {
-                        Text(text = "ReTerminal Android shell")
-                    }
-                    // SSH option opens form
+                    SettingsCard(title = { Text("SSH Session") }, description = { Text("Connect to a remote host") }, onClick = {})
+                    // SSH form
                     var sshHost by remember { mutableStateOf("") }
                     var sshPort by remember { mutableStateOf("22") }
                     var sshUser by remember { mutableStateOf("") }
@@ -297,8 +285,7 @@ fun TerminalScreen(
                     var sshUsePassword by remember { mutableStateOf(true) }
                     var sshSaveProfile by remember { mutableStateOf(true) }
                     var sshProfileName by remember { mutableStateOf("") }
-
-                    SettingsCard(title = { Text("SSH") }, description = { Text("Connect to a remote host") }, onClick = {})
+ 
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = sshHost, onValueChange = { sshHost = it }, label = { Text("Host or IP") })
                         OutlinedTextField(value = sshPort, onValueChange = { sshPort = it.filter { c -> c.isDigit() }.take(5) }, label = { Text("Port") })

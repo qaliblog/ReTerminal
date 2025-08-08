@@ -64,9 +64,7 @@ fun SettingsCard(
 
 
 object WorkingMode{
-    const val ALPINE = 0
-    const val ANDROID = 1
-    const val SSH = 2
+    const val SSH = 0
 }
 
 
@@ -74,50 +72,7 @@ object WorkingMode{
 @Composable
 fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActivity: MainActivity) {
     val context = LocalContext.current
-    var selectedOption by remember { mutableIntStateOf(Settings.working_Mode) }
-
     PreferenceLayout(label = stringResource(strings.settings)) {
-        PreferenceGroup(heading = "Default Working mode") {
-
-            SettingsCard(
-                title = { Text("Alpine") },
-                description = {Text("Alpine Linux")},
-                startWidget = {
-                    RadioButton(
-                        modifier = Modifier.padding(start = 8.dp),
-                        selected = selectedOption == WorkingMode.ALPINE,
-                        onClick = {
-                            selectedOption = WorkingMode.ALPINE
-                            Settings.working_Mode = selectedOption
-                        })
-                },
-                onClick = {
-                    selectedOption = WorkingMode.ALPINE
-                    Settings.working_Mode = selectedOption
-                })
-
-
-            SettingsCard(
-                title = { Text("Android") },
-                description = {Text("ReTerminal Android shell")},
-                startWidget = {
-                    RadioButton(
-                        modifier = Modifier
-                            .padding(start = 8.dp)
-                            ,
-                        selected = selectedOption == WorkingMode.ANDROID,
-                        onClick = {
-                            selectedOption = WorkingMode.ANDROID
-                            Settings.working_Mode = selectedOption
-                        })
-                },
-                onClick = {
-                    selectedOption = WorkingMode.ANDROID
-                    Settings.working_Mode = selectedOption
-                })
-        }
-
-
         PreferenceGroup {
             SettingsToggle(
                 label = "Customizations",
