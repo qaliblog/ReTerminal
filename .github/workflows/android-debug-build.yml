@@ -28,13 +28,17 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace --info
+        run: ./gradlew :app:assembleDebug --stacktrace --info
 
       - name: List APKs to verify build
-        run: ls -lhR */build/outputs/apk/
+        run: |
+          echo "Searching for APK outputs..."
+          find app/build/outputs -type f -name "*.apk" -print -ls || true
+          echo "Done."
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: debug-apk
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: 'app/build/outputs/apk/debug/*.apk'
+          if-no-files-found: error
