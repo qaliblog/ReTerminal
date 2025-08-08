@@ -123,7 +123,6 @@ import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysView
 import com.rk.terminal.ui.theme.KarbonTheme
 import com.termux.view.TerminalView
 import io.github.rosemoe.sora.widget.CodeEditor
-import androidx.compose.ui.viewinterop.AndroidViewBinding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -137,6 +136,8 @@ import java.io.File
 import java.lang.ref.WeakReference
 import org.json.JSONArray
 import org.json.JSONObject
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.mutableStateListOf
 
 var terminalView = WeakReference<TerminalView?>(null)
 var virtualKeysView = WeakReference<VirtualKeysView?>(null)
@@ -332,7 +333,7 @@ fun TerminalScreen(
                                 Settings.ssh_last_profile_id = profileId
                             }, enabled = sshHost.isNotBlank() && (sshUsePassword && sshPassword.isNotBlank() || (!sshUsePassword && sshIdentityPath.isNotBlank()))) { Text("Save") }
                             Button(onClick = {
-                                // Launch SSH by running /system/bin/sh -c "ssh ..." via pendingCommand
+                                // External ssh fallback until native session is finished
                                 val port = sshPort.toIntOrNull() ?: 22
                                 val identityPart = if (sshUsePassword) "" else "-i \"$sshIdentityPath\" "
                                 val userPart = if (sshUser.isNotBlank()) "$sshUser@" else ""
@@ -632,8 +633,10 @@ fun TerminalScreen(
 
                             }
                             // Tabs: Terminal | Files | Editor
-                            var tabs = remember { mutableStateListOf("Terminal","Files","Editor") }
-                            ScrollableTabLayout(modifier = Modifier.fillMaxWidth(), tabs = tabs) { tabIndex ->
+                            val tabs = remember { mutableStateListOf("Terminal","Files","Editor") }
+                            val pagerState = rememberPagerState(pageCount = { tabs.size })
+                            val selectedFileForEditor = remember { mutableStateOf<java.io.File?>(null) }
+                            ScrollableTabLayout(modifier = Modifier.fillMaxWidth(), tabs = tabs, pagerState = pagerState) { tabIndex ->
                                 when (tabIndex) {
                                     0 -> {
                                         Column(modifier = Modifier.imePadding().navigationBarsPadding().padding(top = if (showToolbar.value){0.dp}else{
@@ -766,16 +769,39 @@ fun TerminalScreen(
                             }
                                     }
                                     1 -> {
-                                        // Files placeholder (will implement full manager)
-                                        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                                            Text("File Manager (coming next)")
+                                        // Simple File Manager: list /sdcard
+                                        val ctx = LocalContext.current
+                                        val dir = remember { mutableStateOf(File("/sdcard")) }
+                                        val files = remember(dir.value) { dir.value.listFiles()?.sortedBy { it.name.lowercase() } ?: emptyList() }
+                                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                            items(files.size) { idx ->
+                                                val f = files[idx]
+                                                Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(f.name, modifier = Modifier.weight(1f))
+                                                    if (f.isDirectory) {
+                                                        Button(onClick = { dir.value = f }) { Text("Open") }
+                                                    } else {
+                                                        Button(onClick = {
+                                                            // Open in editor tab
+                                                            selectedFileForEditor.value = f
+                                                            // switch to Editor tab
+                                                            scope.launch { pagerState.scrollToPage(2) }
+                                                        }) { Text("Edit") }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     2 -> {
                                         // Text editor using Sora CodeEditor
+                                        val file = selectedFileForEditor.value
                                         AndroidView(factory = { ctx ->
                                             CodeEditor(ctx).apply {
-                                                setText("")
+                                                if (file != null && file.exists()) {
+                                                    setText(file.readText())
+                                                } else {
+                                                    setText("")
+                                                }
                                             }
                                         }, modifier = Modifier.fillMaxSize())
                                     }
@@ -901,3 +927,5 @@ fun changeSession(mainActivityActivity: MainActivity, session_id: String) {
 
 const val VIRTUAL_KEYS =
     ("[" + "\n  [" + "\n    \"ESC\"," + "\n    {" + "\n      \"key\": \"/\"," + "\n      \"popup\": \"\\\\\"" + "\n    }," + "\n    {" + "\n      \"key\": \"-\"," + "\n      \"popup\": \"|\"" + "\n    }," + "\n    \"HOME\"," + "\n    \"UP\"," + "\n    \"END\"," + "\n    \"PGUP\"" + "\n  ]," + "\n  [" + "\n    \"TAB\"," + "\n    \"CTRL\"," + "\n    \"ALT\"," + "\n    \"LEFT\"," + "\n    \"DOWN\"," + "\n    \"RIGHT\"," + "\n    \"PGDN\"" + "\n  ]" + "\n]")
+
+// SSHJ native integration will be added in a dedicated session type next step
