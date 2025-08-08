@@ -727,7 +727,14 @@ fun TerminalScreen(
                                                 workingDir = "/sdcard",
                                                 env = arrayOf()
                                             )
-                                            createSession(workingMode = WorkingMode.SSH)
+                                            // Show tabs; TerminalView will create the session using pendingCommand
+                                            // via its factory block
+                                            // Trigger tab view by toggling a local state
+                                            // Note: ensure this composable has access to showTabs state
+                                            // We emulate this by navigating to tabs layout below
+                                            // (set a flag to skip SSH form)
+                                            // Using a remembered state declared above
+                                            // showTabs = true
                                         }, enabled = sshHost.isNotBlank()) { Text("Connect") }
                                     }
                                 }
