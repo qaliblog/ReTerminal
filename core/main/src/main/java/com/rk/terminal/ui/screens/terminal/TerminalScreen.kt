@@ -636,6 +636,24 @@ fun TerminalScreen(
                             val tabs = remember { mutableStateListOf("Terminal","Files","Editor") }
                             val pagerState = rememberPagerState(pageCount = { tabs.size })
                             val selectedFileForEditor = remember { mutableStateOf<java.io.File?>(null) }
+                            // Shared editor state
+                            val editorContentState = remember { mutableStateOf("") }
+                            val isEditorDirty = remember { mutableStateOf(false) }
+                            // File manager clipboard for copy/move
+                            val clipboardFile = remember { mutableStateOf<java.io.File?>(null) }
+                            val clipboardAction = remember { mutableStateOf("") } // "copy" or "move"
+                            // Dialog states
+                            val showRenameDialog = remember { mutableStateOf(false) }
+                            val renameTarget = remember { mutableStateOf<java.io.File?>(null) }
+                            val renameName = remember { mutableStateOf("") }
+                            val showNewFolderDialog = remember { mutableStateOf(false) }
+                            val newFolderName = remember { mutableStateOf("NewFolder") }
+                            val showNewFileDialog = remember { mutableStateOf(false) }
+                            val newFileName = remember { mutableStateOf("NewFile.txt") }
+                            val showSaveAsDialog = remember { mutableStateOf(false) }
+                            val saveAsName = remember { mutableStateOf("Untitled.txt") }
+                            val showUnsavedConfirm = remember { mutableStateOf(false) }
+                            val pendingOpenFile = remember { mutableStateOf<java.io.File?>(null) }
                             ScrollableTabLayout(modifier = Modifier.fillMaxWidth(), tabs = tabs, pagerState = pagerState) { tabIndex ->
                                 when (tabIndex) {
                                     0 -> {
@@ -776,23 +794,39 @@ fun TerminalScreen(
                                         Column(modifier = Modifier.fillMaxSize()) {
                                             Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 Button(onClick = {
-                                                    val newDir = File(dir.value, "NewFolder")
-                                                    var candidate = newDir
-                                                    var i = 1
-                                                    while (candidate.exists()) { candidate = File(dir.value, "NewFolder($i)"); i++ }
-                                                    candidate.mkdirs()
+                                                    newFolderName.value = "NewFolder"
+                                                    showNewFolderDialog.value = true
                                                 }) { Text("New Folder") }
                                                 Spacer(Modifier.width(8.dp))
                                                 Button(onClick = {
-                                                    val newFile = File(dir.value, "NewFile.txt")
-                                                    var candidate = newFile
-                                                    var i = 1
-                                                    while (candidate.exists()) { candidate = File(dir.value, "NewFile($i).txt"); i++ }
-                                                    candidate.createNewFile()
+                                                    newFileName.value = "NewFile.txt"
+                                                    showNewFileDialog.value = true
                                                 }) { Text("New File") }
                                                 Spacer(Modifier.weight(1f))
                                                 if (dir.value.parentFile != null) {
                                                     Button(onClick = { dir.value = dir.value.parentFile!! }) { Text("Up") }
+                                                }
+                                            }
+                                            if (clipboardFile.value != null && clipboardAction.value.isNotEmpty()) {
+                                                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                                                    Text("${clipboardAction.value.replaceFirstChar { it.uppercase() }}: ${clipboardFile.value?.name}", modifier = Modifier.weight(1f))
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Button(onClick = {
+                                                        val src = clipboardFile.value!!
+                                                        val dst = File(dir.value, src.name)
+                                                        if (clipboardAction.value == "copy") {
+                                                            runCatching {
+                                                                if (src.isFile) src.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
+                                                            }
+                                                        } else {
+                                                            if (!dst.exists()) runCatching { src.renameTo(dst) }
+                                                        }
+                                                        clipboardFile.value = null
+                                                        clipboardAction.value = ""
+                                                        dir.value = dir.value
+                                                    }) { Text("Paste Here") }
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Button(onClick = { clipboardFile.value = null; clipboardAction.value = "" }) { Text("Cancel") }
                                                 }
                                             }
                                             LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -804,95 +838,173 @@ fun TerminalScreen(
                                                             Button(onClick = { dir.value = f }) { Text("Open") }
                                                         } else {
                                                             Button(onClick = {
-                                                                // Open in editor tab
-                                                                selectedFileForEditor.value = f
-                                                                // switch to Editor tab
-                                                                scope.launch { pagerState.scrollToPage(2) }
-                                                            }) { Text("Edit") }
-                                                            Spacer(Modifier.width(8.dp))
-                                                            Button(onClick = {
-                                                                // Rename inline: append .renamed if exists
-                                                                val renamed = File(f.parentFile, f.name + ".renamed")
-                                                                if (!renamed.exists()) {
-                                                                    runCatching { f.renameTo(renamed) }
+                                                                // Guard unsaved changes
+                                                                if (isEditorDirty.value && selectedFileForEditor.value?.absolutePath != f.absolutePath) {
+                                                                    pendingOpenFile.value = f
+                                                                    showUnsavedConfirm.value = true
+                                                                } else {
+                                                                    selectedFileForEditor.value = f
+                                                                    scope.launch { pagerState.scrollToPage(2) }
                                                                 }
-                                                                dir.value = dir.value
-                                                            }) { Text("Rename") }
-                                                            Spacer(Modifier.width(8.dp))
-                                                            Button(onClick = {
-                                                                // Copy to parent with (copy) suffix
-                                                                val parent = f.parentFile ?: dir.value
-                                                                val target = File(parent, f.nameWithoutExtension + " (copy)" + if (f.extension.isNotEmpty()) ".${f.extension}" else "")
-                                                                runCatching {
-                                                                    if (f.isFile) {
-                                                                        f.inputStream().use { input -> target.outputStream().use { output -> input.copyTo(output) } }
-                                                                    }
-                                                                }.onSuccess { dir.value = dir.value }
-                                                            }) { Text("Copy") }
-                                                            Spacer(Modifier.width(8.dp))
-                                                            Button(onClick = {
-                                                                // Move to parent directory
-                                                                val parent = f.parentFile ?: dir.value
-                                                                val target = File(parent, f.name)
-                                                                if (!target.exists()) {
-                                                                    runCatching { f.renameTo(target) }.onSuccess { dir.value = dir.value }
-                                                                }
-                                                            }) { Text("Move") }
-                                                            Spacer(Modifier.width(8.dp))
-                                                            Button(onClick = { runCatching { f.delete() }.onSuccess { /* refresh */ dir.value = dir.value } }) { Text("Delete") }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    2 -> {
-                                        // Text editor using Sora CodeEditor
-                                        val file = selectedFileForEditor.value
-                                        Column(modifier = Modifier.fillMaxSize()) {
-                                            var editorRef: CodeEditor? = null
-                                            var initialText by remember { mutableStateOf("") }
-                                            val isDirty = remember(file, initialText) { mutableStateOf(false) }
-                                            Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                Text(((if (isDirty.value) "* " else "") + (file?.absolutePath ?: "Untitled")), modifier = Modifier.weight(1f))
-                                                Spacer(Modifier.width(8.dp))
-                                                Button(onClick = {
-                                                    if (file != null) {
-                                                        val txt = editorRef?.text.toString()
-                                                        runCatching { file.writeText(txt) }
-                                                        initialText = txt
-                                                        isDirty.value = false
-                                                    }
-                                                }, enabled = file != null) { Text("Save") }
-                                                Spacer(Modifier.width(8.dp))
-                                                Button(onClick = {
-                                                    // Save As: write to sibling file with (copy).txt
-                                                    val base = file?.name ?: "Untitled.txt"
-                                                    val targetParent = file?.parentFile ?: File("/sdcard")
-                                                    val target = File(targetParent, base.removeSuffix(".txt") + " (copy).txt")
-                                                    val txt = editorRef?.text.toString()
-                                                    runCatching { target.writeText(txt) }
-                                                    selectedFileForEditor.value = target
-                                                    initialText = txt
-                                                    isDirty.value = false
-                                                }) { Text("Save As") }
-                                            }
-                                            AndroidView(factory = { ctx ->
-                                                CodeEditor(ctx).apply {
-                                                    editorRef = this
-                                                    val content = if (file != null && file.exists()) file.readText() else ""
-                                                    setText(content)
-                                                    initialText = content
-                                                    setOnTextChangeListener { _, _ ->
-                                                        isDirty.value = (editorRef?.text.toString() != initialText)
-                                                    }
-                                                }
-                                            }, modifier = Modifier.fillMaxSize())
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                                                             }) { Text("Edit") }
+                                                             Spacer(Modifier.width(8.dp))
+                                                             Button(onClick = {
+                                                                 renameTarget.value = f
+                                                                 renameName.value = f.name
+                                                                 showRenameDialog.value = true
+                                                             }) { Text("Rename") }
+                                                             Spacer(Modifier.width(8.dp))
+                                                             Button(onClick = {
+                                                                 // Copy to parent with (copy) suffix
+                                                                 clipboardFile.value = f
+                                                                 clipboardAction.value = "copy"
+                                                             }) { Text("Copy") }
+                                                             Spacer(Modifier.width(8.dp))
+                                                             Button(onClick = {
+                                                                 // Move to parent directory
+                                                                 clipboardFile.value = f
+                                                                 clipboardAction.value = "move"
+                                                             }) { Text("Move") }
+                                                             Spacer(Modifier.width(8.dp))
+                                                             Button(onClick = { runCatching { f.delete() }.onSuccess { /* refresh */ dir.value = dir.value } }) { Text("Delete") }
+                                                         }
+                                                     }
+                                                 }
+                                             }
+                                         }
+                                         // Rename Dialog
+                                         if (showRenameDialog.value && renameTarget.value != null) {
+                                             AlertDialog(onDismissRequest = { showRenameDialog.value = false }, confirmButton = {
+                                                 Button(onClick = {
+                                                     val tgt = renameTarget.value!!
+                                                     val dest = File(tgt.parentFile ?: dir.value, renameName.value)
+                                                     if (dest.absolutePath != tgt.absolutePath) runCatching { tgt.renameTo(dest) }
+                                                     showRenameDialog.value = false
+                                                     dir.value = dir.value
+                                                 }) { Text("Rename") }
+                                             }, dismissButton = {
+                                                 Button(onClick = { showRenameDialog.value = false }) { Text("Cancel") }
+                                             }, title = { Text("Rename") }, text = {
+                                                 OutlinedTextField(value = renameName.value, onValueChange = { renameName.value = it }, label = { Text("New name") })
+                                             })
+                                         }
+                                         // New Folder Dialog
+                                         if (showNewFolderDialog.value) {
+                                             AlertDialog(onDismissRequest = { showNewFolderDialog.value = false }, confirmButton = {
+                                                 Button(onClick = {
+                                                     val base = newFolderName.value.ifBlank { "NewFolder" }
+                                                     var candidate = File(dir.value, base)
+                                                     var i = 1
+                                                     while (candidate.exists()) { candidate = File(dir.value, "$base($i)"); i++ }
+                                                     candidate.mkdirs()
+                                                     showNewFolderDialog.value = false
+                                                     dir.value = dir.value
+                                                 }) { Text("Create") }
+                                             }, dismissButton = { Button(onClick = { showNewFolderDialog.value = false }) { Text("Cancel") } }, title = { Text("New Folder") }, text = {
+                                                 OutlinedTextField(value = newFolderName.value, onValueChange = { newFolderName.value = it }, label = { Text("Folder name") })
+                                             })
+                                         }
+                                         // New File Dialog
+                                         if (showNewFileDialog.value) {
+                                             AlertDialog(onDismissRequest = { showNewFileDialog.value = false }, confirmButton = {
+                                                 Button(onClick = {
+                                                     val name = newFileName.value.ifBlank { "NewFile.txt" }
+                                                     var candidate = File(dir.value, name)
+                                                     var i = 1
+                                                     while (candidate.exists()) {
+                                                         val base = name.substringBeforeLast('.')
+                                                         val ext = name.substringAfterLast('.', "")
+                                                         candidate = File(dir.value, base + "($i)" + (if (ext.isNotEmpty()) ".${ext}" else ""))
+                                                         i++
+                                                     }
+                                                     candidate.createNewFile()
+                                                     showNewFileDialog.value = false
+                                                     dir.value = dir.value
+                                                 }) { Text("Create") }
+                                             }, dismissButton = { Button(onClick = { showNewFileDialog.value = false }) { Text("Cancel") } }, title = { Text("New File") }, text = {
+                                                 OutlinedTextField(value = newFileName.value, onValueChange = { newFileName.value = it }, label = { Text("File name") })
+                                             })
+                                         }
+                                         // Unsaved confirm
+                                         if (showUnsavedConfirm.value) {
+                                             AlertDialog(onDismissRequest = { showUnsavedConfirm.value = false }, confirmButton = {
+                                                 Button(onClick = {
+                                                     // Save then proceed
+                                                     selectedFileForEditor.value?.let { runCatching { it.writeText(editorContentState.value) } }
+                                                     isEditorDirty.value = false
+                                                     selectedFileForEditor.value = pendingOpenFile.value
+                                                     scope.launch { pagerState.scrollToPage(2) }
+                                                     showUnsavedConfirm.value = false
+                                                 }) { Text("Save") }
+                                             }, dismissButton = {
+                                                 Row {
+                                                     Button(onClick = {
+                                                         // Discard
+                                                         isEditorDirty.value = false
+                                                         selectedFileForEditor.value = pendingOpenFile.value
+                                                         scope.launch { pagerState.scrollToPage(2) }
+                                                         showUnsavedConfirm.value = false
+                                                     }) { Text("Discard") }
+                                                     Spacer(Modifier.width(8.dp))
+                                                     Button(onClick = { showUnsavedConfirm.value = false }) { Text("Cancel") }
+                                                 }
+                                             }, title = { Text("Unsaved changes") }, text = { Text("Save changes before opening a new file?") })
+                                         }
+                                     }
+                                     2 -> {
+                                         // Text editor using Sora CodeEditor
+                                         val file = selectedFileForEditor.value
+                                         Column(modifier = Modifier.fillMaxSize()) {
+                                             var editorRef: CodeEditor? = null
+                                             var initialText by remember { mutableStateOf("") }
+                                             val isDirty = remember(file, initialText) { mutableStateOf(false) }
+                                             Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                 Text(((if (isDirty.value) "* " else "") + (file?.absolutePath ?: "Untitled")), modifier = Modifier.weight(1f))
+                                                 Spacer(Modifier.width(8.dp))
+                                                 Button(onClick = {
+                                                     if (file != null) {
+                                                         val txt = editorRef?.text.toString()
+                                                         runCatching { file.writeText(txt) }
+                                                         initialText = txt
+                                                         isDirty.value = false
+                                                         editorContentState.value = txt
+                                                         isEditorDirty.value = false
+                                                     }
+                                                 }, enabled = file != null) { Text("Save") }
+                                                 Spacer(Modifier.width(8.dp))
+                                                 Button(onClick = {
+                                                     // Save As: write to sibling file with (copy).txt
+                                                     val base = file?.name ?: "Untitled.txt"
+                                                     val targetParent = file?.parentFile ?: File("/sdcard")
+                                                     val target = File(targetParent, base.removeSuffix(".txt") + " (copy).txt")
+                                                     val txt = editorRef?.text.toString()
+                                                     runCatching { target.writeText(txt) }
+                                                     selectedFileForEditor.value = target
+                                                     initialText = txt
+                                                     isDirty.value = false
+                                                     editorContentState.value = txt
+                                                     isEditorDirty.value = false
+                                                 }) { Text("Save As") }
+                                             }
+                                             AndroidView(factory = { ctx ->
+                                                 CodeEditor(ctx).apply {
+                                                     editorRef = this
+                                                     val content = if (file != null && file.exists()) file.readText() else ""
+                                                     setText(content)
+                                                     initialText = content
+                                                     setOnTextChangeListener { _, _ ->
+                                                         val current = editorRef?.text.toString()
+                                                         isDirty.value = (current != initialText)
+                                                         editorContentState.value = current
+                                                         isEditorDirty.value = isDirty.value
+                                                     }
+                                                 }
+                                             }, modifier = Modifier.fillMaxSize())
+                                         }
+                                     }
+                                 }
+                             }
+                         }
 
 
 
