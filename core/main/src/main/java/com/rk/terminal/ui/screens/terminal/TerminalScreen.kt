@@ -773,20 +773,37 @@ fun TerminalScreen(
                                         val ctx = LocalContext.current
                                         val dir = remember { mutableStateOf(File("/sdcard")) }
                                         val files = remember(dir.value) { dir.value.listFiles()?.sortedBy { it.name.lowercase() } ?: emptyList() }
-                                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                            items(files.size) { idx ->
-                                                val f = files[idx]
-                                                Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                    Text(f.name, modifier = Modifier.weight(1f))
-                                                    if (f.isDirectory) {
-                                                        Button(onClick = { dir.value = f }) { Text("Open") }
-                                                    } else {
-                                                        Button(onClick = {
-                                                            // Open in editor tab
-                                                            selectedFileForEditor.value = f
-                                                            // switch to Editor tab
-                                                            scope.launch { pagerState.scrollToPage(2) }
-                                                        }) { Text("Edit") }
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Button(onClick = {
+                                                    val newDir = File(dir.value, "NewFolder")
+                                                    var candidate = newDir
+                                                    var i = 1
+                                                    while (candidate.exists()) { candidate = File(dir.value, "NewFolder($i)"); i++ }
+                                                    candidate.mkdirs()
+                                                }) { Text("New Folder") }
+                                                Spacer(Modifier.weight(1f))
+                                                if (dir.value.parentFile != null) {
+                                                    Button(onClick = { dir.value = dir.value.parentFile!! }) { Text("Up") }
+                                                }
+                                            }
+                                            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                                items(files.size) { idx ->
+                                                    val f = files[idx]
+                                                    Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        Text(f.name, modifier = Modifier.weight(1f))
+                                                        if (f.isDirectory) {
+                                                            Button(onClick = { dir.value = f }) { Text("Open") }
+                                                        } else {
+                                                            Button(onClick = {
+                                                                // Open in editor tab
+                                                                selectedFileForEditor.value = f
+                                                                // switch to Editor tab
+                                                                scope.launch { pagerState.scrollToPage(2) }
+                                                            }) { Text("Edit") }
+                                                            Spacer(Modifier.width(8.dp))
+                                                            Button(onClick = { runCatching { f.delete() }.onSuccess { /* refresh */ dir.value = dir.value } }) { Text("Delete") }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -795,15 +812,27 @@ fun TerminalScreen(
                                     2 -> {
                                         // Text editor using Sora CodeEditor
                                         val file = selectedFileForEditor.value
-                                        AndroidView(factory = { ctx ->
-                                            CodeEditor(ctx).apply {
-                                                if (file != null && file.exists()) {
-                                                    setText(file.readText())
-                                                } else {
-                                                    setText("")
-                                                }
+                                        Column(modifier = Modifier.fillMaxSize()) {
+                                            var editorRef: CodeEditor? = null
+                                            Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Text(file?.absolutePath ?: "Untitled", modifier = Modifier.weight(1f))
+                                                Button(onClick = {
+                                                    if (file != null) {
+                                                        runCatching { file.writeText(editorRef?.text.toString()) }
+                                                    }
+                                                }, enabled = file != null) { Text("Save") }
                                             }
-                                        }, modifier = Modifier.fillMaxSize())
+                                            AndroidView(factory = { ctx ->
+                                                CodeEditor(ctx).apply {
+                                                    editorRef = this
+                                                    if (file != null && file.exists()) {
+                                                        setText(file.readText())
+                                                    } else {
+                                                        setText("")
+                                                    }
+                                                }
+                                            }, modifier = Modifier.fillMaxSize())
+                                        }
                                     }
                                 }
                             }
