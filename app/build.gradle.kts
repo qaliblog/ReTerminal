@@ -112,6 +112,12 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+        resources {
+            excludes += "META-INF/versions/**"
+            excludes += "META-INF/*.SF"
+            excludes += "META-INF/*.DSA"
+            excludes += "META-INF/*.RSA"
+        }
     }
 }
 
