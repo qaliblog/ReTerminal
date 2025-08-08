@@ -341,7 +341,7 @@ fun TerminalScreen(
                                 val port = sshPort.toIntOrNull() ?: 22
                                 val identityPart = if (sshUsePassword) "" else "-i \"$sshIdentityPath\" "
                                 val userPart = if (sshUser.isNotBlank()) "$sshUser@" else ""
-                                val cmd = "ssh -p $port ${identityPart}${userPart}$sshHost"
+                                val cmd = "if ! command -v ssh >/dev/null 2>&1; then echo 'Error: ssh client not found in PATH. Please install an ssh client.'; exit 127; fi; ssh -p $port ${identityPart}${userPart}$sshHost"
                                 pendingCommand = com.rk.libcommons.TerminalCommand(
                                     alpine = false,
                                     shell = "/system/bin/sh",
