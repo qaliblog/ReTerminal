@@ -273,7 +273,7 @@ fun TerminalScreen(
                         }
                         changeSession(mainActivityActivity, session_id = sessionId)
                     }
-                    SettingsCard(title = "Create new session", subTitle = "Choose environment")
+                    SettingsCard(title = { Text("Create new session") }, description = { Text("Choose environment") }, onClick = {})
                     SelectableCard(selected = false, onSelect = {
                         createSession(workingMode = WorkingMode.ALPINE)
                         showAddDialog = false
@@ -296,7 +296,7 @@ fun TerminalScreen(
                     var sshSaveProfile by remember { mutableStateOf(true) }
                     var sshProfileName by remember { mutableStateOf("") }
 
-                    SettingsCard(title = "SSH", subTitle = "Connect to a remote host")
+                    SettingsCard(title = { Text("SSH") }, description = { Text("Connect to a remote host") }, onClick = {})
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = sshHost, onValueChange = { sshHost = it }, label = { Text("Host or IP") })
                         OutlinedTextField(value = sshPort, onValueChange = { sshPort = it.filter { c -> c.isDigit() }.take(5) }, label = { Text("Port") })
