@@ -40,7 +40,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
@@ -55,6 +54,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -123,6 +126,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.lang.ref.WeakReference
+import org.json.JSONArray
+import org.json.JSONObject
 
 var terminalView = WeakReference<TerminalView?>(null)
 var virtualKeysView = WeakReference<VirtualKeysView?>(null)
@@ -246,60 +251,112 @@ fun TerminalScreen(
         }
 
         if (showAddDialog){
-            BasicAlertDialog(
-                onDismissRequest = {
-                    showAddDialog = false
-                }
-            ) {
-
-                fun createSession(workingMode:Int){
-                    fun generateUniqueString(existingStrings: List<String>): String {
-                        var index = 1
-                        var newString: String
-
-                        do {
-                            newString = "main$index"
-                            index++
-                        } while (newString in existingStrings)
-
-                        return newString
-                    }
-
-                    val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
-
-                    terminalView.get()
-                        ?.let {
-                            val client = TerminalBackEnd(it, mainActivityActivity)
-                            mainActivityActivity.sessionBinder!!.createSession(
-                                sessionId,
-                                client,
-                                mainActivityActivity, workingMode = workingMode
-                            )
+            AlertDialog(onDismissRequest = { showAddDialog = false }, confirmButton = {}, title = {
+                Text(text = stringResource(strings.add_new_session))
+            }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    fun createSession(workingMode: Int){
+                        fun generateUniqueString(existingStrings: List<String>): String {
+                            var index = 1
+                            var newString: String
+                            do {
+                                newString = "main$index"
+                                index++
+                            } while (newString in existingStrings)
+                            return newString
                         }
+                        val existing = mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList()
+                        val sessionId = generateUniqueString(existing)
+                        terminalView.get()?.let { view ->
+                            val client = TerminalBackEnd(view, mainActivityActivity)
+                            mainActivityActivity.sessionBinder!!.createSession(sessionId, client, mainActivityActivity, workingMode)
+                        }
+                        changeSession(mainActivityActivity, session_id = sessionId)
+                    }
+                    SettingsCard(title = "Create new session", subTitle = "Choose environment")
+                    SelectableCard(selected = false, onSelect = {
+                        createSession(workingMode = WorkingMode.ALPINE)
+                        showAddDialog = false
+                    }) {
+                        Text(text = "Alpine Linux")
+                    }
+                    SelectableCard(selected = false, onSelect = {
+                        createSession(workingMode = WorkingMode.ANDROID)
+                        showAddDialog = false
+                    }) {
+                        Text(text = "ReTerminal Android shell")
+                    }
+                    // SSH option opens form
+                    var sshHost by remember { mutableStateOf("") }
+                    var sshPort by remember { mutableStateOf("22") }
+                    var sshUser by remember { mutableStateOf("") }
+                    var sshPassword by remember { mutableStateOf("") }
+                    var sshIdentityPath by remember { mutableStateOf("") }
+                    var sshUsePassword by remember { mutableStateOf(true) }
+                    var sshSaveProfile by remember { mutableStateOf(true) }
+                    var sshProfileName by remember { mutableStateOf("") }
 
-
-                    changeSession(mainActivityActivity, session_id = sessionId)
+                    SettingsCard(title = "SSH", subTitle = "Connect to a remote host")
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = sshHost, onValueChange = { sshHost = it }, label = { Text("Host or IP") })
+                        OutlinedTextField(value = sshPort, onValueChange = { sshPort = it.filter { c -> c.isDigit() }.take(5) }, label = { Text("Port") })
+                        OutlinedTextField(value = sshUser, onValueChange = { sshUser = it }, label = { Text("Username") })
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = sshUsePassword, onClick = { sshUsePassword = true }, label = { Text("Password") })
+                            FilterChip(selected = !sshUsePassword, onClick = { sshUsePassword = false }, label = { Text("Private Key") })
+                        }
+                        if (sshUsePassword) {
+                            OutlinedTextField(value = sshPassword, onValueChange = { sshPassword = it }, label = { Text("Password") })
+                        } else {
+                            OutlinedTextField(value = sshIdentityPath, onValueChange = { sshIdentityPath = it }, label = { Text("Identity File Path") })
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = sshSaveProfile, onCheckedChange = { sshSaveProfile = it })
+                            Text("Save profile")
+                        }
+                        if (sshSaveProfile) {
+                            OutlinedTextField(value = sshProfileName, onValueChange = { sshProfileName = it }, label = { Text("Profile name") })
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(onClick = {
+                                // Save profile
+                                val profileId = (System.currentTimeMillis()).toString()
+                                val profile = JSONObject().apply {
+                                    put("id", profileId)
+                                    put("name", if (sshProfileName.isNotBlank()) sshProfileName else "$sshUser@$sshHost:$sshPort")
+                                    put("host", sshHost)
+                                    put("port", sshPort.toIntOrNull() ?: 22)
+                                    put("user", sshUser)
+                                    put("usePassword", sshUsePassword)
+                                    if (sshUsePassword) put("password", sshPassword) else put("identityPath", sshIdentityPath)
+                                }
+                                val arr = kotlin.runCatching { JSONArray(Settings.ssh_profiles) }.getOrElse { JSONArray() }
+                                arr.put(profile)
+                                Settings.ssh_profiles = arr.toString()
+                                Settings.ssh_last_profile_id = profileId
+                            }) { Text("Save") }
+                            Button(onClick = {
+                                // Launch SSH by running /system/bin/sh -c "ssh ..." via pendingCommand
+                                val port = sshPort.toIntOrNull() ?: 22
+                                val authPart = if (sshUsePassword) "" else "-i \"$sshIdentityPath\""
+                                val cmd = "ssh -p $port $authPart ${'$'}{if (\"$sshUser\".isNotEmpty()) \"$sshUser@\" else \"\"}$sshHost"
+                                pendingCommand = com.rk.libcommons.TerminalCommand(
+                                    alpine = false,
+                                    shell = "/system/bin/sh",
+                                    args = arrayOf("-c", cmd),
+                                    id = "ssh-${'$'}{System.currentTimeMillis()}",
+                                    workingMode = WorkingMode.SSH,
+                                    terminatePreviousSession = false,
+                                    workingDir = "/sdcard",
+                                    env = arrayOf()
+                                )
+                                createSession(workingMode = WorkingMode.SSH)
+                                showAddDialog = false
+                            }) { Text("Connect") }
+                        }
+                    }
                 }
-
-
-                PreferenceGroup {
-                    SettingsCard(
-                        title = { Text("Alpine") },
-                        description = {Text("Alpine Linux")},
-                        onClick = {
-                           createSession(workingMode = WorkingMode.ALPINE)
-                            showAddDialog = false
-                        })
-
-                    SettingsCard(
-                        title = { Text("Android") },
-                        description = {Text("ReTerminal Android shell")},
-                        onClick = {
-                            createSession(workingMode = WorkingMode.ANDROID)
-                            showAddDialog = false
-                        })
-                }
-            }
+            })
         }
 
         ModalNavigationDrawer(
@@ -412,6 +469,7 @@ fun TerminalScreen(
                                 return when(workingMode){
                                     0 -> "ALPINE".lowercase()
                                     1 -> "ANDROID".lowercase()
+                                    2 -> "SSH".lowercase()
                                     null -> "null"
                                     else -> "unknown"
                                 }

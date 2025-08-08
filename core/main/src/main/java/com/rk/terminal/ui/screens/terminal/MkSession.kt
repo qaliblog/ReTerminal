@@ -119,6 +119,7 @@ Updating : apk update && apk upgrade
                 args = if (workingMode == WorkingMode.ALPINE){
                     arrayOf("-c",initFile.absolutePath)
                 }else{
+                    // For ANDROID and SSH modes default to interactive shell; SSH will be handled via pendingCommand
                     arrayOf()
                 }
                 "/system/bin/sh"

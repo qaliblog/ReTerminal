@@ -44,6 +44,16 @@ object Settings {
         get() = Preference.getInt(key = "workingMode", default = WorkingMode.ALPINE)
         set(value) = Preference.setInt(key = "workingMode",value)
 
+    // SSH profiles stored as JSON string (array of profiles)
+    var ssh_profiles
+        get() = Preference.getString(key = "ssh_profiles", default = "[]")
+        set(value) = Preference.setString(key = "ssh_profiles", value)
+
+    // Last used SSH profile id
+    var ssh_last_profile_id
+        get() = Preference.getString(key = "ssh_last_profile_id", default = "")
+        set(value) = Preference.setString(key = "ssh_last_profile_id", value)
+
     var custom_background_name
         get() = Preference.getString(key = "custom_bg_name", default = "No Image Selected")
         set(value) = Preference.setString(key = "custom_bg_name",value)
