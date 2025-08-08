@@ -652,9 +652,11 @@ fun TerminalScreen(
                             val newFileName = remember { mutableStateOf("NewFile.txt") }
                             val showSaveAsDialog = remember { mutableStateOf(false) }
                             val saveAsName = remember { mutableStateOf("Untitled.txt") }
-                            val showUnsavedConfirm = remember { mutableStateOf(false) }
-                            val pendingOpenFile = remember { mutableStateOf<java.io.File?>(null) }
-                            ScrollableTabLayout(modifier = Modifier.fillMaxWidth(), tabs = tabs, pagerState = pagerState) { tabIndex ->
+                            // Unsaved dialog removed for now
+                            ScrollableTabLayout(
+                                modifier = Modifier.fillMaxWidth(),
+                                tabs = tabs,
+                                content = { tabIndex ->
                                 when (tabIndex) {
                                     0 -> {
                                         Column(modifier = Modifier.imePadding().navigationBarsPadding().padding(top = if (showToolbar.value){0.dp}else{
@@ -851,15 +853,9 @@ fun TerminalScreen(
                                                             Button(onClick = { dir.value = f }) { Text("Open") }
                                                         } else {
                                                             Button(onClick = {
-                                                                // Guard unsaved changes
-                                                                if (isEditorDirty.value && selectedFileForEditor.value?.absolutePath != f.absolutePath) {
-                                                                    pendingOpenFile.value = f
-                                                                    showUnsavedConfirm.value = true
-                                                                } else {
-                                                                    selectedFileForEditor.value = f
-                                                                    scope.launch { pagerState.scrollToPage(2) }
-                                                                }
-                                                             }) { Text("Edit") }
+                                                                selectedFileForEditor.value = f
+                                                                scope.launch { pagerState.scrollToPage(2) }
+                                                            }) { Text("Edit") }
                                                              Spacer(Modifier.width(8.dp))
                                                              Button(onClick = {
                                                                  renameTarget.value = f
@@ -938,31 +934,7 @@ fun TerminalScreen(
                                                  OutlinedTextField(value = newFileName.value, onValueChange = { newFileName.value = it }, label = { Text("File name") })
                                              })
                                          }
-                                         // Unsaved confirm
-                                         if (showUnsavedConfirm.value) {
-                                             AlertDialog(onDismissRequest = { showUnsavedConfirm.value = false }, confirmButton = {
-                                                 Button(onClick = {
-                                                     // Save then proceed
-                                                     selectedFileForEditor.value?.let { runCatching { it.writeText(editorContentState.value) } }
-                                                     isEditorDirty.value = false
-                                                     selectedFileForEditor.value = pendingOpenFile.value
-                                                     scope.launch { pagerState.scrollToPage(2) }
-                                                     showUnsavedConfirm.value = false
-                                                 }) { Text("Save") }
-                                             }, dismissButton = {
-                                                 Row {
-                                                     Button(onClick = {
-                                                         // Discard
-                                                         isEditorDirty.value = false
-                                                         selectedFileForEditor.value = pendingOpenFile.value
-                                                         scope.launch { pagerState.scrollToPage(2) }
-                                                         showUnsavedConfirm.value = false
-                                                     }) { Text("Discard") }
-                                                     Spacer(Modifier.width(8.dp))
-                                                     Button(onClick = { showUnsavedConfirm.value = false }) { Text("Cancel") }
-                                                 }
-                                             }, title = { Text("Unsaved changes") }, text = { Text("Save changes before opening a new file?") })
-                                         }
+                                         // Unsaved confirmation removed for now
                                      }
                                      2 -> {
                                          // Text editor using Sora CodeEditor
@@ -996,12 +968,7 @@ fun TerminalScreen(
                                                      val content = if (file != null && file.exists()) file.readText() else ""
                                                      setText(content)
                                                      initialText = content
-                                                     setOnTextChangeListener { _, _ ->
-                                                         val current = editorRef?.text.toString()
-                                                         isDirty.value = (current != initialText)
-                                                         editorContentState.value = current
-                                                         isEditorDirty.value = isDirty.value
-                                                     }
+                                                     // Live listener omitted for compatibility
                                                  }
                                              }, modifier = Modifier.fillMaxSize())
                                          }

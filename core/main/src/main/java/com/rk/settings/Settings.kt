@@ -41,7 +41,7 @@ object Settings {
         get() = Preference.getInt(key = "terminal_font_size", default = 13)
         set(value) = Preference.setInt(key = "terminal_font_size",value)
     var working_Mode
-        get() = Preference.getInt(key = "workingMode", default = WorkingMode.ALPINE)
+        get() = Preference.getInt(key = "workingMode", default = WorkingMode.SSH)
         set(value) = Preference.setInt(key = "workingMode",value)
 
     // SSH profiles stored as JSON string (array of profiles)
