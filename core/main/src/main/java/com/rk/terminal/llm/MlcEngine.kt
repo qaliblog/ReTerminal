@@ -1,27 +1,33 @@
 package com.rk.terminal.llm
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class MlcEngine(private val modelDir: File) : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
-        val prompt = messages.lastOrNull { it.role == "user" }?.content ?: ""
-        val modelName = modelDir.name
         if (!ModelManager.isValidModelDir(modelDir)) {
             emit("[MLC] Invalid model folder: ${modelDir.absolutePath}\n")
             return@flow
         }
-        // Placeholder until MLC runtime binding is added
-        emit("[MLC] Loaded model: $modelName\n")
-        emit("[MLC] Vulkan GPU: pending runtime integration\n\n")
-        emit("You asked: \n")
-        // Simulate token streaming
-        val reply = "(placeholder) MLC engine will respond once runtime is linked."
-        for (chunk in reply.chunked(24)) {
+        val ok = RuntimeLoader.ensureLoaded(modelDir)
+        if (!ok) {
+            emit("[MLC] Missing runtime libs under ${modelDir.absolutePath}/libs/<abi>\n")
+            emit("Place libtvm_runtime.so and libmlc_llm.so there.\n")
+            return@flow
+        }
+        // Placeholder for actual MLC runtime binding
+        emit("[MLC] Vulkan GPU enabled (if available)\n")
+        val sysPrompt = ""
+        val user = messages.lastOrNull { it.role == "user" }?.content ?: ""
+        emit("You asked:\n$user\n\n")
+        val reply = "(runtime linked) pending API wiring; replace this with real token streaming"
+        for (chunk in reply.chunked(32)) {
             emit(chunk)
-            delay(20)
+            delay(10)
         }
     }
 }
