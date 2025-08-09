@@ -12,6 +12,7 @@ import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 
 /**
  * Best-effort fetcher that tries to download missing runtime and compiled model .so
@@ -34,8 +35,25 @@ object MlcAutoFetcher {
     suspend fun ensureArtifactsPresent(modelDir: File): Boolean = withContext(Dispatchers.IO) {
         val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: return@withContext false
         val libsDir = File(modelDir, "libs/$abi")
-        val runtimeOk = ensureRuntimeSo(modelDir, libsDir)
-        val moduleOk = ensureModelModuleSo(modelDir)
+        var runtimeOk = ensureRuntimeSo(modelDir, libsDir)
+        var moduleOk = ensureModelModuleSo(modelDir)
+        if (!runtimeOk || !moduleOk) {
+            // Try to find a packaged tar for android and extract
+            val repo = resolveHfRepo(modelDir)
+            if (repo != null) {
+                val tree = fetchHfTree(repo)
+                val androidTar = tree?.firstOrNull { it.endsWith("android.tar") || it.contains("android") && it.endsWith(".tar") }
+                if (androidTar != null) {
+                    val tmpTar = File(modelDir, "_tmp_android_pkg.tar")
+                    if (downloadFromHf(repo, androidTar, tmpTar)) {
+                        extractTar(tmpTar, modelDir)
+                        tmpTar.delete()
+                    }
+                }
+            }
+            runtimeOk = ensureRuntimeSo(modelDir, libsDir)
+            moduleOk = ensureModelModuleSo(modelDir)
+        }
         return@withContext runtimeOk && moduleOk
     }
 
@@ -147,6 +165,32 @@ object MlcAutoFetcher {
             }
         } catch (_: IOException) {
             return@withContext false
+        }
+    }
+
+    private fun extractTar(tarFile: File, outputDir: File) {
+        TarArchiveInputStream(tarFile.inputStream()).use { tarIn ->
+            var entry = tarIn.nextTarEntry
+            val buffer = ByteArray(8 * 1024)
+            while (entry != null) {
+                val outFile = File(outputDir, entry.name)
+                if (entry.isDirectory) {
+                    outFile.mkdirs()
+                } else {
+                    outFile.parentFile?.mkdirs()
+                    outFile.outputStream().use { out ->
+                        var read: Int
+                        while (tarIn.read(buffer).also { read = it } != -1) {
+                            out.write(buffer, 0, read)
+                        }
+                    }
+                    // Try to make executable for .so files
+                    if (outFile.name.endsWith(".so")) {
+                        outFile.setExecutable(true, false)
+                    }
+                }
+                entry = tarIn.nextTarEntry
+            }
         }
     }
 }
