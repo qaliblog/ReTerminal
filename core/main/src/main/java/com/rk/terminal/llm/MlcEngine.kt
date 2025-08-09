@@ -11,17 +11,33 @@ class MlcEngine(private val modelDir: File) : LlmEngine {
             emit("[MLC] Invalid model folder: ${modelDir.absolutePath}\n")
             return@flow
         }
-        val ok = RuntimeLoader.ensureLoaded(modelDir)
+        var ok = RuntimeLoader.ensureLoaded(modelDir)
         if (!ok) {
             emit("[MLC] Missing runtime libs under ${modelDir.absolutePath}/libs/<abi>\n")
-            emit("Place libtvm_runtime.so or libtvm4j_runtime_packed.so there.\n")
-            return@flow
+            emit("Attempting to fetch from Hugging Face mlc-ai/${modelDir.name} ...\n")
+            val fetched = runCatching { MlcAutoFetcher.ensureArtifactsPresent(modelDir) }.getOrDefault(false)
+            if (fetched) {
+                ok = RuntimeLoader.ensureLoaded(modelDir)
+            }
+            if (!ok) {
+                emit("Place libtvm_runtime.so or libtvm4j_runtime_packed.so there.\n")
+                return@flow
+            }
         }
         val backend = RuntimeLoader.backend ?: "cpu"
-        val module = RuntimeLoader.moduleSo
+        var module = RuntimeLoader.moduleSo
         emit("[MLC] Backend: $backend\n")
         if (module == null) {
-            emit("[MLC] Compiled module (.so) not found in model folder; running placeholder.\n\n")
+            emit("[MLC] Compiled module (.so) not found in model folder; attempting to fetch...\n")
+            val fetched = runCatching { MlcAutoFetcher.ensureArtifactsPresent(modelDir) }.getOrDefault(false)
+            if (fetched) {
+                // Re-detect module
+                RuntimeLoader.ensureLoaded(modelDir)
+                module = RuntimeLoader.moduleSo
+            }
+            if (module == null) {
+                emit("[MLC] Compiled module (.so) still missing after fetch. Running placeholder.\n\n")
+            }
         }
         val user = messages.lastOrNull { it.role == "user" }?.content ?: ""
         emit("You asked:\n$user\n\n")
