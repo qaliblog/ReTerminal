@@ -13,6 +13,8 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import java.util.zip.GZIPInputStream
+import java.util.zip.ZipInputStream
 
 /**
  * Best-effort fetcher that tries to download missing runtime and compiled model .so
@@ -38,16 +40,30 @@ object MlcAutoFetcher {
         var runtimeOk = ensureRuntimeSo(modelDir, libsDir)
         var moduleOk = ensureModelModuleSo(modelDir)
         if (!runtimeOk || !moduleOk) {
-            // Try to find a packaged tar for android and extract
             val repo = resolveHfRepo(modelDir)
             if (repo != null) {
                 val tree = fetchHfTree(repo)
-                val androidTar = tree?.firstOrNull { it.endsWith("android.tar") || it.contains("android") && it.endsWith(".tar") }
-                if (androidTar != null) {
-                    val tmpTar = File(modelDir, "_tmp_android_pkg.tar")
-                    if (downloadFromHf(repo, androidTar, tmpTar)) {
-                        extractTar(tmpTar, modelDir)
-                        tmpTar.delete()
+                if (tree != null) {
+                    // Try preferred android-arm64 bundles
+                    val bundlePath = tree.firstOrNull { path ->
+                        path.contains("android", ignoreCase = true) &&
+                            (path.endsWith(".tar") || path.endsWith(".tar.gz") || path.endsWith(".zip")) &&
+                            (path.contains("arm64") || path.contains("arm64-v8a") || path.contains("android-arm64"))
+                    } ?: tree.firstOrNull { path ->
+                        // Any android bundle
+                        path.contains("android", ignoreCase = true) &&
+                            (path.endsWith(".tar") || path.endsWith(".tar.gz") || path.endsWith(".zip"))
+                    }
+                    if (bundlePath != null) {
+                        val tmp = File(modelDir, "_tmp_android_pkg" + when {
+                            bundlePath.endsWith(".tar.gz") -> ".tar.gz"
+                            bundlePath.endsWith(".tar") -> ".tar"
+                            else -> ".zip"
+                        })
+                        if (downloadFromHf(repo, bundlePath, tmp)) {
+                            extractArchive(tmp, modelDir)
+                            tmp.delete()
+                        }
                     }
                 }
             }
@@ -68,11 +84,14 @@ object MlcAutoFetcher {
         val tree = fetchHfTree(repo) ?: return false
         val runtimePath = tree.firstOrNull { path ->
             runtimeNames.any { path.endsWith(it) }
-        } ?: return false
-        libsDir.mkdirs()
-        val fileName = runtimeNames.first { runtimePath.endsWith(it) }
-        val dst = File(libsDir, fileName)
-        return downloadFromHf(repo, runtimePath, dst)
+        }
+        if (runtimePath != null) {
+            libsDir.mkdirs()
+            val fileName = runtimeNames.first { runtimePath.endsWith(it) }
+            val dst = File(libsDir, fileName)
+            return downloadFromHf(repo, runtimePath, dst)
+        }
+        return false
     }
 
     private suspend fun ensureModelModuleSo(modelDir: File): Boolean {
@@ -102,8 +121,8 @@ object MlcAutoFetcher {
         val base = modelDir.name.removeSuffix("-MLC")
         val searchQuery = URLEncoder.encode(base, StandardCharsets.UTF_8)
         val results = searchHfRepos("mlc-ai", searchQuery)
-        // Pick first hit
-        return results.firstOrNull()?.let { it }
+        // Pick the first mlc-ai/<id> match
+        return results.firstOrNull()
     }
 
     private suspend fun fetchHfTree(repo: String): List<String>? = withContext(Dispatchers.IO) {
@@ -139,7 +158,11 @@ object MlcAutoFetcher {
                 for (i in 0 until arr.length()) {
                     val obj: JSONObject = arr.getJSONObject(i)
                     val id = obj.optString("id")
-                    if (id.isNotBlank()) ids.add(id)
+                    if (id.startsWith("mlc-ai/")) {
+                        ids.add(id)
+                    } else if (id.isNotBlank()) {
+                        ids.add("mlc-ai/$id")
+                    }
                 }
                 return@use ids
             }
@@ -168,9 +191,52 @@ object MlcAutoFetcher {
         }
     }
 
+    private fun extractArchive(archive: File, outputDir: File) {
+        when {
+            archive.name.endsWith(".tar.gz") -> extractTarGz(archive, outputDir)
+            archive.name.endsWith(".tar") -> extractTar(archive, outputDir)
+            archive.name.endsWith(".zip") -> extractZip(archive, outputDir)
+        }
+    }
+
+    private fun extractTarGz(tarGzFile: File, outputDir: File) {
+        GZIPInputStream(tarGzFile.inputStream()).use { gzipIn ->
+            TarArchiveInputStream(gzipIn).use { tarIn ->
+                extractTarStream(tarIn, outputDir)
+            }
+        }
+    }
+
     private fun extractTar(tarFile: File, outputDir: File) {
         TarArchiveInputStream(tarFile.inputStream()).use { tarIn ->
-            var entry = tarIn.nextTarEntry
+            extractTarStream(tarIn, outputDir)
+        }
+    }
+
+    private fun extractTarStream(tarIn: TarArchiveInputStream, outputDir: File) {
+        var entry = tarIn.nextTarEntry
+        val buffer = ByteArray(8 * 1024)
+        while (entry != null) {
+            val outFile = File(outputDir, entry.name)
+            if (entry.isDirectory) {
+                outFile.mkdirs()
+            } else {
+                outFile.parentFile?.mkdirs()
+                outFile.outputStream().use { out ->
+                    var read: Int
+                    while (tarIn.read(buffer).also { read = it } != -1) {
+                        out.write(buffer, 0, read)
+                    }
+                }
+                if (outFile.name.endsWith(".so")) outFile.setExecutable(true, false)
+            }
+            entry = tarIn.nextTarEntry
+        }
+    }
+
+    private fun extractZip(zipFile: File, outputDir: File) {
+        ZipInputStream(zipFile.inputStream()).use { zipIn ->
+            var entry = zipIn.nextEntry
             val buffer = ByteArray(8 * 1024)
             while (entry != null) {
                 val outFile = File(outputDir, entry.name)
@@ -180,16 +246,14 @@ object MlcAutoFetcher {
                     outFile.parentFile?.mkdirs()
                     outFile.outputStream().use { out ->
                         var read: Int
-                        while (tarIn.read(buffer).also { read = it } != -1) {
+                        while (zipIn.read(buffer).also { read = it } != -1) {
                             out.write(buffer, 0, read)
                         }
                     }
-                    // Try to make executable for .so files
-                    if (outFile.name.endsWith(".so")) {
-                        outFile.setExecutable(true, false)
-                    }
+                    if (outFile.name.endsWith(".so")) outFile.setExecutable(true, false)
                 }
-                entry = tarIn.nextTarEntry
+                zipIn.closeEntry()
+                entry = zipIn.nextEntry
             }
         }
     }
