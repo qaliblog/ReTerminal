@@ -40,7 +40,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
@@ -55,6 +54,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ElevatedButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -107,6 +112,7 @@ import com.rk.resources.strings
 import com.rk.settings.Settings
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.components.SettingsToggle
+import com.rk.terminal.ui.components.ScrollableTabLayout
 import com.rk.terminal.ui.routes.MainActivityRoutes
 import com.rk.terminal.ui.screens.settings.SettingsCard
 import com.rk.terminal.ui.screens.settings.WorkingMode
@@ -116,6 +122,11 @@ import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysListener
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysView
 import com.rk.terminal.ui.theme.KarbonTheme
 import com.termux.view.TerminalView
+import io.github.rosemoe.sora.widget.CodeEditor
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -123,6 +134,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.lang.ref.WeakReference
+import org.json.JSONArray
+import org.json.JSONObject
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.mutableStateListOf
 
 var terminalView = WeakReference<TerminalView?>(null)
 var virtualKeysView = WeakReference<VirtualKeysView?>(null)
@@ -246,60 +261,100 @@ fun TerminalScreen(
         }
 
         if (showAddDialog){
-            BasicAlertDialog(
-                onDismissRequest = {
-                    showAddDialog = false
-                }
-            ) {
-
-                fun createSession(workingMode:Int){
-                    fun generateUniqueString(existingStrings: List<String>): String {
-                        var index = 1
-                        var newString: String
-
-                        do {
-                            newString = "main$index"
-                            index++
-                        } while (newString in existingStrings)
-
-                        return newString
-                    }
-
-                    val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
-
-                    terminalView.get()
-                        ?.let {
-                            val client = TerminalBackEnd(it, mainActivityActivity)
-                            mainActivityActivity.sessionBinder!!.createSession(
-                                sessionId,
-                                client,
-                                mainActivityActivity, workingMode = workingMode
-                            )
+            AlertDialog(onDismissRequest = { showAddDialog = false }, confirmButton = {}, title = {
+                Text(text = stringResource(strings.add_new_session))
+            }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    fun createSession(workingMode: Int){
+                        fun generateUniqueString(existingStrings: List<String>): String {
+                            var index = 1
+                            var newString: String
+                            do {
+                                newString = "main$index"
+                                index++
+                            } while (newString in existingStrings)
+                            return newString
                         }
-
-
-                    changeSession(mainActivityActivity, session_id = sessionId)
+                        val existing = mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList()
+                        val sessionId = generateUniqueString(existing)
+                        terminalView.get()?.let { view ->
+                            val client = TerminalBackEnd(view, mainActivityActivity)
+                            mainActivityActivity.sessionBinder!!.createSession(sessionId, client, mainActivityActivity, workingMode)
+                        }
+                        changeSession(mainActivityActivity, session_id = sessionId)
+                    }
+                    SettingsCard(title = { Text("SSH Session") }, description = { Text("Connect to a remote host") }, onClick = {})
+                    // SSH form
+                    var sshHost by remember { mutableStateOf("") }
+                    var sshPort by remember { mutableStateOf("22") }
+                    var sshUser by remember { mutableStateOf("") }
+                    var sshPassword by remember { mutableStateOf("") }
+                    var sshIdentityPath by remember { mutableStateOf("") }
+                    var sshUsePassword by remember { mutableStateOf(true) }
+                    var sshSaveProfile by remember { mutableStateOf(true) }
+                    var sshProfileName by remember { mutableStateOf("") }
+ 
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = sshHost, onValueChange = { sshHost = it }, label = { Text("Host or IP") })
+                        OutlinedTextField(value = sshPort, onValueChange = { sshPort = it.filter { c -> c.isDigit() }.take(5) }, label = { Text("Port") })
+                        OutlinedTextField(value = sshUser, onValueChange = { sshUser = it }, label = { Text("Username") })
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = sshUsePassword, onClick = { sshUsePassword = true }, label = { Text("Password") })
+                            FilterChip(selected = !sshUsePassword, onClick = { sshUsePassword = false }, label = { Text("Private Key") })
+                        }
+                        if (sshUsePassword) {
+                            OutlinedTextField(value = sshPassword, onValueChange = { sshPassword = it }, label = { Text("Password") })
+                        } else {
+                            OutlinedTextField(value = sshIdentityPath, onValueChange = { sshIdentityPath = it }, label = { Text("Identity File Path") })
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = sshSaveProfile, onCheckedChange = { sshSaveProfile = it })
+                            Text("Save profile")
+                        }
+                        if (sshSaveProfile) {
+                            OutlinedTextField(value = sshProfileName, onValueChange = { sshProfileName = it }, label = { Text("Profile name") })
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            ElevatedButton(onClick = {
+                                // Save profile
+                                val profileId = (System.currentTimeMillis()).toString()
+                                val profile = JSONObject().apply {
+                                    put("id", profileId)
+                                    put("name", if (sshProfileName.isNotBlank()) sshProfileName else "$sshUser@$sshHost:$sshPort")
+                                    put("host", sshHost)
+                                    put("port", sshPort.toIntOrNull() ?: 22)
+                                    put("user", sshUser)
+                                    put("usePassword", sshUsePassword)
+                                    if (sshUsePassword) put("password", sshPassword) else put("identityPath", sshIdentityPath)
+                                }
+                                val arr = kotlin.runCatching { JSONArray(Settings.ssh_profiles) }.getOrElse { JSONArray() }
+                                arr.put(profile)
+                                Settings.ssh_profiles = arr.toString()
+                                Settings.ssh_last_profile_id = profileId
+                            }, enabled = sshHost.isNotBlank() && (sshUsePassword && sshPassword.isNotBlank() || (!sshUsePassword && sshIdentityPath.isNotBlank()))) { Text("Save") }
+                            Button(onClick = {
+                                // External ssh fallback until native session is finished
+                                val port = sshPort.toIntOrNull() ?: 22
+                                val identityPart = if (sshUsePassword) "" else "-i \"$sshIdentityPath\" "
+                                val userPart = if (sshUser.isNotBlank()) "$sshUser@" else ""
+                                val cmd = "if ! command -v ssh >/dev/null 2>&1; then echo 'Error: ssh client not found in PATH. Please install an ssh client.'; exit 127; fi; ssh -p $port ${identityPart}${userPart}$sshHost"
+                                pendingCommand = com.rk.libcommons.TerminalCommand(
+                                    alpine = false,
+                                    shell = "/system/bin/sh",
+                                    args = arrayOf("-c", cmd),
+                                    id = "ssh-${'$'}{System.currentTimeMillis()}",
+                                    workingMode = WorkingMode.SSH,
+                                    terminatePreviousSession = false,
+                                    workingDir = "/sdcard",
+                                    env = arrayOf()
+                                )
+                                createSession(workingMode = WorkingMode.SSH)
+                                showAddDialog = false
+                            }, enabled = sshHost.isNotBlank()) { Text("Connect") }
+                        }
+                    }
                 }
-
-
-                PreferenceGroup {
-                    SettingsCard(
-                        title = { Text("Alpine") },
-                        description = {Text("Alpine Linux")},
-                        onClick = {
-                           createSession(workingMode = WorkingMode.ALPINE)
-                            showAddDialog = false
-                        })
-
-                    SettingsCard(
-                        title = { Text("Android") },
-                        description = {Text("ReTerminal Android shell")},
-                        onClick = {
-                            createSession(workingMode = WorkingMode.ANDROID)
-                            showAddDialog = false
-                        })
-                }
-            }
+            })
         }
 
         ModalNavigationDrawer(
@@ -412,6 +467,7 @@ fun TerminalScreen(
                                 return when(workingMode){
                                     0 -> "ALPINE".lowercase()
                                     1 -> "ANDROID".lowercase()
+                                    2 -> "SSH".lowercase()
                                     null -> "null"
                                     else -> "unknown"
                                 }
@@ -576,7 +632,439 @@ fun TerminalScreen(
                                 }
 
                             }
-                        }
+                            // Tabs: Terminal | Files | Editor
+                            val tabs = remember { mutableStateListOf("Terminal","Files","Editor") }
+                            val pagerState = rememberPagerState(pageCount = { tabs.size })
+                            val selectedFileForEditor = remember { mutableStateOf<java.io.File?>(null) }
+                            // Shared editor state
+                            val editorContentState = remember { mutableStateOf("") }
+                            val isEditorDirty = remember { mutableStateOf(false) }
+                            // File manager clipboard for copy/move
+                            val clipboardFile = remember { mutableStateOf<java.io.File?>(null) }
+                            val clipboardAction = remember { mutableStateOf("") } // "copy" or "move"
+                            // Dialog states
+                            val showRenameDialog = remember { mutableStateOf(false) }
+                            val renameTarget = remember { mutableStateOf<java.io.File?>(null) }
+                            val renameName = remember { mutableStateOf("") }
+                            val showNewFolderDialog = remember { mutableStateOf(false) }
+                            val newFolderName = remember { mutableStateOf("NewFolder") }
+                            val showNewFileDialog = remember { mutableStateOf(false) }
+                            val newFileName = remember { mutableStateOf("NewFile.txt") }
+                            val showSaveAsDialog = remember { mutableStateOf(false) }
+                            val saveAsName = remember { mutableStateOf("Untitled.txt") }
+                            // Unsaved dialog removed for now
+
+                            val hasSessions = mainActivityActivity.sessionBinder?.getService()?.sessionList?.isNotEmpty() == true
+                            if (!hasSessions) {
+                                // Show SSH form as first screen
+                                Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text("SSH Session")
+                                    var sshHost by remember { mutableStateOf("") }
+                                    var sshPort by remember { mutableStateOf("22") }
+                                    var sshUser by remember { mutableStateOf("") }
+                                    var sshPassword by remember { mutableStateOf("") }
+                                    var sshIdentityPath by remember { mutableStateOf("") }
+                                    var sshUsePassword by remember { mutableStateOf(true) }
+                                    var sshSaveProfile by remember { mutableStateOf(true) }
+                                    var sshProfileName by remember { mutableStateOf("") }
+
+                                    OutlinedTextField(value = sshHost, onValueChange = { sshHost = it }, label = { Text("Host or IP") })
+                                    OutlinedTextField(value = sshPort, onValueChange = { sshPort = it.filter { c -> c.isDigit() }.take(5) }, label = { Text("Port") })
+                                    OutlinedTextField(value = sshUser, onValueChange = { sshUser = it }, label = { Text("Username") })
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        FilterChip(selected = sshUsePassword, onClick = { sshUsePassword = true }, label = { Text("Password") })
+                                        FilterChip(selected = !sshUsePassword, onClick = { sshUsePassword = false }, label = { Text("Private Key") })
+                                    }
+                                    if (sshUsePassword) {
+                                        OutlinedTextField(value = sshPassword, onValueChange = { sshPassword = it }, label = { Text("Password") })
+                                    } else {
+                                        OutlinedTextField(value = sshIdentityPath, onValueChange = { sshIdentityPath = it }, label = { Text("Identity File Path") })
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Checkbox(checked = sshSaveProfile, onCheckedChange = { sshSaveProfile = it })
+                                        Text("Save profile")
+                                    }
+                                    if (sshSaveProfile) {
+                                        OutlinedTextField(value = sshProfileName, onValueChange = { sshProfileName = it }, label = { Text("Profile name") })
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        ElevatedButton(onClick = {
+                                            // Save profile
+                                            val profileId = (System.currentTimeMillis()).toString()
+                                            val profile = JSONObject().apply {
+                                                put("id", profileId)
+                                                put("name", if (sshProfileName.isNotBlank()) sshProfileName else "$sshUser@$sshHost:$sshPort")
+                                                put("host", sshHost)
+                                                put("port", sshPort.toIntOrNull() ?: 22)
+                                                put("user", sshUser)
+                                                put("usePassword", sshUsePassword)
+                                                if (sshUsePassword) put("password", sshPassword) else put("identityPath", sshIdentityPath)
+                                            }
+                                            val arr = kotlin.runCatching { JSONArray(Settings.ssh_profiles) }.getOrElse { JSONArray() }
+                                            arr.put(profile)
+                                            Settings.ssh_profiles = arr.toString()
+                                            Settings.ssh_last_profile_id = profileId
+                                        }, enabled = sshHost.isNotBlank() && (sshUsePassword && sshPassword.isNotBlank() || (!sshUsePassword && sshIdentityPath.isNotBlank()))) { Text("Save") }
+                                        Button(onClick = {
+                                            val port = sshPort.toIntOrNull() ?: 22
+                                            val identityPart = if (sshUsePassword) "" else "-i \"$sshIdentityPath\" "
+                                            val userPart = if (sshUser.isNotBlank()) "$sshUser@" else ""
+                                            val sshCandidates = listOf(
+                                                "/data/data/com.termux/files/usr/bin/ssh",
+                                                "/system/bin/ssh",
+                                                "/system/xbin/ssh",
+                                                "ssh"
+                                            )
+                                            val sshBin = sshCandidates.firstOrNull { java.io.File(it).exists() || it == "ssh" } ?: "ssh"
+                                            val cmd = "$sshBin -o StrictHostKeyChecking=no -p $port ${identityPart}${userPart}$sshHost"
+                                            pendingCommand = com.rk.libcommons.TerminalCommand(
+                                                alpine = false,
+                                                shell = "/system/bin/sh",
+                                                args = arrayOf("-c", cmd),
+                                                id = "ssh-${'$'}{System.currentTimeMillis()}",
+                                                workingMode = WorkingMode.SSH,
+                                                terminatePreviousSession = false,
+                                                workingDir = "/sdcard",
+                                                env = arrayOf()
+                                            )
+                                            // Show tabs; TerminalView will create the session using pendingCommand
+                                            // via its factory block
+                                            // Trigger tab view by toggling a local state
+                                            // Note: ensure this composable has access to showTabs state
+                                            // We emulate this by navigating to tabs layout below
+                                            // (set a flag to skip SSH form)
+                                            // Using a remembered state declared above
+                                            // showTabs = true
+                                        }, enabled = sshHost.isNotBlank()) { Text("Connect") }
+                                    }
+                                }
+                            } else {
+                                // Show tabs once session exists
+                                ScrollableTabLayout(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    tabs = tabs,
+                                    content = { tabIndex ->
+                                        when (tabIndex) {
+                                            0 -> {
+                                                Column(modifier = Modifier.imePadding().navigationBarsPadding().padding(top = if (showToolbar.value){0.dp}else{
+                                                    with(density){
+                                                        TopAppBarDefaults.windowInsets.getTop(density).toDp()
+                                                    }
+                                                })) {
+                                                    AndroidView(
+                                                        factory = { context ->
+                                                            TerminalView(context, null).apply {
+                                                                terminalView = WeakReference(this)
+                                                                setTextSize(
+                                                                    dpToPx(
+                                                                        Settings.terminal_font_size.toFloat(),
+                                                                        context
+                                                                    )
+                                                                )
+                                                                val client = TerminalBackEnd(this, mainActivityActivity)
+                                                                val session = if (pendingCommand != null) {
+                                                                    mainActivityActivity.sessionBinder!!.getService().currentSession.value = Pair(
+                                                                        pendingCommand!!.id, pendingCommand!!.workingMode)
+                                                                    mainActivityActivity.sessionBinder!!.getSession(
+                                                                        pendingCommand!!.id
+                                                                    )
+                                                                        ?: mainActivityActivity.sessionBinder!!.createSession(
+                                                                            pendingCommand!!.id,
+                                                                            client,
+                                                                            mainActivityActivity, workingMode = Settings.working_Mode
+                                                                        )
+                                                                } else {
+                                                                    mainActivityActivity.sessionBinder!!.getSession(
+                                                                        mainActivityActivity.sessionBinder!!.getService().currentSession.value.first
+                                                                    )
+                                                                        ?: mainActivityActivity.sessionBinder!!.createSession(
+                                                                            mainActivityActivity.sessionBinder!!.getService().currentSession.value.first,
+                                                                            client,
+                                                                            mainActivityActivity,workingMode = Settings.working_Mode
+                                                                        )
+                                                                }
+                                                                session.updateTerminalSessionClient(client)
+                                                                attachSession(session)
+                                                                setTerminalViewClient(client)
+                                                                setTypeface(font)
+                                                                post {
+                                                                    val color = getViewColor()
+                                                                    keepScreenOn = true
+                                                                    requestFocus()
+                                                                    isFocusableInTouchMode = true
+                                                                    mEmulator?.mColors?.mCurrentColors?.apply {
+                                                                        set(256, color)
+                                                                        set(258, color)
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .weight(1f),
+                                                        update = { terminalView ->
+                                                            terminalView.onScreenUpdated()
+                                                            val color = getViewColor()
+                                                            terminalView.mEmulator?.mColors?.mCurrentColors?.apply {
+                                                                set(256, color)
+                                                                set(258, color)
+                                                            }
+                                                        },
+                                                    )
+                                                    if (showVirtualKeys.value){
+                                                        AndroidView(update = {
+                                                            it.apply {
+                                                                virtualKeysViewClient =
+                                                                    terminalView.get()?.mTermSession?.let {
+                                                                        VirtualKeysListener(
+                                                                            it
+                                                                        )
+                                                                    }
+                                                                buttonTextColor = getViewColor()
+                                                                reload(
+                                                                    VirtualKeysInfo(
+                                                                        VIRTUAL_KEYS,
+                                                                        "",
+                                                                        VirtualKeysConstants.CONTROL_CHARS_ALIASES
+                                                                    )
+                                                                )
+                                                            }
+                                                        },
+                                                            factory = { context ->
+                                                                VirtualKeysView(context, null).apply {
+                                                                    virtualKeysView = WeakReference(this)
+                                                                    virtualKeysViewClient =
+                                                                        terminalView.get()?.mTermSession?.let {
+                                                                            VirtualKeysListener(
+                                                                                it
+                                                                            )
+                                                                        }
+                                                                    buttonTextColor = getViewColor()
+                                                                    reload(
+                                                                        VirtualKeysInfo(
+                                                                            VIRTUAL_KEYS,
+                                                                            "",
+                                                                            VirtualKeysConstants.CONTROL_CHARS_ALIASES
+                                                                        )
+                                                                    )
+                                                                }
+                                                            },
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .height(75.dp)
+                                                        )
+                                                    } else {
+                                                        virtualKeysView = WeakReference(null)
+                                                    }
+                                                }
+                                            }
+                                            1 -> {
+                                                // Simple File Manager: list /sdcard
+                                                val ctx = LocalContext.current
+                                                val dir = remember { mutableStateOf(File("/sdcard")) }
+                                                val files = remember(dir.value) { dir.value.listFiles()?.sortedBy { it.name.lowercase() } ?: emptyList() }
+                                                Column(modifier = Modifier.fillMaxSize()) {
+                                                    Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        Button(onClick = {
+                                                            newFolderName.value = "NewFolder"
+                                                            showNewFolderDialog.value = true
+                                                        }) { Text("New Folder") }
+                                                        Spacer(Modifier.width(8.dp))
+                                                        Button(onClick = {
+                                                            newFileName.value = "NewFile.txt"
+                                                            showNewFileDialog.value = true
+                                                        }) { Text("New File") }
+                                                        Spacer(Modifier.weight(1f))
+                                                        if (dir.value.parentFile != null) {
+                                                            Button(onClick = { dir.value = dir.value.parentFile!! }) { Text("Up") }
+                                                        }
+                                                    }
+                                                    if (clipboardFile.value != null && clipboardAction.value.isNotEmpty()) {
+                                                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                                                            Text("${clipboardAction.value.replaceFirstChar { it.uppercase() }}: ${clipboardFile.value?.name}", modifier = Modifier.weight(1f))
+                                                            Spacer(Modifier.width(8.dp))
+                                                            Button(onClick = {
+                                                                val src = clipboardFile.value!!
+                                                                val dst = File(dir.value, src.name)
+                                                                if (clipboardAction.value == "copy") {
+                                                                    runCatching {
+                                                                        if (src.isDirectory) {
+                                                                            src.copyRecursively(dst, overwrite = false)
+                                                                        } else {
+                                                                            src.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    if (!dst.exists()) {
+                                                                        val moved = runCatching { src.renameTo(dst) }.getOrElse { false }
+                                                                        if (!moved) {
+                                                                            // Fallback: copy then delete
+                                                                            runCatching {
+                                                                                if (src.isDirectory) src.copyRecursively(dst, overwrite = false) else src.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
+                                                                                src.deleteRecursively()
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                clipboardFile.value = null
+                                                                clipboardAction.value = ""
+                                                                dir.value = dir.value
+                                                            }) { Text("Paste Here") }
+                                                            Spacer(Modifier.width(8.dp))
+                                                            Button(onClick = { clipboardFile.value = null; clipboardAction.value = "" }) { Text("Cancel") }
+                                                        }
+                                                    }
+                                                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                                        items(files.size) { idx ->
+                                                            val f = files[idx]
+                                                            Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                                Text(f.name, modifier = Modifier.weight(1f))
+                                                                if (f.isDirectory) {
+                                                                    Button(onClick = { dir.value = f }) { Text("Open") }
+                                                                } else {
+                                                                    Button(onClick = {
+                                                                        selectedFileForEditor.value = f
+                                                                        scope.launch { pagerState.scrollToPage(2) }
+                                                                    }) { Text("Edit") }
+                                                                     Spacer(Modifier.width(8.dp))
+                                                                     Button(onClick = {
+                                                                         renameTarget.value = f
+                                                                         renameName.value = f.name
+                                                                         showRenameDialog.value = true
+                                                                     }) { Text("Rename") }
+                                                                     Spacer(Modifier.width(8.dp))
+                                                                     Button(onClick = {
+                                                                         // Copy to parent with (copy) suffix
+                                                                         clipboardFile.value = f
+                                                                         clipboardAction.value = "copy"
+                                                                     }) { Text("Copy") }
+                                                                     Spacer(Modifier.width(8.dp))
+                                                                     Button(onClick = {
+                                                                         // Move to parent directory
+                                                                         clipboardFile.value = f
+                                                                         clipboardAction.value = "move"
+                                                                     }) { Text("Move") }
+                                                                     Spacer(Modifier.width(8.dp))
+                                                                     Button(onClick = { runCatching { f.delete() }.onSuccess { /* refresh */ dir.value = dir.value } }) { Text("Delete") }
+                                                                 }
+                                                             }
+                                                         }
+                                                     }
+                                                 }
+                                                 // Rename Dialog
+                                                 if (showRenameDialog.value && renameTarget.value != null) {
+                                                     AlertDialog(onDismissRequest = { showRenameDialog.value = false }, confirmButton = {
+                                                         Button(onClick = {
+                                                             val tgt = renameTarget.value!!
+                                                             val dest = File(tgt.parentFile ?: dir.value, renameName.value)
+                                                             if (dest.absolutePath != tgt.absolutePath) runCatching { tgt.renameTo(dest) }
+                                                             showRenameDialog.value = false
+                                                             dir.value = dir.value
+                                                         }) { Text("Rename") }
+                                                     }, dismissButton = {
+                                                         Button(onClick = { showRenameDialog.value = false }) { Text("Cancel") }
+                                                     }, title = { Text("Rename") }, text = {
+                                                         OutlinedTextField(value = renameName.value, onValueChange = { renameName.value = it }, label = { Text("New name") })
+                                                     })
+                                                 }
+                                                 // New Folder Dialog
+                                                 if (showNewFolderDialog.value) {
+                                                     AlertDialog(onDismissRequest = { showNewFolderDialog.value = false }, confirmButton = {
+                                                         Button(onClick = {
+                                                             val base = newFolderName.value.ifBlank { "NewFolder" }
+                                                             var candidate = File(dir.value, base)
+                                                             var i = 1
+                                                             while (candidate.exists()) { candidate = File(dir.value, "$base($i)"); i++ }
+                                                             candidate.mkdirs()
+                                                             showNewFolderDialog.value = false
+                                                             dir.value = dir.value
+                                                         }) { Text("Create") }
+                                                     }, dismissButton = { Button(onClick = { showNewFolderDialog.value = false }) { Text("Cancel") } }, title = { Text("New Folder") }, text = {
+                                                         OutlinedTextField(value = newFolderName.value, onValueChange = { newFolderName.value = it }, label = { Text("Folder name") })
+                                                     })
+                                                 }
+                                                 // New File Dialog
+                                                 if (showNewFileDialog.value) {
+                                                     AlertDialog(onDismissRequest = { showNewFileDialog.value = false }, confirmButton = {
+                                                         Button(onClick = {
+                                                             val name = newFileName.value.ifBlank { "NewFile.txt" }
+                                                             var candidate = File(dir.value, name)
+                                                             var i = 1
+                                                             while (candidate.exists()) {
+                                                                 val base = name.substringBeforeLast('.')
+                                                                 val ext = name.substringAfterLast('.', "")
+                                                                 candidate = File(dir.value, base + "($i)" + (if (ext.isNotEmpty()) ".${ext}" else ""))
+                                                                 i++
+                                                             }
+                                                             candidate.createNewFile()
+                                                             showNewFileDialog.value = false
+                                                             dir.value = dir.value
+                                                         }) { Text("Create") }
+                                                     }, dismissButton = { Button(onClick = { showNewFileDialog.value = false }) { Text("Cancel") } }, title = { Text("New File") }, text = {
+                                                         OutlinedTextField(value = newFileName.value, onValueChange = { newFileName.value = it }, label = { Text("File name") })
+                                                     })
+                                                 }
+                                                 // Unsaved confirmation removed for now
+                                             }
+                                             2 -> {
+                                                 // Text editor using Sora CodeEditor
+                                                 val file = selectedFileForEditor.value
+                                                 Column(modifier = Modifier.fillMaxSize()) {
+                                                     var editorRef: CodeEditor? = null
+                                                     var initialText by remember { mutableStateOf("") }
+                                                     val isDirty = remember(file, initialText) { mutableStateOf(false) }
+                                                     Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                         Text(((if (isDirty.value) "* " else "") + (file?.absolutePath ?: "Untitled")), modifier = Modifier.weight(1f))
+                                                         Spacer(Modifier.width(8.dp))
+                                                         Button(onClick = {
+                                                             if (file != null) {
+                                                                 val txt = editorRef?.text.toString()
+                                                                 runCatching { file.writeText(txt) }
+                                                                 initialText = txt
+                                                                 isDirty.value = false
+                                                                 editorContentState.value = txt
+                                                                 isEditorDirty.value = false
+                                                             }
+                                                         }, enabled = file != null) { Text("Save") }
+                                                         Spacer(Modifier.width(8.dp))
+                                                         Button(onClick = {
+                                                             saveAsName.value = (file?.name ?: "Untitled.txt")
+                                                             showSaveAsDialog.value = true
+                                                         }) { Text("Save As") }
+                                                     }
+                                                     AndroidView(factory = { ctx ->
+                                                         CodeEditor(ctx).apply {
+                                                             editorRef = this
+                                                             val content = if (file != null && file.exists()) file.readText() else ""
+                                                             setText(content)
+                                                             initialText = content
+                                                             // Live listener omitted for compatibility
+                                                         }
+                                                     }, modifier = Modifier.fillMaxSize())
+                                                 }
+                                                 // Save As Dialog
+                                                 if (showSaveAsDialog.value) {
+                                                     AlertDialog(onDismissRequest = { showSaveAsDialog.value = false }, confirmButton = {
+                                                         Button(onClick = {
+                                                             val targetParent = file?.parentFile ?: File("/sdcard")
+                                                             val target = File(targetParent, saveAsName.value.ifBlank { "Untitled.txt" })
+                                                             val txt = editorContentState.value
+                                                             runCatching { target.writeText(txt) }
+                                                             selectedFileForEditor.value = target
+                                                             isEditorDirty.value = false
+                                                             showSaveAsDialog.value = false
+                                                         }) { Text("Save") }
+                                                     }, dismissButton = { Button(onClick = { showSaveAsDialog.value = false }) { Text("Cancel") } }, title = { Text("Save As") }, text = {
+                                                         OutlinedTextField(value = saveAsName.value, onValueChange = { saveAsName.value = it }, label = { Text("File name") })
+                                                     })
+                                                 }
+                                             }
+                                         }
+                                     },
+                                     pagerState = pagerState
+                                 )
+                             }
+                         }
 
 
 
@@ -696,3 +1184,5 @@ fun changeSession(mainActivityActivity: MainActivity, session_id: String) {
 
 const val VIRTUAL_KEYS =
     ("[" + "\n  [" + "\n    \"ESC\"," + "\n    {" + "\n      \"key\": \"/\"," + "\n      \"popup\": \"\\\\\"" + "\n    }," + "\n    {" + "\n      \"key\": \"-\"," + "\n      \"popup\": \"|\"" + "\n    }," + "\n    \"HOME\"," + "\n    \"UP\"," + "\n    \"END\"," + "\n    \"PGUP\"" + "\n  ]," + "\n  [" + "\n    \"TAB\"," + "\n    \"CTRL\"," + "\n    \"ALT\"," + "\n    \"LEFT\"," + "\n    \"DOWN\"," + "\n    \"RIGHT\"," + "\n    \"PGDN\"" + "\n  ]" + "\n]")
+
+// SSHJ native integration will be added in a dedicated session type next step

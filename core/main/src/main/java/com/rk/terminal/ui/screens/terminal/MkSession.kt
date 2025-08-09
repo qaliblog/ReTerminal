@@ -116,11 +116,7 @@ Updating : apk update && apk upgrade
             val args: Array<String>
 
             val shell = if (pendingCommand == null) {
-                args = if (workingMode == WorkingMode.ALPINE){
-                    arrayOf("-c",initFile.absolutePath)
-                }else{
-                    arrayOf()
-                }
+                args = arrayOf()
                 "/system/bin/sh"
             } else{
                 args = pendingCommand!!.args

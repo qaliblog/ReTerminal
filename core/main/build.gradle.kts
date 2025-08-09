@@ -37,7 +37,7 @@ fun getFullGitCommitHash(): String {
 android {
     namespace = "com.rk.terminal"
     android.buildFeatures.buildConfig = true
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         minSdk = 24
@@ -111,6 +111,10 @@ dependencies {
     api(libs.anrwatchdog)
     api(libs.androidx.palette)
     api(libs.accompanist.systemuicontroller)
+    api(libs.sshj)
+    // Sora Editor
+    api(platform("io.github.rosemoe:editor-bom:0.23.7"))
+    api("io.github.rosemoe:editor")
 
     api(project(":core:resources"))
     api(project(":core:components"))
