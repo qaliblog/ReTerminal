@@ -70,11 +70,6 @@ if [ $? -eq 0 ] ; then
     ulimit -n $MAX_FD 2>/dev/null || warn "Could not set maximum file descriptor limit: $MAX_FD"
 fi
 
-# For Darwin, use macOS specific options for use with the Apple JDK.
-if $darwin; then
-    GRADLE_OPTS="$GRADLE_OPTS -Xdock:name=$APP_BASE_NAME -Xdock:icon=$APP_HOME/media/gradle.icns"
-fi
-
 # Escape application args
 save () {
     for i do printf %s\\n "$i" | sed "s/'/'\\\\''/g;1s/^/'/;
