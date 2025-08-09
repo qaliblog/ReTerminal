@@ -18,23 +18,35 @@ object RuntimeLoader {
             return false
         }
         val destDir = File(ctx.filesDir, "rt/$abi").apply { mkdirs() }
-        val libs = listOf("libtvm_runtime.so", "libmlc_llm.so")
-        libs.forEach { name ->
+
+        // Accept common filenames
+        val tvmCandidates = listOf("libtvm_runtime.so", "libtvm4j_runtime_packed.so")
+        val mlcCandidates = listOf("libmlc_llm.so", "libmlc_llm_vulkan.so")
+
+        var tvmLoaded = false
+        for (name in tvmCandidates) {
             val src = File(srcDir, name)
             if (src.exists()) {
                 val dst = File(destDir, name)
-                if (!dst.exists() || dst.length() != src.length()) {
-                    src.copyTo(dst, overwrite = true)
-                }
+                if (!dst.exists() || dst.length() != src.length()) src.copyTo(dst, overwrite = true)
                 try {
                     System.load(dst.absolutePath)
-                } catch (e: UnsatisfiedLinkError) {
-                    e.printStackTrace()
-                    return false
-                }
+                    tvmLoaded = true
+                    break
+                } catch (_: UnsatisfiedLinkError) {}
             }
         }
-        loaded = true
-        return true
+        // MLC library optional in some bundles; try best-effort
+        for (name in mlcCandidates) {
+            val src = File(srcDir, name)
+            if (src.exists()) {
+                val dst = File(destDir, name)
+                if (!dst.exists() || dst.length() != src.length()) src.copyTo(dst, overwrite = true)
+                runCatching { System.load(dst.absolutePath) }
+            }
+        }
+
+        loaded = tvmLoaded
+        return tvmLoaded
     }
 }
