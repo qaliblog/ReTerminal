@@ -13,10 +13,10 @@ set -euo pipefail
 #     [--context-window-size 32768] \
 #     [--vulkan]
 #
-# This will produce model-...-(cpu|vulkan).so under the output directory.
-# Then copy the .so to your device under the selected model folder root, e.g.:
-#   adb push dist/.../*.so /sdcard/reterminalAssets/<YourModel>/
-# And ensure runtime is present under libs/arm64-v8a/ as libtvm4j_runtime_packed.so
+# Notes:
+# - MODEL_ID can be a local path to a HF model folder (with config.json) OR a HF repo id like owner/name.
+# - This script downloads only minimal configs from HF if a repo id is given (no weights), then compiles the module .so.
+# - We skip convert_weight to avoid GB-level downloads; use existing params_shard_*.bin on device.
 
 MODEL_ID=""
 QUANT="q4f16_1"
@@ -47,12 +47,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODEL_ID" ]]; then
-  echo "--model-id is required (e.g., Qwen/Qwen2.5-Coder-7B-Instruct)" >&2
+  echo "--model-id is required (e.g., Qwen/Qwen2.5-Coder-7B-Instruct or /path/to/local/model)" >&2
   exit 1
 fi
 
 if [[ -z "$OUT_DIR" ]]; then
-  # default OUT_DIR based on model id and quant
   SAFE_MODEL=$(echo "$MODEL_ID" | sed 's|/|-|g')
   OUT_DIR="dist/${SAFE_MODEL}-${QUANT}-MLC"
 fi
@@ -77,7 +76,6 @@ if [[ -z "$CONV_TEMPLATE" ]]; then
   elif [[ "$lower_id" == *"phi-2"* ]]; then
     CONV_TEMPLATE="phi-2"
   else
-    # Fallbacks: common chat formats
     CONV_TEMPLATE="chatml"
   fi
 fi
@@ -103,14 +101,47 @@ if ! pip install --pre -U -f https://mlc.ai/wheels mlc-ai-nightly mlc-llm-nightl
   echo "[!] Nightly wheels not found; installing stable mlc-llm instead"
   pip install -U mlc-llm mlc-ai-nightly || pip install -U mlc-llm
 fi
+# Install huggingface_hub for lightweight downloads of configs
+pip install -U huggingface_hub
+
+# Resolve model path: local path or snapshot from HF (configs only)
+MODEL_PATH="$MODEL_ID"
+if [[ ! -f "$MODEL_PATH/config.json" && ! -d "$MODEL_PATH" ]]; then
+  echo "[+] Downloading minimal configs from Hugging Face for $MODEL_ID"
+  python - "$MODEL_ID" "$OUT_DIR/src_model" << 'PY'
+import sys
+from pathlib import Path
+from huggingface_hub import snapshot_download
+model_id = sys.argv[1]
+out_dir = Path(sys.argv[2])
+out_dir.mkdir(parents=True, exist_ok=True)
+snapshot_download(
+    repo_id=model_id,
+    local_dir=str(out_dir),
+    allow_patterns=[
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "*.model",
+        "merges.txt",
+        "vocab.json",
+    ],
+)
+print(str(out_dir))
+PY
+  MODEL_PATH="$OUT_DIR/src_model"
+fi
+
+if [[ ! -f "$MODEL_PATH/config.json" ]]; then
+  echo "Missing config.json under $MODEL_PATH. Provide a local model dir or a valid HF repo id." >&2
+  exit 1
+fi
 
 echo "[+] Generating config (${QUANT})"
-GEN_ARGS=(gen_config "$MODEL_ID" --quantization "$QUANT" --conv-template "$CONV_TEMPLATE" -o "$OUT_DIR")
+GEN_ARGS=(gen_config "$MODEL_PATH" --quantization "$QUANT" --conv-template "$CONV_TEMPLATE" -o "$OUT_DIR")
 if [[ -n "$CTX_WIN" ]]; then GEN_ARGS+=(--context-window-size "$CTX_WIN"); fi
 mlc_llm "${GEN_ARGS[@]}"
-
-echo "[+] Converting weights (${QUANT})"
-mlc_llm convert_weight "$MODEL_ID" --quantization "$QUANT" -o "$OUT_DIR"
 
 CFG_JSON="$OUT_DIR/mlc-chat-config.json"
 if [[ ! -f "$CFG_JSON" ]]; then
