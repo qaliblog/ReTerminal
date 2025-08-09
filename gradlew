@@ -45,27 +45,6 @@ die () {
     exit 1
 }
 
-# OS specific support.
-# Add cygwin, msys, darwin, and NONSTOP to the list of supported systems.
-case "`uname`" in
-  CYGWIN* )
-    cygwin=true
-    ;;
-  Darwin* )
-    darwin=true
-    ;;
-  MINGW* )
-    msys=true
-    ;;
-  NONSTOP* )
-    nonstop=true
-    ;;
-  * )
-    ;;
-esac
-
-CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
-
 # Determine the Java command to use to start the JVM.
 if [ -n "$JAVA_HOME" ] ; then
     if [ -x "$JAVA_HOME/jre/sh/java" ] ; then
@@ -79,35 +58,21 @@ if [ -n "$JAVA_HOME" ] ; then
     fi
 else
     JAVACMD="java"
-    which java >/dev/null 2>&1 || die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.\n\nPlease set the JAVA_HOME variable in your environment to match the location of your Java installation."
+    command -v java >/dev/null 2>&1 || die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.\n\nPlease set the JAVA_HOME variable in your environment to match the location of your Java installation."
 fi
 
 # Increase the maximum file descriptors if we can.
-if [ "$cygwin" = "false" -a "$darwin" = "false" -a "$nonstop" = "false" ] ; then
-    MAX_FD_LIMIT=`ulimit -H -n`
-    if [ $? -eq 0 ] ; then
-        if [ "$MAX_FD" = "maximum" -o "$MAX_FD" = "max" ] ; then
-            MAX_FD="$MAX_FD_LIMIT"
-        fi
-        ulimit -n $MAX_FD
-        if [ $? -ne 0 ] ; then
-            warn "Could not set maximum file descriptor limit: $MAX_FD"
-        fi
-    else
-        warn "Could not query maximum file descriptor limit: $MAX_FD_LIMIT"
+MAX_FD_LIMIT=`ulimit -H -n 2>/dev/null`
+if [ $? -eq 0 ] ; then
+    if [ "$MAX_FD" = "maximum" -o "$MAX_FD" = "max" ] ; then
+        MAX_FD="$MAX_FD_LIMIT"
     fi
+    ulimit -n $MAX_FD 2>/dev/null || warn "Could not set maximum file descriptor limit: $MAX_FD"
 fi
 
 # For Darwin, use macOS specific options for use with the Apple JDK.
 if $darwin; then
     GRADLE_OPTS="$GRADLE_OPTS -Xdock:name=$APP_BASE_NAME -Xdock:icon=$APP_HOME/media/gradle.icns"
-fi
-
-# For Cygwin, ensure paths are in UNIX format before anything is touched.
-if $cygwin ; then
-    APP_HOME=`cygpath --path --unix "$APP_HOME"`
-    CLASSPATH=`cygpath --path --unix "$CLASSPATH"`
-    JAVACMD=`cygpath --unix "$JAVACMD"`
 fi
 
 # Escape application args
@@ -117,6 +82,8 @@ $ s/$/' \\ \\ /" ; done
     echo " "
 }
 APP_ARGS=$(save "$@")
+
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
 
 # Collect all arguments for the java command, following the shell quoting and substitution rules
 eval set -- $DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS "-Dorg.gradle.appname=$APP_BASE_NAME" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"

@@ -3,10 +3,15 @@ package com.rk.terminal.ui.screens.settings
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.RadioButton
@@ -22,6 +27,7 @@ import androidx.navigation.NavController
 import com.rk.components.compose.preferences.base.PreferenceGroup
 import com.rk.components.compose.preferences.base.PreferenceLayout
 import com.rk.components.compose.preferences.base.PreferenceTemplate
+import com.rk.terminal.ui.components.InputDialog
 import com.rk.resources.strings
 import com.rk.settings.Settings
 import com.rk.terminal.ui.activities.terminal.MainActivity
@@ -116,6 +122,49 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 })
         }
 
+        PreferenceGroup(heading = "AI Model Folders") {
+            // Show selected
+            val selectedModel = Settings.selected_model_folder
+            Text(text = if (selectedModel.isBlank()) "Selected: (auto)" else "Selected: $selectedModel", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+
+            // List CSV folders as chips/rows
+            val foldersCsv = Settings.model_folders_csv
+            val folders = remember(foldersCsv) { foldersCsv.split(',').map { it.trim() }.filter { it.isNotBlank() } }
+            folders.forEach { path ->
+                Row(modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Text(text = path, modifier = Modifier.weight(1f))
+                    Button(onClick = { Settings.selected_model_folder = path }) { Text("Use") }
+                }
+            }
+
+            var showAdd by remember { mutableStateOf(false) }
+            Button(onClick = { showAdd = true }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Icon(imageVector = Icons.Default.Add, contentDescription = null)
+                Text(text = "Add folder", modifier = Modifier.padding(start = 8.dp))
+            }
+
+            if (showAdd) {
+                var input by remember { mutableStateOf("/sdcard/reterminalAssets/YourModelFolder") }
+                InputDialog(
+                    title = "Add model folder",
+                    inputLabel = "Absolute folder path",
+                    inputValue = input,
+                    onInputValueChange = { input = it },
+                    onConfirm = {
+                        val trimmed = input.trim()
+                        if (trimmed.isNotBlank()) {
+                            val updated = (folders + trimmed).toSet().joinToString(",")
+                            Settings.model_folders_csv = updated
+                            Settings.selected_model_folder = trimmed
+                        }
+                    },
+                    onDismiss = { showAdd = false },
+                    singleLineMode = true
+                )
+            }
+        }
 
         PreferenceGroup {
             SettingsToggle(
