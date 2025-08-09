@@ -123,19 +123,22 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
         }
 
         PreferenceGroup(heading = "AI Model Folders") {
-            // Show selected
-            val selectedModel = Settings.selected_model_folder
+            // Local reactive state for selection and list
+            var selectedModel by remember { mutableStateOf(Settings.selected_model_folder) }
+            var foldersCsv by remember { mutableStateOf(Settings.model_folders_csv) }
+            val folders = remember(foldersCsv) { foldersCsv.split(',').map { it.trim() }.filter { it.isNotBlank() } }
+
             Text(text = if (selectedModel.isBlank()) "Selected: (auto)" else "Selected: $selectedModel", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 
-            // List CSV folders as chips/rows
-            val foldersCsv = Settings.model_folders_csv
-            val folders = remember(foldersCsv) { foldersCsv.split(',').map { it.trim() }.filter { it.isNotBlank() } }
             folders.forEach { path ->
                 Row(modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 6.dp)) {
                     Text(text = path, modifier = Modifier.weight(1f))
-                    Button(onClick = { Settings.selected_model_folder = path }) { Text("Use") }
+                    Button(onClick = {
+                        Settings.selected_model_folder = path
+                        selectedModel = path
+                    }) { Text("Use") }
                 }
             }
 
@@ -157,7 +160,9 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                         if (trimmed.isNotBlank()) {
                             val updated = (folders + trimmed).toSet().joinToString(",")
                             Settings.model_folders_csv = updated
+                            foldersCsv = updated
                             Settings.selected_model_folder = trimmed
+                            selectedModel = trimmed
                         }
                     },
                     onDismiss = { showAdd = false },
