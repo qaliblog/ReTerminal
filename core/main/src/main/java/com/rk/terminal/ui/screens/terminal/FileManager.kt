@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material3.AlertDialog
@@ -46,6 +47,7 @@ import java.io.File
 fun FileManagerView(
     currentPath: String,
     onNavigate: (String) -> Unit,
+    onEditFile: (File) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val entriesState = remember { mutableStateOf<List<File>>(emptyList()) }
@@ -99,9 +101,6 @@ fun FileManagerView(
                         .clickable {
                             if (file.isDirectory) {
                                 onNavigate(file.absolutePath)
-                            } else {
-                                // Open in editor tab
-                                FileOpenBus.open(file)
                             }
                         }
                         .padding(12.dp),
@@ -117,6 +116,11 @@ fun FileManagerView(
                         modifier = Modifier.padding(start = 12.dp)
                     )
                     Spacer(modifier = Modifier.weight(1f))
+                    if (file.isFile) {
+                        IconButton(onClick = { onEditFile(file) }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Edit")
+                        }
+                    }
                     IconButton(onClick = { showDeleteConfirm.value = file }) {
                         Icon(Icons.Default.Delete, contentDescription = "Delete")
                     }

@@ -629,6 +629,10 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
         onNavigate = { newPath ->
             service.fileManagerWorkingDirBySession[sessionId] = newPath
             workingDirState.value = newPath
+        },
+        onEditFile = { file ->
+            // Send to editor and switch to Editor tab
+            FileOpenBus.open(file)
         }
     )
 }
@@ -640,7 +644,10 @@ private fun TextEditorPane(mainActivityActivity: MainActivity) {
 
 @Composable
 private fun ChatPane(mainActivityActivity: MainActivity) {
-    ChatView(mainActivityActivity)
+    // Add bottom padding to avoid overlay with system bars/keyboard
+    Box(modifier = Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
+        ChatView(mainActivityActivity)
+    }
 }
 
 @Composable
