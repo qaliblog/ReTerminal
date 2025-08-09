@@ -38,7 +38,7 @@ fun getFullGitCommitHash(): String {
 android {
     namespace = "com.rk.terminal"
     android.buildFeatures.buildConfig = true
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         minSdk = 24
