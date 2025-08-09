@@ -80,7 +80,7 @@ if [[ -z "$CONV_TEMPLATE" ]]; then
   fi
 fi
 
-echo "[INFO] model_id=$MODEL_ID quant=$QUANT conv_template=$CONV_TEMPLATE ctx=$CTX_WIN out=$OUT_DIR"
+echo "[INFO] model_id=$MODEL_ID quant=$QUANT conv_template==$CONV_TEMPLATE ctx=$CTX_WIN out=$OUT_DIR"
 
 PYTHON_BIN=${PYTHON_BIN:-python3}
 VENV_DIR=${VENV_DIR:-.venv-mlc}
@@ -151,15 +151,53 @@ fi
 
 SAFE_NAME=$(basename "$OUT_DIR")
 
+# Newer CLI: compile -> .tar (objects) for Android. Use --host aarch64-linux-android
+PKG_TMP="$OUT_DIR/_pkg"
+mkdir -p "$PKG_TMP"
+
 if [[ $DO_CPU -eq 1 ]]; then
-  echo "[+] Compiling Android arm64 CPU module"
-  mlc_llm compile "$CFG_JSON" --device cpu --target android-arm64 -o "$OUT_DIR/model-${SAFE_NAME}-cpu.so"
+  echo "[+] Compiling Android arm64 CPU objects (.tar)"
+  mlc_llm compile "$CFG_JSON" --device cpu --host aarch64-linux-android -o "$PKG_TMP/${SAFE_NAME}-cpu.tar"
 fi
 
 if [[ $DO_VULKAN -eq 1 ]]; then
-  echo "[+] Compiling Android arm64 Vulkan module"
-  mlc_llm compile "$CFG_JSON" --device vulkan --target android-arm64 -o "$OUT_DIR/model-${SAFE_NAME}-vulkan.so"
+  echo "[+] Compiling Android arm64 Vulkan objects (.tar)"
+  mlc_llm compile "$CFG_JSON" --device vulkan --host aarch64-linux-android -o "$PKG_TMP/${SAFE_NAME}-vulkan.tar"
 fi
 
+# Package step: generate minimal mlc-package-config.json and run mlc_llm package
+cat > "$PKG_TMP/mlc-package-config.json" << JSON
+{
+  "device": "android",
+  "model_list": [
+    {
+      "model": "${OUT_DIR}",
+      "model_id": "${SAFE_NAME}",
+      "estimated_vram_bytes": 6000000000,
+      "bundle_weight": false
+    }
+  ]
+}
+JSON
+
+pushd "$PKG_TMP" >/dev/null
+  echo "[+] Packaging Android assets"
+  mlc_llm package || true
+popd >/dev/null
+
+# Collect produced shared libs if any
+echo "[+] Collecting outputs"
+find "$PKG_TMP" -type f \( -name "*.so" -o -name "*.aar" -o -name "*.tar" -o -name "*.zip" \) -maxdepth 4 -print0 | while IFS= read -r -d '' f; do
+  bn=$(basename "$f")
+  cp -f "$f" "$OUT_DIR/$bn" || true
+done
+
+# Try to locate runtime .so if produced
+if compgen -G "$PKG_TMP/**/libtvm4j_runtime_packed.so" > /dev/null; then
+  mkdir -p "$OUT_DIR/libs/arm64-v8a"
+  find "$PKG_TMP" -type f -name "libtvm4j_runtime_packed.so" -print -quit | while read -r r; do cp -f "$r" "$OUT_DIR/libs/arm64-v8a/"; done
+fi
+
+# Also rename packaged model libs into our conventional names if found inside AAR/zip (user can extract)
 echo "[+] Done. Outputs in: $OUT_DIR"
 ls -lh "$OUT_DIR" | sed 's/^/[OUT] /'
