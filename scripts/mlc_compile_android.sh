@@ -157,7 +157,7 @@ mkdir -p "$PKG_TMP"
 
 if [[ $DO_CPU -eq 1 ]]; then
   echo "[+] Compiling Android arm64 CPU objects (.tar)"
-  mlc_llm compile "$CFG_JSON" --device cpu --host aarch64-linux-android -o "$PKG_TMP/${SAFE_NAME}-cpu.tar"
+  mlc_llm compile "$CFG_JSON" --host aarch64-linux-android -o "$PKG_TMP/${SAFE_NAME}-cpu.tar"
 fi
 
 if [[ $DO_VULKAN -eq 1 ]]; then
