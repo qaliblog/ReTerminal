@@ -6,6 +6,10 @@ import java.io.File
 
 object RuntimeLoader {
     private var loaded = false
+    var backend: String? = null
+        private set
+    var moduleSo: File? = null
+        private set
 
     fun isLoaded(): Boolean = loaded
 
@@ -19,7 +23,6 @@ object RuntimeLoader {
         }
         val destDir = File(ctx.filesDir, "rt/$abi").apply { mkdirs() }
 
-        // Accept common filenames
         val tvmCandidates = listOf("libtvm_runtime.so", "libtvm4j_runtime_packed.so")
         val mlcCandidates = listOf("libmlc_llm.so", "libmlc_llm_vulkan.so")
 
@@ -36,7 +39,7 @@ object RuntimeLoader {
                 } catch (_: UnsatisfiedLinkError) {}
             }
         }
-        // MLC library optional in some bundles; try best-effort
+        // Best-effort load MLC helper if present
         for (name in mlcCandidates) {
             val src = File(srcDir, name)
             if (src.exists()) {
@@ -44,6 +47,17 @@ object RuntimeLoader {
                 if (!dst.exists() || dst.length() != src.length()) src.copyTo(dst, overwrite = true)
                 runCatching { System.load(dst.absolutePath) }
             }
+        }
+
+        // Detect compiled module in modelDir
+        val modules = modelDir.listFiles()?.filter { it.isFile && it.name.endsWith(".so") } ?: emptyList()
+        val vulkanMod = modules.firstOrNull { it.name.contains("vulkan", ignoreCase = true) }
+        val cpuMod = modules.firstOrNull { it.name.contains("cpu", ignoreCase = true) || it.name.startsWith("model", true) }
+        moduleSo = vulkanMod ?: cpuMod
+        backend = when {
+            vulkanMod != null -> "vulkan"
+            cpuMod != null -> "cpu"
+            else -> null
         }
 
         loaded = tvmLoaded
