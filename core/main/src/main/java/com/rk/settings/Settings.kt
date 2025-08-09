@@ -87,6 +87,15 @@ object Settings {
         get() = Preference.getBoolean(key = "force_soft_keyboard", default = true)
         set(value) = Preference.setBoolean(key = "force_soft_keyboard",value)
 
+    // Model management
+    var model_folders_csv
+        get() = Preference.getString(key = "model_folders_csv", default = "")
+        set(value) = Preference.setString(key = "model_folders_csv", value)
+
+    var selected_model_folder
+        get() = Preference.getString(key = "selected_model_folder", default = "")
+        set(value) = Preference.setString(key = "selected_model_folder", value)
+
 
 
 }

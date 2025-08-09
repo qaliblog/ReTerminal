@@ -6,38 +6,39 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
-fun getGitCommitHash(): String {
+fun safeGit(vararg args: String): String {
     val stdout = ByteArrayOutputStream()
-    exec {
-        commandLine("git", "rev-parse", "--short=8", "HEAD")
-        standardOutput = stdout
+    return try {
+        exec {
+            commandLine("git", *args)
+            isIgnoreExitValue = true
+            standardOutput = stdout
+            errorOutput = ByteArrayOutputStream()
+        }
+        val out = stdout.toString().trim()
+        if (out.isBlank()) "unknown" else out
+    } catch (e: Exception) {
+        "unknown"
     }
-    return stdout.toString().trim()
+}
+
+fun getGitCommitHash(): String {
+    return safeGit("rev-parse", "--short=8", "HEAD")
 }
 
 fun getGitCommitDate(): String {
-    val stdout = ByteArrayOutputStream()
-    exec {
-        commandLine("git", "show", "-s", "--format=%cI", "HEAD")
-        standardOutput = stdout
-    }
-    return stdout.toString().trim()
+    return safeGit("show", "-s", "--format=%cI", "HEAD")
 }
 
 fun getFullGitCommitHash(): String {
-    val stdout = ByteArrayOutputStream()
-    exec {
-        commandLine("git", "rev-parse", "HEAD")
-        standardOutput = stdout
-    }
-    return stdout.toString().trim()
+    return safeGit("rev-parse", "HEAD")
 }
 
 
 android {
     namespace = "com.rk.terminal"
     android.buildFeatures.buildConfig = true
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         minSdk = 24
@@ -111,6 +112,7 @@ dependencies {
     api(libs.anrwatchdog)
     api(libs.androidx.palette)
     api(libs.accompanist.systemuicontroller)
+    api(libs.material.icons.extended)
 
     api(project(":core:resources"))
     api(project(":core:components"))
