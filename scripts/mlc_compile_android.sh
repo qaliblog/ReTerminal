@@ -9,6 +9,8 @@ set -euo pipefail
 #     --quant q4f16_1 \
 #     --device cpu \
 #     --out dist/Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC \
+#     --conv-template qwen2 \
+#     [--context-window-size 32768] \
 #     [--vulkan]
 #
 # This will produce model-...-(cpu|vulkan).so under the output directory.
@@ -21,6 +23,8 @@ QUANT="q4f16_1"
 OUT_DIR=""
 DO_CPU=1
 DO_VULKAN=0
+CONV_TEMPLATE=""
+CTX_WIN=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +38,10 @@ while [[ $# -gt 0 ]]; do
       if [[ "$2" == "cpu" ]]; then DO_CPU=1; DO_VULKAN=0; else DO_CPU=0; DO_VULKAN=1; fi; shift 2;;
     --vulkan)
       DO_VULKAN=1; shift 1;;
+    --conv-template|--conv)
+      CONV_TEMPLATE="$2"; shift 2;;
+    --context-window-size|--ctx)
+      CTX_WIN="$2"; shift 2;;
     *) echo "Unknown arg: $1"; exit 1;;
   esac
 done
@@ -48,6 +56,33 @@ if [[ -z "$OUT_DIR" ]]; then
   SAFE_MODEL=$(echo "$MODEL_ID" | sed 's|/|-|g')
   OUT_DIR="dist/${SAFE_MODEL}-${QUANT}-MLC"
 fi
+
+# Infer conv template if not provided
+if [[ -z "$CONV_TEMPLATE" ]]; then
+  lower_id=$(echo "$MODEL_ID" | tr '[:upper:]' '[:lower:]')
+  if [[ "$lower_id" == *"qwen2"* || "$lower_id" == *"qwen2.5"* || "$lower_id" == *"qwen-2"* ]]; then
+    CONV_TEMPLATE="qwen2"
+  elif [[ "$lower_id" == *"llama-3"* || "$lower_id" == *"llama3"* ]]; then
+    CONV_TEMPLATE="llama-3"
+  elif [[ "$lower_id" == *"llama-2"* || "$lower_id" == *"llama2"* ]]; then
+    CONV_TEMPLATE="llama-2"
+  elif [[ "$lower_id" == *"codellama"* ]]; then
+    if [[ "$lower_id" == *"instruct"* ]]; then CONV_TEMPLATE="codellama_instruct"; else CONV_TEMPLATE="codellama_completion"; fi
+  elif [[ "$lower_id" == *"mistral"* ]]; then
+    CONV_TEMPLATE="mistral_default"
+  elif [[ "$lower_id" == *"gemma"* ]]; then
+    CONV_TEMPLATE="gemma_instruction"
+  elif [[ "$lower_id" == *"phi-3"* ]]; then
+    CONV_TEMPLATE="phi-3"
+  elif [[ "$lower_id" == *"phi-2"* ]]; then
+    CONV_TEMPLATE="phi-2"
+  else
+    # Fallbacks: common chat formats
+    CONV_TEMPLATE="chatml"
+  fi
+fi
+
+echo "[INFO] model_id=$MODEL_ID quant=$QUANT conv_template=$CONV_TEMPLATE ctx=$CTX_WIN out=$OUT_DIR"
 
 PYTHON_BIN=${PYTHON_BIN:-python3}
 VENV_DIR=${VENV_DIR:-.venv-mlc}
@@ -70,7 +105,9 @@ if ! pip install --pre -U -f https://mlc.ai/wheels mlc-ai-nightly mlc-llm-nightl
 fi
 
 echo "[+] Generating config (${QUANT})"
-mlc_llm gen_config "$MODEL_ID" --quantization "$QUANT" -o "$OUT_DIR"
+GEN_ARGS=(gen_config "$MODEL_ID" --quantization "$QUANT" --conv-template "$CONV_TEMPLATE" -o "$OUT_DIR")
+if [[ -n "$CTX_WIN" ]]; then GEN_ARGS+=(--context-window-size "$CTX_WIN"); fi
+mlc_llm "${GEN_ARGS[@]}"
 
 echo "[+] Converting weights (${QUANT})"
 mlc_llm convert_weight "$MODEL_ID" --quantization "$QUANT" -o "$OUT_DIR"
