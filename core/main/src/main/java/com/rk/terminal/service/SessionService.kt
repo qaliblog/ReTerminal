@@ -24,6 +24,10 @@ class SessionService : Service() {
     val sessionList = mutableStateMapOf<String,Int>()
     var currentSession = mutableStateOf(Pair("main",com.rk.settings.Settings.working_Mode))
 
+    // Per-session File Manager working directory state
+    // Key: sessionId, Value: absolute path string
+    val fileManagerWorkingDirBySession = mutableStateMapOf<String, String>()
+
     inner class SessionBinder : Binder() {
         fun getService():SessionService{
             return this@SessionService
@@ -40,6 +44,13 @@ class SessionService : Service() {
             return MkSession.createSession(activity, client, id, workingMode = workingMode).also {
                 sessions[id] = it
                 sessionList[id] = workingMode
+                // Initialize File Manager working directory per session
+                val defaultPath = if (workingMode == com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE) {
+                    com.rk.libcommons.alpineDir().absolutePath
+                } else {
+                    "/sdcard"
+                }
+                fileManagerWorkingDirBySession[id] = defaultPath
                 updateNotification()
             }
         }
@@ -57,6 +68,7 @@ class SessionService : Service() {
 
                 sessions.remove(id)
                 sessionList.remove(id)
+                fileManagerWorkingDirBySession.remove(id)
                 if (sessions.isEmpty()) {
                     stopSelf()
                 } else {
