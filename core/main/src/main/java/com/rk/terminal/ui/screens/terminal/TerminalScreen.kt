@@ -476,6 +476,7 @@ fun TerminalScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TerminalPane(mainActivityActivity: MainActivity) {
     val color = getComposeColor()
