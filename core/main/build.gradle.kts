@@ -112,6 +112,7 @@ dependencies {
     api(libs.anrwatchdog)
     api(libs.androidx.palette)
     api(libs.accompanist.systemuicontroller)
+    api(libs.material.icons.extended)
 
     api(project(":core:resources"))
     api(project(":core:components"))
