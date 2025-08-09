@@ -18,6 +18,14 @@ on:
         default: 'cpu'
         type: choice
         options: [cpu, vulkan, both]
+      conv_template:
+        description: 'Conversation template (e.g., qwen2, llama-3, chatml)'
+        required: false
+        type: string
+      ctx_window:
+        description: 'Context window size (e.g., 32768)'
+        required: false
+        type: string
 
 jobs:
   build-android-so:
@@ -47,23 +55,35 @@ jobs:
         if: ${{ inputs.device == 'cpu' || inputs.device == 'both' }}
         env:
           PYTHON_BIN: python3
+          CONV_TEMPLATE: ${{ inputs.conv_template }}
+          CTX_WINDOW: ${{ inputs.ctx_window }}
         run: |
+          EXTRA_ARGS=""
+          if [ -n "${CONV_TEMPLATE}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --conv-template ${CONV_TEMPLATE}"; fi
+          if [ -n "${CTX_WINDOW}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --context-window-size ${CTX_WINDOW}"; fi
           ./scripts/mlc_compile_android.sh \
             --model-id "${{ inputs.model_id }}" \
             --quant "${{ inputs.quant }}" \
             --device cpu \
-            --out "dist/${{ inputs.model_id }}/android-${{ inputs.quant }}"
+            --out "dist/${{ inputs.model_id }}/android-${{ inputs.quant }}" \
+            ${EXTRA_ARGS}
 
       - name: Compile (Vulkan)
         if: ${{ inputs.device == 'vulkan' || inputs.device == 'both' }}
         env:
           PYTHON_BIN: python3
+          CONV_TEMPLATE: ${{ inputs.conv_template }}
+          CTX_WINDOW: ${{ inputs.ctx_window }}
         run: |
+          EXTRA_ARGS=""
+          if [ -n "${CONV_TEMPLATE}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --conv-template ${CONV_TEMPLATE}"; fi
+          if [ -n "${CTX_WINDOW}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --context-window-size ${CTX_WINDOW}"; fi
           ./scripts/mlc_compile_android.sh \
             --model-id "${{ inputs.model_id }}" \
             --quant "${{ inputs.quant }}" \
             --device vulkan \
-            --out "dist/${{ inputs.model_id }}/android-${{ inputs.quant }}"
+            --out "dist/${{ inputs.model_id }}/android-${{ inputs.quant }}" \
+            ${EXTRA_ARGS}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
