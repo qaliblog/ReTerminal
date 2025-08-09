@@ -63,7 +63,11 @@ source "$VENV_DIR/bin/activate"
 
 echo "[+] Installing mlc nightly wheels"
 pip install --upgrade pip wheel >/dev/null
-pip install --pre -U -f https://mlc.ai/wheels mlc-ai-nightly mlc-chat-nightly
+# Prefer nightly wheels; fall back to stable if nightly not available
+if ! pip install --pre -U -f https://mlc.ai/wheels mlc-ai-nightly mlc-llm-nightly; then
+  echo "[!] Nightly wheels not found; installing stable mlc-llm instead"
+  pip install -U mlc-llm mlc-ai-nightly || pip install -U mlc-llm
+fi
 
 echo "[+] Generating config (${QUANT})"
 mlc_llm gen_config "$MODEL_ID" --quantization "$QUANT" -o "$OUT_DIR"

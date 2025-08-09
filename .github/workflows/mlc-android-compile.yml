@@ -45,6 +45,8 @@ jobs:
 
       - name: Compile (CPU)
         if: ${{ inputs.device == 'cpu' || inputs.device == 'both' }}
+        env:
+          PYTHON_BIN: python3
         run: |
           ./scripts/mlc_compile_android.sh \
             --model-id "${{ inputs.model_id }}" \
@@ -54,6 +56,8 @@ jobs:
 
       - name: Compile (Vulkan)
         if: ${{ inputs.device == 'vulkan' || inputs.device == 'both' }}
+        env:
+          PYTHON_BIN: python3
         run: |
           ./scripts/mlc_compile_android.sh \
             --model-id "${{ inputs.model_id }}" \
