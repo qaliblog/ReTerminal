@@ -91,7 +91,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     messages.add(ChatMessage("assistant", "…"))
 
                     scope.launch(Dispatchers.IO) {
-                        LlmProvider.engine.generate(messages.map { com.rk.terminal.llm.LlmMessage(it.role, it.content) }).collect { token ->
+                        LlmProvider.current().generate(messages.map { com.rk.terminal.llm.LlmMessage(it.role, it.content) }).collect { token ->
                             // Append/stream into the last assistant message
                             scope.launch(Dispatchers.Main) {
                                 val lastIndex = messages.indexOfLast { it.role == "assistant" }

@@ -38,7 +38,11 @@ object EchoEngine : LlmEngine {
 }
 
 object LlmProvider {
-    var engine: LlmEngine = EchoEngine
+    fun current(): LlmEngine {
+        ModelManager.refreshFromSettings()
+        val active = ModelManager.activeModel()
+        return if (active != null) MlcEngine(active) else EchoEngine
+    }
 }
 
 object ModelLocator {
