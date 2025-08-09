@@ -25,7 +25,8 @@ APP_HOME="`pwd -P`"
 cd "$SAVED" >/dev/null
 
 APP_BASE_NAME=`basename "$0"`
-APP_HOME=`dirname "$APP_BASE_NAME"`
+# Ensure APP_HOME is the directory of this script, not merely its basename
+APP_HOME=`dirname "$PRG"`
 
 # Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 DEFAULT_JVM_OPTS="-Xmx64m -Xms64m"
@@ -61,7 +62,7 @@ case "`uname`" in
     ;;
   * )
     ;;
-endsac
+esac
 
 CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
 
