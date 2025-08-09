@@ -20,9 +20,11 @@ interface LlmEngine {
  */
 object EchoEngine : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
+        // Always refresh selection before generating
+        ModelManager.refreshFromSettings()
         val lastUser = messages.lastOrNull { it.role == "user" }?.content ?: ""
         val root = ModelLocator.modelRoot()
-        val selected = ModelLocator.selectedModelDir()
+        val selected = ModelManager.activeModel()
         val reply = buildString {
             appendLine("(offline stub) You said:")
             appendLine(lastUser)
@@ -30,19 +32,16 @@ object EchoEngine : LlmEngine {
             appendLine("Assets root: ${root?.absolutePath ?: "<not found>"}")
             appendLine("Selected model: ${selected?.absolutePath ?: "<none>"}")
         }
-        // Stream in chunks to exercise UI
         val chunks = reply.chunked(32)
         for (c in chunks) emit(c)
     }
 }
 
 object LlmProvider {
-    // Swap this with a real MLC-based engine implementation
     var engine: LlmEngine = EchoEngine
 }
 
 object ModelLocator {
-    // Expected: /sdcard/reterminalAssets/<model_folder>
     fun modelRoot(): File? {
         val root = Environment.getExternalStorageDirectory()
         val candidate = File(root, "reterminalAssets")
@@ -64,11 +63,9 @@ object ModelLocator {
             val f = File(selected)
             if (f.exists() && f.isDirectory) return f
         }
-        // Else default to first folder under modelRoot
         modelRoot()?.let { root ->
             root.listFiles()?.firstOrNull { it.isDirectory }?.let { return it }
         }
-        // Else first custom folder
         return customFolders().firstOrNull()
     }
 }

@@ -138,6 +138,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     Button(onClick = {
                         Settings.selected_model_folder = path
                         selectedModel = path
+                        com.rk.terminal.llm.ModelManager.setSelectedModel(path)
                     }) { Text("Use") }
                 }
             }
@@ -163,6 +164,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                             foldersCsv = updated
                             Settings.selected_model_folder = trimmed
                             selectedModel = trimmed
+                            com.rk.terminal.llm.ModelManager.setSelectedModel(trimmed)
                         }
                     },
                     onDismiss = { showAdd = false },
