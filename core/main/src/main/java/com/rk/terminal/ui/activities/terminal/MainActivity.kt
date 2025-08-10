@@ -91,6 +91,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // Initialize current permission state
         storageAccessGranted.value = hasStorageAccess()
+
+        onBackPressedDispatcher.addCallback(this) {
+            // Move to background instead of closing
+            moveTaskToBack(true)
+        }
     }
 
     override fun onResume() {

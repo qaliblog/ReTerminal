@@ -41,6 +41,11 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import com.rk.terminal.llm.LlmProvider
 import java.io.File
+import androidx.compose.runtime.DisposableEffect
+import org.json.JSONArray
+import org.json.JSONObject
+import com.rk.libcommons.application
+import java.nio.charset.Charset
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -53,6 +58,37 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+
+    // Chat history persistence
+    val chatDir = remember(sessionId) { java.io.File(application!!.filesDir, "agent/${sessionId}").apply { mkdirs() } }
+    val historyFile = remember(sessionId) { java.io.File(chatDir, "history.json") }
+
+    fun saveHistory() {
+        runCatching {
+            val arr = JSONArray()
+            messages.forEach { m ->
+                arr.put(JSONObject().put("role", m.role).put("content", m.content))
+            }
+            historyFile.writeText(arr.toString(2))
+        }
+    }
+
+    LaunchedEffect(sessionId) {
+        runCatching {
+            if (historyFile.exists()) {
+                val txt = historyFile.readText()
+                val arr = JSONArray(txt)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    messages.add(ChatMessage(o.optString("role"), o.optString("content")))
+                }
+            }
+        }
+    }
+
+    DisposableEffect(messages.size) {
+        onDispose { saveHistory() }
+    }
 
     // Agent state
     val activePlan = remember { mutableStateOf<AgentOrchestrator.Plan?>(null) }
@@ -158,6 +194,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     input = ""
                     messages.add(ChatMessage("user", prompt))
                     messages.add(ChatMessage("assistant", "…"))
+                    saveHistory()
 
                     scope.launch(Dispatchers.IO) {
                         runCatching {
@@ -168,6 +205,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                         val current = messages[lastIndex]
                                         val nextContent = if (current.content == "…") token else current.content + token
                                         messages[lastIndex] = current.copy(content = nextContent)
+                                        saveHistory()
                                     }
                                 }
                             }
@@ -180,6 +218,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 } else {
                                     messages.add(ChatMessage("assistant", "Error: ${'$'}err"))
                                 }
+                                saveHistory()
                             }
                         }
                     }
@@ -210,6 +249,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             }
                             activePlan.value = plan
                             postStatus("Plan ready: ${'$'}{plan.tasks.size} task(s). Press Proceed to run the first task.")
+                            saveHistory()
                         } catch (e: Exception) {
                             postStatus("Agent error: ${'$'}{e.message}")
                         } finally {
@@ -226,11 +266,12 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     scope.launch(Dispatchers.IO) {
                         try {
                             val success = agent.executeNextTask(plan) { s ->
-                                scope.launch(Dispatchers.Main) { postStatus(s) }
+                                scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
                             }
                             if (!success) {
                                 postStatus("No pending task or step failed.")
                             }
+                            saveHistory()
                         } catch (e: Exception) {
                             postStatus("Agent error: ${'$'}{e.message}")
                         }
@@ -252,6 +293,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 activePlan.value = updated
                                 postStatus("Plan updated: ${'$'}{updated.tasks.size} task(s). Press Proceed for next step.")
                             }
+                            saveHistory()
                         } catch (e: Exception) {
                             postStatus("Agent error: ${'$'}{e.message}")
                         }
