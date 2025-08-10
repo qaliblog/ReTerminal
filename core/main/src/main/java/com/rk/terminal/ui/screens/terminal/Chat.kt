@@ -48,6 +48,10 @@ fun ChatView(mainActivityActivity: MainActivity) {
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
+    fun postStatus(s: String) {
+        messages.add(ChatMessage("assistant", s))
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp),
@@ -80,8 +84,41 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 onValueChange = { input = it },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
-                placeholder = { Text("Ask the AI...") }
+                placeholder = { Text("Ask the AI or describe an agent goal…") }
             )
+            Button(onClick = {
+                val goal = input.trim()
+                if (goal.isEmpty()) return@Button
+                input = ""
+                messages.add(ChatMessage("user", goal))
+                // Agent mode
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val wdProvider = {
+                            val svc = mainActivityActivity.sessionBinder?.getService()
+                            svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard"
+                        }
+                        val agent = AgentOrchestrator(
+                            context = mainActivityActivity,
+                            sessionId = sessionId,
+                            workingDirProvider = wdProvider
+                        )
+                        messages.add(ChatMessage("assistant", "Planning…"))
+                        val plan = agent.generatePlan(goal)
+                        if (plan == null) {
+                            postStatus("Could not parse plan from AI.")
+                            return@launch
+                        }
+                        postStatus("Plan ready: ${'$'}{plan.tasks.size} task(s). Starting…")
+                        agent.executePlanSequentially(plan) { s ->
+                            scope.launch(Dispatchers.Main) { postStatus(s) }
+                        }
+                        postStatus("Agent run complete.")
+                    } catch (e: Exception) {
+                        postStatus("Agent error: ${'$'}{e.message}")
+                    }
+                }
+            }) { Text("Run Agent") }
             IconButton(
                 onClick = {
                     val prompt = input.trim()
@@ -107,9 +144,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 val lastIndex = messages.indexOfLast { it.role == "assistant" }
                                 val err = e.message ?: e.toString()
                                 if (lastIndex != -1) {
-                                    messages[lastIndex] = ChatMessage("assistant", "Error: $err")
+                                    messages[lastIndex] = ChatMessage("assistant", "Error: ${'$'}err")
                                 } else {
-                                    messages.add(ChatMessage("assistant", "Error: $err"))
+                                    messages.add(ChatMessage("assistant", "Error: ${'$'}err"))
                                 }
                             }
                         }
