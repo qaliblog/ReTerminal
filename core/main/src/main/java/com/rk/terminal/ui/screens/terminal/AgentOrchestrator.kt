@@ -158,7 +158,7 @@ class AgentOrchestrator(
             {"type":"read_file","args":{"path": string, "max_bytes": number}}
             Rules:
             - Use relative paths with respect to the current working directory unless absolute is required.
-            - When writing source code, include full file content in "content".
+            - When writing source code that implements the goal, include the full file content in "content". Do not use placeholders.
             - Prefer discovery calls (list_dir/read_file) when more context is needed.
             - Consider the provided observations from prior steps.
             - Do not return markdown code fences. Return pure JSON on a single line.
@@ -305,8 +305,9 @@ class AgentOrchestrator(
             - ids must be unique short strings (e.g., t1, t2, t3)
             - descriptions must be concrete and atomic
             - Include discovery tasks when needed, such as listing directories or reading files, before making changes.
+            - If the goal requires creating program files, include explicit tasks to write the full program code into those files (the code content will be generated during tool calls).
             - Prefer minimal, safe, idempotent steps.
-            - Do not include code in the plan. Code will be provided later via tool calls.
+            - Do not include code in the plan. Code will be generated later via tool calls.
         """.trimIndent()
         val user = """
             Goal: ${userGoal}

@@ -9,12 +9,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -28,6 +32,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +40,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import com.rk.terminal.llm.LlmProvider
+import java.io.File
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -63,6 +69,14 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         )
     }
+
+    // Workspace selector state
+    val svc = mainActivityActivity.sessionBinder?.getService()
+    val currentWd = remember { mutableStateOf(svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard") }
+    var showWdMenu by remember { mutableStateOf(false) }
+
+    // Predefined quick paths
+    val quickPaths = listOf("/sdcard", mainActivityActivity.application!!.filesDir.absolutePath)
 
     fun postStatus(s: String) {
         messages.add(ChatMessage("assistant", s))
@@ -99,6 +113,37 @@ fun ChatView(mainActivityActivity: MainActivity) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // Workspace selector button
+            IconButton(onClick = { showWdMenu = true }) {
+                Icon(Icons.Default.Folder, contentDescription = "Select workspace")
+            }
+            DropdownMenu(expanded = showWdMenu, onDismissRequest = { showWdMenu = false }) {
+                quickPaths.forEach { path ->
+                    DropdownMenuItem(
+                        text = { Text(path) },
+                        onClick = {
+                            currentWd.value = path
+                            svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                            showWdMenu = false
+                            postStatus("Workspace set to: ${'$'}path")
+                        }
+                    )
+                }
+                // Parent of current
+                val parent = File(currentWd.value).parentFile
+                if (parent != null && parent.exists()) {
+                    DropdownMenuItem(
+                        text = { Text(".. (${parent.absolutePath})") },
+                        onClick = {
+                            val path = parent.absolutePath
+                            currentWd.value = path
+                            svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                            showWdMenu = false
+                            postStatus("Workspace set to: ${'$'}path")
+                        }
+                    )
+                }
+            }
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
