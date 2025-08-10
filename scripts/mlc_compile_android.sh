@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Compile an MLC model for Android arm64 (AOT .so), similar to mlc-llm’s official flow.
+#
+# Usage:
+#   scripts/mlc_compile_android.sh \
+#     --model-id Qwen/Qwen2.5-Coder-7B-Instruct \
+#     --quant q4f16_1 \
+#     --device cpu \
+#     --out dist/Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC \
+#     --conv-template qwen2 \
+#     [--context-window-size 32768] \
+#     [--vulkan]
+#
+# Notes:
+# - MODEL_ID can be a local path to a HF model folder (with config.json) OR a HF repo id like owner/name.
+# - This script downloads only minimal configs from HF if a repo id is given (no weights), then compiles the module .so.
+# - We skip convert_weight to avoid GB-level downloads; use existing params_shard_*.bin on device.
+
+MODEL_ID=""
+QUANT="q4f16_1"
+OUT_DIR=""
+DO_CPU=1
+DO_VULKAN=0
+CONV_TEMPLATE=""
+CTX_WIN=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model-id)
+      MODEL_ID="$2"; shift 2;;
+    --quant)
+      QUANT="$2"; shift 2;;
+    --out)
+      OUT_DIR="$2"; shift 2;;
+    --device)
+      if [[ "$2" == "cpu" ]]; then DO_CPU=1; DO_VULKAN=0; else DO_CPU=0; DO_VULKAN=1; fi; shift 2;;
+    --vulkan)
+      DO_VULKAN=1; shift 1;;
+    --conv-template|--conv)
+      CONV_TEMPLATE="$2"; shift 2;;
+    --context-window-size|--ctx)
+      CTX_WIN="$2"; shift 2;;
+    *) echo "Unknown arg: $1"; exit 1;;
+  esac
+done
+
+if [[ -z "$MODEL_ID" ]]; then
+  echo "--model-id is required (e.g., Qwen/Qwen2.5-Coder-7B-Instruct or /path/to/local/model)" >&2
+  exit 1
+fi
+
+if [[ -z "$OUT_DIR" ]]; then
+  SAFE_MODEL=$(echo "$MODEL_ID" | sed 's|/|-|g')
+  OUT_DIR="dist/${SAFE_MODEL}-${QUANT}-MLC"
+fi
+
+# Infer conv template if not provided
+if [[ -z "$CONV_TEMPLATE" ]]; then
+  lower_id=$(echo "$MODEL_ID" | tr '[:upper:]' '[:lower:]')
+  if [[ "$lower_id" == *"qwen2"* || "$lower_id" == *"qwen2.5"* || "$lower_id" == *"qwen-2"* ]]; then
+    CONV_TEMPLATE="qwen2"
+  elif [[ "$lower_id" == *"llama-3"* || "$lower_id" == *"llama3"* ]]; then
+    CONV_TEMPLATE="llama-3"
+  elif [[ "$lower_id" == *"llama-2"* || "$lower_id" == *"llama2"* ]]; then
+    CONV_TEMPLATE="llama-2"
+  elif [[ "$lower_id" == *"codellama"* ]]; then
+    if [[ "$lower_id" == *"instruct"* ]]; then CONV_TEMPLATE="codellama_instruct"; else CONV_TEMPLATE="codellama_completion"; fi
+  elif [[ "$lower_id" == *"mistral"* ]]; then
+    CONV_TEMPLATE="mistral_default"
+  elif [[ "$lower_id" == *"gemma"* ]]; then
+    CONV_TEMPLATE="gemma_instruction"
+  elif [[ "$lower_id" == *"phi-3"* ]]; then
+    CONV_TEMPLATE="phi-3"
+  elif [[ "$lower_id" == *"phi-2"* ]]; then
+    CONV_TEMPLATE="phi-2"
+  else
+    CONV_TEMPLATE="chatml"
+  fi
+fi
+
+echo "[INFO] model_id=$MODEL_ID quant=$QUANT conv_template==$CONV_TEMPLATE ctx=$CTX_WIN out=$OUT_DIR"
+
+PYTHON_BIN=${PYTHON_BIN:-python3}
+VENV_DIR=${VENV_DIR:-.venv-mlc}
+
+mkdir -p "$OUT_DIR"
+
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "[+] Creating venv at $VENV_DIR"
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
+fi
+
+source "$VENV_DIR/bin/activate"
+
+echo "[+] Installing mlc nightly wheels"
+pip install --upgrade pip wheel >/dev/null
+# Prefer nightly wheels; fall back to stable if nightly not available
+if ! pip install --pre -U -f https://mlc.ai/wheels mlc-ai-nightly mlc-llm-nightly; then
+  echo "[!] Nightly wheels not found; installing stable mlc-llm instead"
+  pip install -U mlc-llm mlc-ai-nightly || pip install -U mlc-llm
+fi
+# Install huggingface_hub for lightweight downloads of configs
+pip install -U huggingface_hub
+
+# Resolve model path: local path or snapshot from HF (configs only)
+MODEL_PATH="$MODEL_ID"
+if [[ ! -f "$MODEL_PATH/config.json" && ! -d "$MODEL_PATH" ]]; then
+  echo "[+] Downloading minimal configs from Hugging Face for $MODEL_ID"
+  python - "$MODEL_ID" "$OUT_DIR/src_model" << 'PY'
+import sys
+from pathlib import Path
+from huggingface_hub import snapshot_download
+model_id = sys.argv[1]
+out_dir = Path(sys.argv[2])
+out_dir.mkdir(parents=True, exist_ok=True)
+snapshot_download(
+    repo_id=model_id,
+    local_dir=str(out_dir),
+    allow_patterns=[
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "*.model",
+        "merges.txt",
+        "vocab.json",
+    ],
+)
+print(str(out_dir))
+PY
+  MODEL_PATH="$OUT_DIR/src_model"
+fi
+
+if [[ ! -f "$MODEL_PATH/config.json" ]]; then
+  echo "Missing config.json under $MODEL_PATH. Provide a local model dir or a valid HF repo id." >&2
+  exit 1
+fi
+
+echo "[+] Generating config (${QUANT})"
+GEN_ARGS=(gen_config "$MODEL_PATH" --quantization "$QUANT" --conv-template "$CONV_TEMPLATE" -o "$OUT_DIR")
+if [[ -n "$CTX_WIN" ]]; then GEN_ARGS+=(--context-window-size "$CTX_WIN"); fi
+mlc_llm "${GEN_ARGS[@]}"
+
+CFG_JSON="$OUT_DIR/mlc-chat-config.json"
+if [[ ! -f "$CFG_JSON" ]]; then
+  echo "Config not found: $CFG_JSON" >&2
+  exit 1
+fi
+
+SAFE_NAME=$(basename "$OUT_DIR")
+
+# Newer CLI: compile -> .tar (objects) for Android. Use --host aarch64-linux-android
+PKG_TMP="$OUT_DIR/_pkg"
+mkdir -p "$PKG_TMP"
+
+if [[ $DO_CPU -eq 1 ]]; then
+  echo "[+] Compiling Android arm64 CPU objects (.tar)"
+  mlc_llm compile "$CFG_JSON" --device llvm --host aarch64-linux-android -o "$PKG_TMP/${SAFE_NAME}-cpu.tar"
+fi
+
+if [[ $DO_VULKAN -eq 1 ]]; then
+  echo "[+] Compiling Android arm64 Vulkan objects (.tar)"
+  mlc_llm compile "$CFG_JSON" --device vulkan --host aarch64-linux-android -o "$PKG_TMP/${SAFE_NAME}-vulkan.tar"
+fi
+
+# Package step: generate minimal mlc-package-config.json and run mlc_llm package
+cat > "$PKG_TMP/mlc-package-config.json" << JSON
+{
+  "device": "android",
+  "model_list": [
+    {
+      "model": "${OUT_DIR}",
+      "model_id": "${SAFE_NAME}",
+      "estimated_vram_bytes": 6000000000,
+      "bundle_weight": false
+    }
+  ]
+}
+JSON
+
+pushd "$PKG_TMP" >/dev/null
+  echo "[+] Packaging Android assets"
+  mlc_llm package || true
+popd >/dev/null
+
+# Collect produced shared libs if any
+echo "[+] Collecting outputs"
+find "$PKG_TMP" -type f \( -name "*.so" -o -name "*.aar" -o -name "*.tar" -o -name "*.zip" \) -maxdepth 4 -print0 | while IFS= read -r -d '' f; do
+  bn=$(basename "$f")
+  cp -f "$f" "$OUT_DIR/$bn" || true
+done
+
+# Try to locate runtime .so if produced
+if compgen -G "$PKG_TMP/**/libtvm4j_runtime_packed.so" > /dev/null; then
+  mkdir -p "$OUT_DIR/libs/arm64-v8a"
+  find "$PKG_TMP" -type f -name "libtvm4j_runtime_packed.so" -print -quit | while read -r r; do cp -f "$r" "$OUT_DIR/libs/arm64-v8a/"; done
+fi
+
+# Also rename packaged model libs into our conventional names if found inside AAR/zip (user can extract)
+echo "[+] Done. Outputs in: $OUT_DIR"
+ls -lh "$OUT_DIR" | sed 's/^/[OUT] /'

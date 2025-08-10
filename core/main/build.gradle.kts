@@ -116,4 +116,6 @@ dependencies {
 
     api(project(":core:resources"))
     api(project(":core:components"))
+    // For extracting tar archives from Hugging Face bundles
+    api("org.apache.commons:commons-compress:1.26.2")
 }

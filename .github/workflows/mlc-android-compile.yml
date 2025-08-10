@@ -1,0 +1,117 @@
+name: MLC Android Compile
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: 'HF model id (e.g., Qwen/Qwen2.5-Coder-7B-Instruct)'
+        required: true
+        type: string
+      quant:
+        description: 'Quantization preset (e.g., q4f16_1)'
+        required: true
+        default: 'q4f16_1'
+        type: string
+      device:
+        description: 'Target backend'
+        required: true
+        default: 'cpu'
+        type: choice
+        options: [cpu, vulkan, both]
+      conv_template:
+        description: 'Conversation template (e.g., qwen2, llama-3, chatml)'
+        required: false
+        type: string
+      ctx_window:
+        description: 'Context window size (e.g., 32768)'
+        required: false
+        type: string
+
+jobs:
+  build-android-so:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Ensure script is executable
+        run: chmod +x scripts/mlc_compile_android.sh
+
+      - name: Compile (CPU)
+        if: ${{ inputs.device == 'cpu' || inputs.device == 'both' }}
+        env:
+          PYTHON_BIN: python3
+          CONV_TEMPLATE: ${{ inputs.conv_template }}
+          CTX_WINDOW: ${{ inputs.ctx_window }}
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${CONV_TEMPLATE}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --conv-template ${CONV_TEMPLATE}"; fi
+          if [ -n "${CTX_WINDOW}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --context-window-size ${CTX_WINDOW}"; fi
+          ./scripts/mlc_compile_android.sh \
+            --model-id "${{ inputs.model_id }}" \
+            --quant "${{ inputs.quant }}" \
+            --device cpu \
+            --out "dist/${{ inputs.model_id }}/android-${{ inputs.quant }}" \
+            ${EXTRA_ARGS}
+
+      - name: Compile (Vulkan)
+        if: ${{ inputs.device == 'vulkan' || inputs.device == 'both' }}
+        env:
+          PYTHON_BIN: python3
+          CONV_TEMPLATE: ${{ inputs.conv_template }}
+          CTX_WINDOW: ${{ inputs.ctx_window }}
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${CONV_TEMPLATE}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --conv-template ${CONV_TEMPLATE}"; fi
+          if [ -n "${CTX_WINDOW}" ]; then EXTRA_ARGS="${EXTRA_ARGS} --context-window-size ${CTX_WINDOW}"; fi
+          ./scripts/mlc_compile_android.sh \
+            --model-id "${{ inputs.model_id }}" \
+            --quant "${{ inputs.quant }}" \
+            --device vulkan \
+            --out "dist/${{ inputs.model_id }}/android-${{ inputs.quant }}" \
+            ${EXTRA_ARGS}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlc-android-${{ inputs.model_id }}-${{ inputs.quant }}-${{ inputs.device }}
+          path: |
+            dist/${{ inputs.model_id }}/android-${{ inputs.quant }}/*.so
+            dist/${{ inputs.model_id }}/android-${{ inputs.quant }}/mlc-chat-config.json
+            dist/${{ inputs.model_id }}/android-${{ inputs.quant }}/*.json
+          if-no-files-found: warn
+
+      - name: Create release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mlc-android-${{ inputs.model_id }}-${{ inputs.quant }}-${{ github.run_number }}
+          name: MLC Android ${{ inputs.model_id }} ${{ inputs.quant }} (${{ inputs.device }})
+          draft: false
+          prerelease: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/${{ inputs.model_id }}/android-${{ inputs.quant }}/*.so
+            dist/${{ inputs.model_id }}/android-${{ inputs.quant }}/mlc-chat-config.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
