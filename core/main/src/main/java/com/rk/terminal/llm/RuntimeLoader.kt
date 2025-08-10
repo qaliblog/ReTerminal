@@ -18,15 +18,13 @@ object RuntimeLoader {
         val ctx = Utils.getApp()
         val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: return false
         val srcDir = File(modelDir, "libs/$abi")
-        if (!srcDir.exists() || !srcDir.isDirectory) {
-            return false
-        }
         val destDir = File(ctx.filesDir, "rt/$abi").apply { mkdirs() }
 
         val tvmCandidates = listOf("libtvm_runtime.so", "libtvm4j_runtime_packed.so")
         val mlcCandidates = listOf("libmlc_llm.so", "libmlc_llm_vulkan.so")
 
         var tvmLoaded = false
+        // 1) Try from model folder libs/<abi>
         for (name in tvmCandidates) {
             val src = File(srcDir, name)
             if (src.exists()) {
@@ -39,13 +37,42 @@ object RuntimeLoader {
                 } catch (_: UnsatisfiedLinkError) {}
             }
         }
-        // Best-effort load MLC helper if present
+        // 2) Fallback: try from app assets at assets/<abi>/<name>
+        if (!tvmLoaded) {
+            val am = ctx.assets
+            for (name in tvmCandidates) {
+                val assetPath = "$abi/$name"
+                runCatching {
+                    am.open(assetPath).use { input ->
+                        val dst = File(destDir, name)
+                        dst.outputStream().use { output -> input.copyTo(output) }
+                        System.load(dst.absolutePath)
+                        tvmLoaded = true
+                        return@runCatching
+                    }
+                }
+                if (tvmLoaded) break
+            }
+        }
+
+        // Best-effort load MLC helper if present (model libs first)
         for (name in mlcCandidates) {
             val src = File(srcDir, name)
             if (src.exists()) {
                 val dst = File(destDir, name)
                 if (!dst.exists() || dst.length() != src.length()) src.copyTo(dst, overwrite = true)
                 runCatching { System.load(dst.absolutePath) }
+            } else {
+                // Also try assets/<abi>/name
+                val assetPath = "$abi/$name"
+                runCatching {
+                    val am = ctx.assets
+                    am.open(assetPath).use { input ->
+                        val dst = File(destDir, name)
+                        dst.outputStream().use { output -> input.copyTo(output) }
+                        System.load(dst.absolutePath)
+                    }
+                }
             }
         }
 
