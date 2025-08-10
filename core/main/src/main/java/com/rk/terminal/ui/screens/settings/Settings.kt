@@ -33,6 +33,11 @@ import com.rk.settings.Settings
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.components.SettingsToggle
 import com.rk.terminal.ui.routes.MainActivityRoutes
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.rk.terminal.llm.ModelLocator
+import com.rk.terminal.llm.MlcModelDownloader
 
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -129,6 +134,34 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             val folders = remember(foldersCsv) { foldersCsv.split(',').map { it.trim() }.filter { it.isNotBlank() } }
 
             Text(text = if (selectedModel.isBlank()) "Selected: (auto)" else "Selected: $selectedModel", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+
+            // MLC model downloader (Hugging Face)
+            var repoInput by remember { mutableStateOf("mlc-ai/") }
+            var progress by remember { mutableStateOf("") }
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                Text(text = "Download from Hugging Face (e.g., mlc-ai/Llama-3-8B-Instruct-q4f16_1-MLC)")
+                OutlinedTextField(value = repoInput, onValueChange = { repoInput = it }, label = { Text("Repo ID") })
+                Button(onClick = {
+                    val scope = rememberCoroutineScope()
+                    scope.launch {
+                        progress = "Resolving..."
+                        val root = ModelLocator.modelRoot() ?: java.io.File("/sdcard/reterminalAssets").apply { mkdirs() }
+                        val dest = MlcModelDownloader.downloadTo(repoInput.trim(), root, onProgress = { progress = it }, options = MlcModelDownloader.Options(includeWeights = true))
+                        if (dest != null) {
+                            val updated = (folders + dest.absolutePath).toSet().joinToString(",")
+                            Settings.model_folders_csv = updated
+                            foldersCsv = updated
+                            Settings.selected_model_folder = dest.absolutePath
+                            selectedModel = dest.absolutePath
+                            com.rk.terminal.llm.ModelManager.setSelectedModel(dest.absolutePath)
+                            progress = "Downloaded to ${dest.absolutePath}"
+                        } else {
+                            progress = "Download failed"
+                        }
+                    }
+                }, modifier = Modifier.padding(top = 8.dp)) { Text("Download") }
+                if (progress.isNotBlank()) Text(text = progress, modifier = Modifier.padding(top = 6.dp))
+            }
 
             folders.forEach { path ->
                 Row(modifier = Modifier
