@@ -17,8 +17,9 @@ import java.io.File
  * - Requests a structured plan (JSON) from the LLM based on a user goal
  * - Caches the plan per-session
  * - Iterates tasks and, for each task, requests a single tool call JSON to perform the task
- * - Executes the tool call (create file, write file, mkdir, run shell)
+ * - Executes the tool call (create file, write file, mkdir, run shell, list directory, read file)
  * - Marks tasks done in a progress cache to ensure idempotency
+ * - Captures observations (e.g., dir listings, file contents, command outputs) and feeds them into subsequent tool calls
  */
 class AgentOrchestrator(
     private val context: Context,
@@ -41,6 +42,9 @@ class AgentOrchestrator(
     }
     private val planFile: File by lazy { File(agentDir, "plan.json") }
     private val progressFile: File by lazy { File(agentDir, "progress.json") }
+
+    // Per-run observations (taskId -> observation text)
+    private val observations: MutableMap<String, String> = linkedMapOf()
 
     private fun loadProgress(): JSONObject {
         return runCatching { JSONObject(progressFile.takeIf { it.exists() }?.readText().orEmpty()) }
@@ -67,18 +71,37 @@ class AgentOrchestrator(
         return tasks.optJSONObject(taskId)?.optString("status") == "done"
     }
 
+    private fun listTopLevel(dir: File, limit: Int = 50): String {
+        val items = dir.listFiles()?.take(limit).orEmpty()
+        val arr = JSONArray()
+        items.forEach { f ->
+            arr.put(JSONObject().put("name", f.name).put("type", if (f.isDirectory) "dir" else "file"))
+        }
+        return JSONObject().put("path", dir.absolutePath).put("items", arr).toString()
+    }
+
     suspend fun generatePlan(userGoal: String): Plan? = withContext(Dispatchers.IO) {
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
         val sys = """
             You are an autonomous software agent that plans work as structured JSON only.
             Return ONLY a minified JSON object with the following shape and nothing else:
             {"goal": string, "tasks": [{"id": string, "description": string}, ...]}
             - ids must be unique short strings (e.g., t1, t2, t3)
             - descriptions must be concrete and atomic
+            - Include discovery tasks when needed, such as listing directories or reading files, before making changes.
+            - Prefer minimal, safe, idempotent steps.
             - Do not include code in the plan. Code will be provided later via tool calls.
+        """.trimIndent()
+        val user = """
+            Goal: ${userGoal}
+            Working directory: ${wdPath}
+            Workspace snapshot (top-level): ${workspaceInfo}
         """.trimIndent()
         val messages = listOf(
             LlmMessage("system", sys),
-            LlmMessage("user", userGoal)
+            LlmMessage("user", user)
         )
         val flow: Flow<String> = LlmProvider.current().generate(messages)
         val content = collectAll(flow)
@@ -122,11 +145,16 @@ class AgentOrchestrator(
                 onStatus("Task ${'$'}{task.id}: could not determine action")
                 return
             }
-            val ok = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
-                false
+                ToolResult(false, null)
             }
-            if (ok) {
+            if (result.ok) {
+                if (!result.observation.isNullOrBlank()) {
+                    observations[task.id] = result.observation
+                    val preview = result.observation.take(800)
+                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                }
                 markTaskDone(task.id)
                 onStatus("Task ${'$'}{task.id}: done")
             } else {
@@ -141,6 +169,11 @@ class AgentOrchestrator(
         val args: JSONObject
     )
 
+    private data class ToolResult(
+        val ok: Boolean,
+        val observation: String?
+    )
+
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
             Return ONLY a single minified JSON object describing ONE tool call to complete the given task.
@@ -149,18 +182,25 @@ class AgentOrchestrator(
             {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append"}}
             {"type":"make_dir","args":{"path": string}}
             {"type":"run_shell","args":{"command": string}}
+            {"type":"list_dir","args":{"path": string}}
+            {"type":"read_file","args":{"path": string, "max_bytes": number}}
             Rules:
             - Use relative paths with respect to the current working directory unless absolute is required.
             - When writing source code, include full file content in "content".
+            - Prefer discovery calls (list_dir/read_file) when more context is needed.
+            - Consider the provided observations from prior steps.
             - Do not return markdown code fences. Return pure JSON on a single line.
             - Do not include explanations.
         """.trimIndent()
         val wd = workingDirProvider()
+        val prior = if (observations.isEmpty()) "(none)" else observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(500)}${if (v.length > 500) " …" else ""}" }
         val prompt = """
             Goal: ${goal}
             Working directory: ${wd}
             Current task id: ${task.id}
             Task: ${task.description}
+            Prior observations (latest first):
+            ${prior}
             Produce one tool call JSON now.
         """.trimIndent()
         val flow = LlmProvider.current().generate(
@@ -187,7 +227,7 @@ class AgentOrchestrator(
         file.parentFile?.let { if (!it.exists()) it.mkdirs() }
     }
 
-    private fun executeToolCall(tc: ToolCall): Boolean {
+    private fun executeToolCall(tc: ToolCall): ToolResult {
         return when (tc.type) {
             "create_file" -> {
                 val path = tc.args.optString("path")
@@ -195,7 +235,7 @@ class AgentOrchestrator(
                 val f = resolvePath(path)
                 ensureParentDirs(f)
                 if (!f.exists()) f.createNewFile()
-                f.exists()
+                ToolResult(f.exists(), null)
             }
             "write_file" -> {
                 val path = tc.args.optString("path")
@@ -210,29 +250,50 @@ class AgentOrchestrator(
                     f.writeText(content)
                 }
                 val ok = f.exists() && f.length() >= 0
-                ok
+                ToolResult(ok, null)
             }
             "make_dir" -> {
                 val path = tc.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
                 val d = resolvePath(path)
                 d.mkdirs()
-                d.exists() && d.isDirectory
+                ToolResult(d.exists() && d.isDirectory, null)
             }
             "run_shell" -> {
                 val command = tc.args.optString("command")
                 require(command.isNotBlank()) { "command missing" }
-                // Use internal busybox/sh if available in environment; here we execute via sh -c in app sandbox.
-                // For broader commands, integrate Termux run if present.
                 val wd = workingDirProvider()
                 val proc = ProcessBuilder("sh", "-c", command)
                     .directory(File(wd))
                     .redirectErrorStream(true)
                     .start()
+                val output = proc.inputStream.bufferedReader().use { it.readText() }
                 val exit = proc.waitFor()
-                exit == 0
+                ToolResult(exit == 0, output.ifBlank { null })
             }
-            else -> false
+            "list_dir" -> {
+                val path = tc.args.optString("path")
+                require(path.isNotBlank()) { "path missing" }
+                val d = resolvePath(path)
+                val listing = if (d.exists() && d.isDirectory) listTopLevel(d, limit = 200) else JSONObject().put("path", d.absolutePath).put("items", JSONArray()).toString()
+                ToolResult(true, listing)
+            }
+            "read_file" -> {
+                val path = tc.args.optString("path")
+                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                require(path.isNotBlank()) { "path missing" }
+                val f = resolvePath(path)
+                val content = if (f.exists() && f.isFile) {
+                    val bytes = f.readBytes()
+                    val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
+                    val text = String(slice)
+                    JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes).toString()
+                } else {
+                    JSONObject().put("path", f.absolutePath).put("missing", true).toString()
+                }
+                ToolResult(true, content)
+            }
+            else -> ToolResult(false, null)
         }
     }
 
