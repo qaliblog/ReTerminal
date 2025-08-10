@@ -118,6 +118,8 @@ class AgentOrchestrator(
 
         var stepsTaken = 0
         val maxSteps = 5
+        var lastObservation: String? = null
+        var lastToolType: String? = null
         while (stepsTaken < maxSteps) {
             val toolCall = requestSingleToolCall(plan.goal, task)
             if (toolCall == null) {
@@ -145,6 +147,22 @@ class AgentOrchestrator(
                     onStatus("Task ${'$'}{task.id}: done")
                     return true
                 }
+
+                // If this is a discovery tool and the task category is discovery, complete the task now.
+                if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
+                    markTaskDone(task.id)
+                    onStatus("Task ${'$'}{task.id}: done")
+                    return true
+                }
+
+                // Prevent loops on repeated identical non-modifying observations
+                val obs = result.observation
+                if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
+                    onStatus("Task ${'$'}{task.id}: no new information; stopping to request plan update")
+                    return false
+                }
+                lastObservation = result.observation ?: lastObservation
+                lastToolType = toolCall.type
 
                 // Discovery-type call; iterate to request the next action using fresh observation
                 stepsTaken++
@@ -175,6 +193,20 @@ class AgentOrchestrator(
     private fun isModifyingTool(type: String): Boolean {
         return when (type) {
             "write_file", "apply_changes", "make_dir", "create_file" -> true
+            else -> false
+        }
+    }
+
+    private fun isDiscoveryTool(type: String): Boolean {
+        return when (type) {
+            "read_file", "list_dir" -> true
+            else -> false
+        }
+    }
+
+    private fun isDiscoveryCategory(category: String?): Boolean {
+        return when (category) {
+            "read_file", "list_dir", "grep", "analyze" -> true
             else -> false
         }
     }
