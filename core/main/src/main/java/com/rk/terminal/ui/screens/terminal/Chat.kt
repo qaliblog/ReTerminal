@@ -287,7 +287,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 postStatus("Could not parse plan from AI.")
                                 return@launch
                             }
-                            activePlan.value = plan
+                            scope.launch(Dispatchers.Main) { activePlan.value = plan }
                             postStatus("Plan ready: ${plan.tasks.size} task(s). Press Proceed to run the first task.")
                             saveHistory()
                         } catch (e: Exception) {
@@ -330,7 +330,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             if (updated == null) {
                                 postStatus("Could not update plan.")
                             } else {
-                                activePlan.value = updated
+                                scope.launch(Dispatchers.Main) { activePlan.value = updated }
                                 postStatus("Plan updated: ${updated.tasks.size} task(s). Press Proceed for next step.")
                             }
                             saveHistory()
