@@ -88,10 +88,14 @@ class AgentOrchestrator(
         val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
         val tasks = mutableListOf<Task>()
         for (i in 0 until tasksArr.length()) {
-            val t = tasksArr.optJSONObject(i) ?: continue
-            val id = t.optString("id").ifBlank { "t${i + 1}" }
-            val desc = t.optString("description").ifBlank { continue }
-            tasks.add(Task(id, desc))
+            val t = tasksArr.optJSONObject(i)
+            if (t != null) {
+                val id = t.optString("id").ifBlank { "t${i + 1}" }
+                val desc = t.optString("description")
+                if (desc.isNotBlank()) {
+                    tasks.add(Task(id, desc))
+                }
+            }
         }
         val plan = Plan(goal, tasks)
         planFile.writeText(JSONObject().apply {
@@ -106,28 +110,28 @@ class AgentOrchestrator(
     suspend fun executePlanSequentially(
         plan: Plan,
         onStatus: (String) -> Unit
-    ) = withContext(Dispatchers.IO) {
+    ) {
         for (task in plan.tasks) {
             if (isTaskDone(task.id)) {
-                onStatus("Skip ${task.id}: already done")
+                onStatus("Skip ${'$'}{task.id}: already done")
                 continue
             }
-            onStatus("Task ${task.id}: ${task.description}")
+            onStatus("Task ${'$'}{task.id}: ${'$'}{task.description}")
             val toolCall = requestSingleToolCall(plan.goal, task)
             if (toolCall == null) {
-                onStatus("Task ${task.id}: could not determine action")
-                break
+                onStatus("Task ${'$'}{task.id}: could not determine action")
+                return
             }
             val ok = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
-                onStatus("Task ${task.id} failed: ${e.message}")
+                onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
                 false
             }
             if (ok) {
                 markTaskDone(task.id)
-                onStatus("Task ${task.id}: done")
+                onStatus("Task ${'$'}{task.id}: done")
             } else {
-                onStatus("Task ${task.id}: failed")
-                break
+                onStatus("Task ${'$'}{task.id}: failed")
+                return
             }
         }
     }
