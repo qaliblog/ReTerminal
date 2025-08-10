@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -37,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -175,7 +177,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         ) {
             // Chat session manager
             IconButton(onClick = { showChatManager = true }) {
-                Icon(Icons.Default.Folder, contentDescription = "Chat sessions")
+                Icon(Icons.Default.Chat, contentDescription = "Chat sessions")
             }
 
             // Workspace selector button
@@ -411,7 +413,11 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                             .padding(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(text = cid)
+                                        val isCurrent = cid == currentChatId.value
+                                        Text(
+                                            text = if (isCurrent) "${'$'}cid (current)" else cid,
+                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                                        )
                                     }
                                 }
                             }
