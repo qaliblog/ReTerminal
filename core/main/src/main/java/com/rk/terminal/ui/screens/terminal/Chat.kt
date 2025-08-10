@@ -48,6 +48,10 @@ fun ChatView(mainActivityActivity: MainActivity) {
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
+    // Agent state
+    val activePlan = remember { mutableStateOf<AgentOrchestrator.Plan?>(null) }
+    val isPlanning = remember { mutableStateOf(false) }
+
     fun postStatus(s: String) {
         messages.add(ChatMessage("assistant", s))
     }
@@ -88,12 +92,13 @@ fun ChatView(mainActivityActivity: MainActivity) {
             )
             Button(onClick = {
                 val goal = input.trim()
-                if (goal.isEmpty()) return@Button
+                if (goal.isEmpty() || isPlanning.value) return@Button
                 input = ""
                 messages.add(ChatMessage("user", goal))
-                // Agent mode
+                // Agent Plan
                 scope.launch(Dispatchers.IO) {
                     try {
+                        isPlanning.value = true
                         val wdProvider = {
                             val svc = mainActivityActivity.sessionBinder?.getService()
                             svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard"
@@ -109,16 +114,67 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             postStatus("Could not parse plan from AI.")
                             return@launch
                         }
-                        postStatus("Plan ready: ${'$'}{plan.tasks.size} task(s). Starting…")
-                        agent.executePlanSequentially(plan) { s ->
+                        activePlan.value = plan
+                        postStatus("Plan ready: ${'$'}{plan.tasks.size} task(s). Press Proceed to run the first task.")
+                    } catch (e: Exception) {
+                        postStatus("Agent error: ${'$'}{e.message}")
+                    } finally {
+                        isPlanning.value = false
+                    }
+                }
+            }) { Text("Plan") }
+            Button(onClick = {
+                // Proceed one task
+                val plan = activePlan.value ?: return@Button
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val wdProvider = {
+                            val svc = mainActivityActivity.sessionBinder?.getService()
+                            svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard"
+                        }
+                        val agent = AgentOrchestrator(
+                            context = mainActivityActivity,
+                            sessionId = sessionId,
+                            workingDirProvider = wdProvider
+                        )
+                        val success = agent.executeNextTask(plan) { s ->
                             scope.launch(Dispatchers.Main) { postStatus(s) }
                         }
-                        postStatus("Agent run complete.")
+                        if (!success) {
+                            postStatus("No pending task or step failed.")
+                        }
                     } catch (e: Exception) {
                         postStatus("Agent error: ${'$'}{e.message}")
                     }
                 }
-            }) { Text("Run Agent") }
+            }) { Text("Proceed") }
+            Button(onClick = {
+                // Update plan with done statuses and observations
+                val plan = activePlan.value ?: return@Button
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val wdProvider = {
+                            val svc = mainActivityActivity.sessionBinder?.getService()
+                            svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard"
+                        }
+                        val agent = AgentOrchestrator(
+                            context = mainActivityActivity,
+                            sessionId = sessionId,
+                            workingDirProvider = wdProvider
+                        )
+                        messages.add(ChatMessage("assistant", "Updating plan…"))
+                        val updated = agent.requestUpdatedPlan(plan)
+                        if (updated == null) {
+                            postStatus("Could not update plan.")
+                        } else {
+                            activePlan.value = updated
+                            postStatus("Plan updated: ${'$'}{updated.tasks.size} task(s). Press Proceed for next step.")
+                        }
+                    } catch (e: Exception) {
+                        postStatus("Agent error: ${'$'}{e.message}")
+                    }
+                }
+            }) { Text("Update Plan") }
             IconButton(
                 onClick = {
                     val prompt = input.trim()

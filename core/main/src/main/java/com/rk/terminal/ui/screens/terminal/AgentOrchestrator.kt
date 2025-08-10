@@ -71,96 +71,55 @@ class AgentOrchestrator(
         return tasks.optJSONObject(taskId)?.optString("status") == "done"
     }
 
-    private fun listTopLevel(dir: File, limit: Int = 50): String {
-        val items = dir.listFiles()?.take(limit).orEmpty()
+    private fun taskStatus(taskId: String): String = if (isTaskDone(taskId)) "done" else "pending"
+
+    private fun persistPlanWithStatuses(plan: Plan) {
         val arr = JSONArray()
-        items.forEach { f ->
-            arr.put(JSONObject().put("name", f.name).put("type", if (f.isDirectory) "dir" else "file"))
-        }
-        return JSONObject().put("path", dir.absolutePath).put("items", arr).toString()
-    }
-
-    suspend fun generatePlan(userGoal: String): Plan? = withContext(Dispatchers.IO) {
-        val wdPath = workingDirProvider()
-        val wd = File(wdPath)
-        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
-        val sys = """
-            You are an autonomous software agent that plans work as structured JSON only.
-            Return ONLY a minified JSON object with the following shape and nothing else:
-            {"goal": string, "tasks": [{"id": string, "description": string}, ...]}
-            - ids must be unique short strings (e.g., t1, t2, t3)
-            - descriptions must be concrete and atomic
-            - Include discovery tasks when needed, such as listing directories or reading files, before making changes.
-            - Prefer minimal, safe, idempotent steps.
-            - Do not include code in the plan. Code will be provided later via tool calls.
-        """.trimIndent()
-        val user = """
-            Goal: ${userGoal}
-            Working directory: ${wdPath}
-            Workspace snapshot (top-level): ${workspaceInfo}
-        """.trimIndent()
-        val messages = listOf(
-            LlmMessage("system", sys),
-            LlmMessage("user", user)
-        )
-        val flow: Flow<String> = LlmProvider.current().generate(messages)
-        val content = collectAll(flow)
-        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
-        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
-        val goal = obj.optString("goal").ifBlank { userGoal }
-        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
-        val tasks = mutableListOf<Task>()
-        for (i in 0 until tasksArr.length()) {
-            val t = tasksArr.optJSONObject(i)
-            if (t != null) {
-                val id = t.optString("id").ifBlank { "t${i + 1}" }
-                val desc = t.optString("description")
-                if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc))
-                }
-            }
-        }
-        val plan = Plan(goal, tasks)
-        planFile.writeText(JSONObject().apply {
-            put("goal", goal)
-            put("tasks", JSONArray().apply {
-                tasks.forEach { put(JSONObject().put("id", it.id).put("description", it.description)) }
+        plan.tasks.forEach { t ->
+            arr.put(JSONObject().apply {
+                put("id", t.id)
+                put("description", t.description)
+                put("status", taskStatus(t.id))
             })
-        }.toString(2))
-        return@withContext plan
+        }
+        val root = JSONObject().apply {
+            put("goal", plan.goal)
+            put("tasks", arr)
+        }
+        planFile.writeText(root.toString(2))
     }
 
-    suspend fun executePlanSequentially(
+    fun getNextPendingTask(plan: Plan): Task? {
+        return plan.tasks.firstOrNull { !isTaskDone(it.id) }
+    }
+
+    suspend fun executeNextTask(
         plan: Plan,
         onStatus: (String) -> Unit
-    ) {
-        for (task in plan.tasks) {
-            if (isTaskDone(task.id)) {
-                onStatus("Skip ${'$'}{task.id}: already done")
-                continue
+    ): Boolean {
+        val task = getNextPendingTask(plan) ?: return false
+        onStatus("Task ${'$'}{task.id}: ${'$'}{task.description}")
+        val toolCall = requestSingleToolCall(plan.goal, task)
+        if (toolCall == null) {
+            onStatus("Task ${'$'}{task.id}: could not determine action")
+            return false
+        }
+        val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+            onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
+            ToolResult(false, null)
+        }
+        if (result.ok) {
+            if (!result.observation.isNullOrBlank()) {
+                observations[task.id] = result.observation
+                val preview = result.observation.take(800)
+                onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
             }
-            onStatus("Task ${'$'}{task.id}: ${'$'}{task.description}")
-            val toolCall = requestSingleToolCall(plan.goal, task)
-            if (toolCall == null) {
-                onStatus("Task ${'$'}{task.id}: could not determine action")
-                return
-            }
-            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
-                onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
-                ToolResult(false, null)
-            }
-            if (result.ok) {
-                if (!result.observation.isNullOrBlank()) {
-                    observations[task.id] = result.observation
-                    val preview = result.observation.take(800)
-                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
-                }
-                markTaskDone(task.id)
-                onStatus("Task ${'$'}{task.id}: done")
-            } else {
-                onStatus("Task ${'$'}{task.id}: failed")
-                return
-            }
+            markTaskDone(task.id)
+            onStatus("Task ${'$'}{task.id}: done")
+            return true
+        } else {
+            onStatus("Task ${'$'}{task.id}: failed")
+            return false
         }
     }
 
@@ -320,5 +279,137 @@ class AgentOrchestrator(
             }
         }
         return null
+    }
+
+    suspend fun generatePlan(userGoal: String): Plan? = withContext(Dispatchers.IO) {
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        val sys = """
+            You are an autonomous software agent that plans work as structured JSON only.
+            Return ONLY a minified JSON object with the following shape and nothing else:
+            {"goal": string, "tasks": [{"id": string, "description": string}, ...]}
+            - ids must be unique short strings (e.g., t1, t2, t3)
+            - descriptions must be concrete and atomic
+            - Include discovery tasks when needed, such as listing directories or reading files, before making changes.
+            - Prefer minimal, safe, idempotent steps.
+            - Do not include code in the plan. Code will be provided later via tool calls.
+        """.trimIndent()
+        val user = """
+            Goal: ${userGoal}
+            Working directory: ${wdPath}
+            Workspace snapshot (top-level): ${workspaceInfo}
+        """.trimIndent()
+        val messages = listOf(
+            LlmMessage("system", sys),
+            LlmMessage("user", user)
+        )
+        val flow: Flow<String> = LlmProvider.current().generate(messages)
+        val content = collectAll(flow)
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val goal = obj.optString("goal").ifBlank { userGoal }
+        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<Task>()
+        for (i in 0 until tasksArr.length()) {
+            val t = tasksArr.optJSONObject(i)
+            if (t != null) {
+                val id = t.optString("id").ifBlank { "t${i + 1}" }
+                val desc = t.optString("description")
+                if (desc.isNotBlank()) {
+                    tasks.add(Task(id, desc))
+                }
+            }
+        }
+        val plan = Plan(goal, tasks)
+        persistPlanWithStatuses(plan)
+        return@withContext plan
+    }
+
+    suspend fun executePlanSequentially(
+        plan: Plan,
+        onStatus: (String) -> Unit
+    ) {
+        for (task in plan.tasks) {
+            if (isTaskDone(task.id)) {
+                onStatus("Skip ${'$'}{task.id}: already done")
+                continue
+            }
+            onStatus("Task ${'$'}{task.id}: ${'$'}{task.description}")
+            val toolCall = requestSingleToolCall(plan.goal, task)
+            if (toolCall == null) {
+                onStatus("Task ${'$'}{task.id}: could not determine action")
+                return
+            }
+            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+                onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
+                ToolResult(false, null)
+            }
+            if (result.ok) {
+                if (!result.observation.isNullOrBlank()) {
+                    observations[task.id] = result.observation
+                    val preview = result.observation.take(800)
+                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                }
+                markTaskDone(task.id)
+                onStatus("Task ${'$'}{task.id}: done")
+                // Refresh persisted plan statuses after each task
+                persistPlanWithStatuses(plan)
+            } else {
+                onStatus("Task ${'$'}{task.id}: failed")
+                return
+            }
+        }
+    }
+
+    // Request an updated plan from the LLM, preserving completed tasks and allowing future tasks to adjust.
+    suspend fun requestUpdatedPlan(plan: Plan): Plan? = withContext(Dispatchers.IO) {
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        val completed = JSONArray().apply {
+            plan.tasks.forEach { if (isTaskDone(it.id)) put(it.id) }
+        }
+        val currentPlanJson = runCatching { JSONObject(planFile.readText()) }.getOrNull()?.toString() ?: "{}"
+        val obsJson = JSONObject().apply {
+            observations.entries.forEach { (k, v) -> put(k, if (v.length > 5000) v.take(5000) + " …" else v) }
+        }.toString()
+        val sys = """
+            You update task plans. Return ONLY a minified JSON with shape:
+            {"goal": string, "tasks": [{"id": string, "description": string, "status": "done"|"pending"}, ...]}
+            Rules:
+            - Keep ids stable for already completed tasks and mark them status:"done".
+            - You may add, remove, or edit pending tasks if needed.
+            - Prefer minimal safe changes.
+            - Do not include explanations.
+        """.trimIndent()
+        val user = """
+            Current working directory: ${wdPath}
+            Workspace snapshot: ${workspaceInfo}
+            Completed task ids: ${completed}
+            Prior observations: ${obsJson}
+            Current plan JSON: ${currentPlanJson}
+            Produce the updated plan JSON now.
+        """.trimIndent()
+        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+        val content = collectAll(flow)
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val goal = obj.optString("goal").ifBlank { plan.goal }
+        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<Task>()
+        for (i in 0 until tasksArr.length()) {
+            val t = tasksArr.optJSONObject(i)
+            if (t != null) {
+                val id = t.optString("id").ifBlank { "t${i + 1}" }
+                val desc = t.optString("description")
+                if (desc.isNotBlank()) {
+                    tasks.add(Task(id, desc))
+                }
+            }
+        }
+        val updated = Plan(goal, tasks)
+        persistPlanWithStatuses(updated)
+        return@withContext updated
     }
 }
