@@ -17,7 +17,7 @@ import java.io.File
  * - Requests a structured plan (JSON) from the LLM based on a user goal
  * - Caches the plan per-session
  * - Iterates tasks and, for each task, requests a single tool call JSON to perform the task
- * - Executes the tool call (create file, write file, mkdir, run shell, list directory, read file)
+ * - Executes the tool call (create file, write file, mkdir, run shell, list directory, read file, apply minimal edits)
  * - Marks tasks done in a progress cache to ensure idempotency
  * - Captures observations (e.g., dir listings, file contents, command outputs) and feeds them into subsequent tool calls
  */
@@ -157,9 +157,16 @@ class AgentOrchestrator(
             {"type":"run_shell","args":{"command": string}}
             {"type":"list_dir","args":{"path": string}}
             {"type":"read_file","args":{"path": string, "max_bytes": number}}
+            {"type":"apply_changes","args":{"edits": [
+                {"path": string, "op": "replace_exact", "old": string, "new": string},
+                {"path": string, "op": "replace_between_markers", "start_marker": string, "end_marker": string, "new_content": string, "include_markers": false},
+                {"path": string, "op": "insert_after_anchor", "anchor": string, "new_content": string},
+                {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string}
+            ]}}
             Rules:
             - Use relative paths with respect to the current working directory unless absolute is required.
-            - When writing source code that implements the goal, include the full file content in "content". Do not use placeholders.
+            - When writing source code that implements the goal, include the full file content in "content" for write_file. Do not use placeholders.
+            - For updating existing files, prefer apply_changes with minimal edits over sending full file content. Use unique anchors and exact old text for precise replacements.
             - Prefer discovery calls (list_dir/read_file) when more context is needed.
             - Consider the provided observations from prior steps.
             - Do not return markdown code fences. Return pure JSON on a single line.
@@ -265,6 +272,79 @@ class AgentOrchestrator(
                     JSONObject().put("path", f.absolutePath).put("missing", true).toString()
                 }
                 ToolResult(true, content)
+            }
+            "apply_changes" -> {
+                val edits = tc.args.optJSONArray("edits") ?: JSONArray()
+                val results = mutableListOf<String>()
+                for (i in 0 until edits.length()) {
+                    val e = edits.optJSONObject(i) ?: continue
+                    val op = e.optString("op")
+                    val path = e.optString("path")
+                    if (path.isBlank()) { results.add("edit[$i]: missing path"); continue }
+                    val file = resolvePath(path)
+                    if (!file.exists()) { results.add("edit[$i]: file missing: ${file.path}"); continue }
+                    val original = runCatching { file.readText() }.getOrElse { "" }
+                    val updated = when (op) {
+                        "replace_exact" -> {
+                            val old = e.optString("old")
+                            val new = e.optString("new")
+                            if (old.isEmpty()) { results.add("edit[$i]: old empty"); null } else {
+                                val idx = original.indexOf(old)
+                                if (idx < 0) { results.add("edit[$i]: old not found"); null } else {
+                                    original.replaceFirst(old, new)
+                                }
+                            }
+                        }
+                        "replace_between_markers" -> {
+                            val start = e.optString("start_marker")
+                            val end = e.optString("end_marker")
+                            val newContent = e.optString("new_content")
+                            val includeMarkers = e.optBoolean("include_markers", false)
+                            val sIdx = original.indexOf(start)
+                            if (sIdx < 0) { results.add("edit[$i]: start not found"); null } else {
+                                val eIdx = original.indexOf(end, sIdx + start.length)
+                                if (eIdx < 0) { results.add("edit[$i]: end not found"); null } else {
+                                    if (includeMarkers) {
+                                        val pre = original.substring(0, sIdx)
+                                        val post = original.substring(eIdx + end.length)
+                                        pre + start + newContent + end + post
+                                    } else {
+                                        val pre = original.substring(0, sIdx + start.length)
+                                        val post = original.substring(eIdx)
+                                        pre + newContent + post
+                                    }
+                                }
+                            }
+                        }
+                        "insert_after_anchor" -> {
+                            val anchor = e.optString("anchor")
+                            val newContent = e.optString("new_content")
+                            val aIdx = original.indexOf(anchor)
+                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
+                                val insertPos = aIdx + anchor.length
+                                original.substring(0, insertPos) + newContent + original.substring(insertPos)
+                            }
+                        }
+                        "insert_before_anchor" -> {
+                            val anchor = e.optString("anchor")
+                            val newContent = e.optString("new_content")
+                            val aIdx = original.indexOf(anchor)
+                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
+                                original.substring(0, aIdx) + newContent + original.substring(aIdx)
+                            }
+                        }
+                        else -> { results.add("edit[$i]: unknown op ${op}"); null }
+                    }
+                    if (updated != null) {
+                        runCatching { file.writeText(updated) }.onSuccess {
+                            results.add("edit[$i]: ok (${path})")
+                        }.onFailure { ex ->
+                            results.add("edit[$i]: write failed (${ex.message})")
+                        }
+                    }
+                }
+                val summary = (if (results.isEmpty()) "no edits" else results.joinToString("; "))
+                ToolResult(true, summary)
             }
             else -> ToolResult(false, null)
         }
