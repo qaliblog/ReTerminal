@@ -153,15 +153,16 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     override fun copyModeChanged(copyMode: Boolean) {}
     
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
-            activity.sessionBinder?.terminateSession(activity.sessionBinder!!.getService().currentSession.value.first)
-            if (activity.sessionBinder!!.getService().sessionList.isEmpty()){
-                activity.finish()
-            }else{
-                changeSession(activity,activity.sessionBinder!!.getService().sessionList.keys.first())
+                    if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
+                activity.sessionBinder?.terminateSession(activity.sessionBinder!!.getService().currentSession.value.first)
+                if (activity.sessionBinder!!.getService().sessionList.isEmpty()){
+                    // Move app to background instead of closing
+                    activity.moveTaskToBack(true)
+                }else{
+                    changeSession(activity,activity.sessionBinder!!.getService().sessionList.keys.first())
+                }
+                return true
             }
-            return true
-        }
         return false
     }
     
