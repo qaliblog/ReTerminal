@@ -376,6 +376,11 @@ class AgentOrchestrator(
     }
 
     suspend fun generatePlan(userGoal: String): Plan? = withContext(Dispatchers.IO) {
+        // Starting a brand-new plan for this chat session. Clear any prior progress and
+        // ephemeral observations so old task ids (e.g., t1, t2) from previous plans do not
+        // incorrectly mark new plan tasks as done.
+        runCatching { if (progressFile.exists()) progressFile.delete() }
+        observations.clear()
         val wdPath = workingDirProvider()
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
