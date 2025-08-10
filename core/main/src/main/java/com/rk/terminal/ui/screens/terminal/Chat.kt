@@ -91,13 +91,25 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     messages.add(ChatMessage("assistant", "…"))
 
                     scope.launch(Dispatchers.IO) {
-                        LlmProvider.current().generate(messages.map { com.rk.terminal.llm.LlmMessage(it.role, it.content) }).collect { token ->
-                            // Append/stream into the last assistant message
+                        runCatching {
+                            LlmProvider.current().generate(messages.map { com.rk.terminal.llm.LlmMessage(it.role, it.content) }).collect { token ->
+                                scope.launch(Dispatchers.Main) {
+                                    val lastIndex = messages.indexOfLast { it.role == "assistant" }
+                                    if (lastIndex != -1) {
+                                        val current = messages[lastIndex]
+                                        val nextContent = if (current.content == "…") token else current.content + token
+                                        messages[lastIndex] = current.copy(content = nextContent)
+                                    }
+                                }
+                            }
+                        }.onFailure { e ->
                             scope.launch(Dispatchers.Main) {
                                 val lastIndex = messages.indexOfLast { it.role == "assistant" }
+                                val err = e.message ?: e.toString()
                                 if (lastIndex != -1) {
-                                    val current = messages[lastIndex]
-                                    messages[lastIndex] = current.copy(content = if (current.content == "…") token else current.content + token)
+                                    messages[lastIndex] = ChatMessage("assistant", "Error: $err")
+                                } else {
+                                    messages.add(ChatMessage("assistant", "Error: $err"))
                                 }
                             }
                         }
