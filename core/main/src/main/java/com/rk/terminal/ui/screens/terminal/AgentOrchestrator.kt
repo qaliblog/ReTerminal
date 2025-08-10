@@ -38,7 +38,8 @@ class AgentOrchestrator(
     )
 
     private val agentDir: File by lazy {
-        File(application!!.filesDir, "agent/${sessionId}").apply { mkdirs() }
+        // Store per chat session
+        File(application!!.filesDir, "chat/${sessionId}").apply { mkdirs() }
     }
     private val planFile: File by lazy { File(agentDir, "plan.json") }
     private val progressFile: File by lazy { File(agentDir, "progress.json") }

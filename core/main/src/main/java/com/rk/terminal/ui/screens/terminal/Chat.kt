@@ -54,15 +54,27 @@ private data class ChatMessage(val role: String, val content: String)
 fun ChatView(mainActivityActivity: MainActivity) {
     val sessionId = mainActivityActivity.sessionBinder?.getService()?.currentSession?.value?.first ?: return
 
-    val messagesBySession = remember { mutableMapOf<String, MutableList<ChatMessage>>() }
-    val messages = messagesBySession.getOrPut(sessionId) { mutableStateListOf() }
+    // Chat Session Manager state
+    val chatRoot = remember { File(application!!.filesDir, "chat").apply { mkdirs() } }
+    val chatSessions = remember { mutableStateOf(chatRoot.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()) }
+    val currentChatId = remember(sessionId) { mutableStateOf(sessionId) }
+    var showChatManager by remember { mutableStateOf(false) }
+    val newChatName = remember { mutableStateOf("") }
+
+    fun refreshChatSessions() {
+        chatSessions.value = chatRoot.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+    }
+
+    // Messages storage keyed by currentChatId
+    val messagesByChat = remember { mutableMapOf<String, MutableList<ChatMessage>>() }
+    val messages = messagesByChat.getOrPut(currentChatId.value) { mutableStateListOf() }
 
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
-    // Chat history persistence
-    val chatDir = remember(sessionId) { java.io.File(application!!.filesDir, "agent/${sessionId}").apply { mkdirs() } }
-    val historyFile = remember(sessionId) { java.io.File(chatDir, "history.json") }
+    // Chat history persistence under chat/<chatId>/history.json
+    val chatDir = remember(currentChatId.value) { File(application!!.filesDir, "chat/${currentChatId.value}").apply { mkdirs() } }
+    val historyFile = remember(currentChatId.value) { File(chatDir, "history.json") }
 
     fun saveHistory() {
         runCatching {
@@ -74,7 +86,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
     }
 
-    LaunchedEffect(sessionId) {
+    LaunchedEffect(currentChatId.value) {
+        // Load history for selected chat
+        messages.clear()
         runCatching {
             if (historyFile.exists()) {
                 val txt = historyFile.readText()
@@ -87,19 +101,19 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
     }
 
-    DisposableEffect(messages.size) {
+    DisposableEffect(messages.size, currentChatId.value) {
         onDispose { saveHistory() }
     }
 
     // Agent state
-    val activePlan = remember { mutableStateOf<AgentOrchestrator.Plan?>(null) }
+    val activePlan = remember(currentChatId.value) { mutableStateOf<AgentOrchestrator.Plan?>(null) }
     val isPlanning = remember { mutableStateOf(false) }
 
-    // Single agent instance per session
-    val agent = remember(sessionId) {
+    // Single agent instance per chat session id
+    val agent = remember(currentChatId.value) {
         AgentOrchestrator(
             context = mainActivityActivity,
-            sessionId = sessionId,
+            sessionId = currentChatId.value,
             workingDirProvider = {
                 val svc2 = mainActivityActivity.sessionBinder?.getService()
                 svc2?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard"
@@ -153,12 +167,17 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         }
 
-        // Row 1: Input + Send
+        // Row 1: Chat session selector + Input + Send
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // Chat session manager
+            IconButton(onClick = { showChatManager = true }) {
+                Icon(Icons.Default.Folder, contentDescription = "Chat sessions")
+            }
+
             // Workspace selector button
             IconButton(onClick = { showWdMenu = true }) {
                 Icon(Icons.Default.Folder, contentDescription = "Select workspace")
@@ -198,6 +217,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     }
                 )
             }
+
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
@@ -321,6 +341,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
             ) { Text("Update Plan") }
         }
 
+        // Folder picker dialog
         if (showFolderPicker) {
             AlertDialog(
                 onDismissRequest = { showFolderPicker = false },
@@ -362,6 +383,61 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         }) { Text("Up") }
                         TextButton(onClick = { showFolderPicker = false }) { Text("Cancel") }
                     }
+                }
+            )
+        }
+
+        // Chat session manager dialog
+        if (showChatManager) {
+            AlertDialog(
+                onDismissRequest = { showChatManager = false },
+                title = { Text("Chat Sessions") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Existing sessions
+                        val sessions = chatSessions.value
+                        if (sessions.isEmpty()) {
+                            Text("No chat sessions yet.")
+                        } else {
+                            LazyColumn(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                                items(sessions) { cid ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                currentChatId.value = cid
+                                                showChatManager = false
+                                            }
+                                            .padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(text = cid)
+                                    }
+                                }
+                            }
+                        }
+                        // New session name input
+                        OutlinedTextField(
+                            value = newChatName.value,
+                            onValueChange = { newChatName.value = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text("New session name…") }
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val name = newChatName.value.trim().ifBlank { "chat-${System.currentTimeMillis()}" }
+                        File(chatRoot, name).mkdirs()
+                        refreshChatSessions()
+                        currentChatId.value = name
+                        newChatName.value = ""
+                        showChatManager = false
+                    }) { Text("Create / Switch") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showChatManager = false }) { Text("Close") }
                 }
             )
         }
