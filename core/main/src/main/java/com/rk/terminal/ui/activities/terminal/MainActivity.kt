@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
+import com.rk.libcommons.toast
 import com.rk.terminal.service.SessionService
 import com.rk.terminal.ui.navHosts.MainActivityNavHost
 import com.rk.terminal.ui.screens.terminal.TerminalScreen
@@ -67,6 +69,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var lastBackPressed: Long = 0L
+
     override fun onStart() {
         super.onStart()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -95,8 +99,13 @@ class MainActivity : ComponentActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                // Move to background instead of closing
-                moveTaskToBack(true)
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastBackPressed < 2000) {
+                    moveTaskToBack(true)
+                } else {
+                    lastBackPressed = now
+                    toast("Press back again to exit")
+                }
             }
         })
     }
