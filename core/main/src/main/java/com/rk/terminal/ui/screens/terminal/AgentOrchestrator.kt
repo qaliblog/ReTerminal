@@ -29,7 +29,8 @@ class AgentOrchestrator(
 
     data class Task(
         val id: String,
-        val description: String
+        val description: String,
+        val category: String? = null
     )
 
     data class Plan(
@@ -93,6 +94,7 @@ class AgentOrchestrator(
             arr.put(JSONObject().apply {
                 put("id", t.id)
                 put("description", t.description)
+                if (t.category != null) put("category", t.category)
                 put("status", taskStatus(t.id))
             })
         }
@@ -113,28 +115,69 @@ class AgentOrchestrator(
     ): Boolean {
         val task = getNextPendingTask(plan) ?: return false
         onStatus("Task ${task.id}: ${task.description}")
-         val toolCall = requestSingleToolCall(plan.goal, task)
-         if (toolCall == null) {
-             onStatus("Task ${task.id}: could not determine action")
-             return false
-        }
-        val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
-            onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
-            ToolResult(false, null)
-        }
-        if (result.ok) {
-            if (!result.observation.isNullOrBlank()) {
-                observations[task.id] = result.observation
-                val preview = result.observation.take(800)
-                onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+
+        var stepsTaken = 0
+        val maxSteps = 5
+        var lastObservation: String? = null
+        var lastToolType: String? = null
+        while (stepsTaken < maxSteps) {
+            val toolCall = requestSingleToolCall(plan.goal, task)
+            if (toolCall == null) {
+                observations[task.id] = "could not determine action for this task"
+                onStatus("Task ${task.id}: could not determine action")
+                return false
             }
-            markTaskDone(task.id)
-            onStatus("Task ${'$'}{task.id}: done")
-            return true
-        } else {
-            onStatus("Task ${'$'}{task.id}: failed")
-            return false
+            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+                val err = e.message ?: e.toString()
+                observations[task.id] = "error: ${err}"
+                onStatus("Task ${'$'}{task.id} failed: ${'$'}{err}")
+                return false
+            }
+
+            if (result.ok) {
+                if (!result.observation.isNullOrBlank()) {
+                    observations[task.id] = result.observation
+                    val preview = result.observation.take(800)
+                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                }
+
+                // If the tool modified the workspace, consider the task complete.
+                if (isModifyingTool(toolCall.type)) {
+                    markTaskDone(task.id)
+                    onStatus("Task ${'$'}{task.id}: done")
+                    return true
+                }
+
+                // If this is a discovery tool and the task category is discovery, complete the task now.
+                if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
+                    markTaskDone(task.id)
+                    onStatus("Task ${'$'}{task.id}: done")
+                    return true
+                }
+
+                // Prevent loops on repeated identical non-modifying observations
+                val obs = result.observation
+                if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
+                    onStatus("Task ${'$'}{task.id}: no new information; stopping to request plan update")
+                    return false
+                }
+                lastObservation = result.observation ?: lastObservation
+                lastToolType = toolCall.type
+
+                // Discovery-type call; iterate to request the next action using fresh observation
+                stepsTaken++
+                continue
+            } else {
+                if (!observations.containsKey(task.id)) {
+                    observations[task.id] = "failed without exception"
+                }
+                onStatus("Task ${'$'}{task.id}: failed")
+                return false
+            }
         }
+
+        onStatus("Task ${'$'}{task.id}: reached step limit without completion")
+        return false
     }
 
     private data class ToolCall(
@@ -147,9 +190,31 @@ class AgentOrchestrator(
         val observation: String?
     )
 
+    private fun isModifyingTool(type: String): Boolean {
+        return when (type) {
+            "write_file", "apply_changes", "make_dir", "create_file" -> true
+            else -> false
+        }
+    }
+
+    private fun isDiscoveryTool(type: String): Boolean {
+        return when (type) {
+            "read_file", "list_dir" -> true
+            else -> false
+        }
+    }
+
+    private fun isDiscoveryCategory(category: String?): Boolean {
+        return when (category) {
+            "read_file", "list_dir", "grep", "analyze" -> true
+            else -> false
+        }
+    }
+
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            Return ONLY a single minified JSON object describing ONE tool call to complete the given task.
+            You are orchestrating a short inner loop to complete the current task.
+            Return ONLY a single minified JSON object describing ONE tool call to move the task forward.
             Allowed schemas:
             {"type":"create_file","args":{"path": string}}
             {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append"}}
@@ -167,8 +232,9 @@ class AgentOrchestrator(
             - Use relative paths with respect to the current working directory unless absolute is required.
             - When writing source code that implements the goal, include the full file content in "content" for write_file. Do not use placeholders.
             - For updating existing files, prefer apply_changes with minimal edits over sending full file content. Use unique anchors and exact old text for precise replacements.
-            - Prefer discovery calls (list_dir/read_file) when more context is needed.
-            - Consider the provided observations from prior steps.
+            - Consider the provided observations from prior steps. If a relevant file's content has already been observed, propose the write/apply_changes directly.
+            - If the task's category suggests discovery (e.g., read, list, grep) and you lack the relevant observation, propose a discovery call first.
+            - If the task's category suggests modification (e.g., write/apply_changes), and needed context is missing, first propose a minimal discovery call to fetch it.
             - Do not return markdown code fences. Return pure JSON on a single line.
             - Do not include explanations.
         """.trimIndent()
@@ -179,9 +245,10 @@ class AgentOrchestrator(
             Working directory: ${wd}
             Current task id: ${task.id}
             Task: ${task.description}
+            Task category: ${task.category ?: "unspecified"}
             Prior observations (latest first):
             ${prior}
-            Produce one tool call JSON now.
+            Produce one tool call JSON now, following the Rules and leveraging the observations to avoid redundant discovery.
         """.trimIndent()
         val flow = LlmProvider.current().generate(
             listOf(
@@ -387,11 +454,12 @@ class AgentOrchestrator(
         val sys = """
             You are an autonomous software agent that plans work as structured JSON only.
             Return ONLY a minified JSON object with the following shape and nothing else:
-            {"goal": string, "tasks": [{"id": string, "description": string}, ...]}
+            {"goal": string, "tasks": [{"id": string, "category": string, "description": string}, ...]}
             - ids must be unique short strings (e.g., t1, t2, t3)
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
             - descriptions must be concrete and atomic
-            - Include discovery tasks when needed, such as listing directories or reading files, before making changes.
-            - If the goal requires creating program files, include explicit tasks to write the full program code into those files (the code content will be generated during tool calls).
+            - Include discovery tasks when needed (list_dir/read_file/grep) before modification tasks (write_file/apply_changes).
+            - If a task requires reading then fixing a file, categorize the task based on the dominant action (e.g., apply_changes), and the inner loop will do discovery first if needed.
             - Prefer minimal, safe, idempotent steps.
             - Do not include code in the plan. Code will be generated later via tool calls.
         """.trimIndent()
@@ -416,8 +484,9 @@ class AgentOrchestrator(
             if (t != null) {
                 val id = t.optString("id").ifBlank { "t${i + 1}" }
                 val desc = t.optString("description")
+                val cat = t.optString("category").ifBlank { null }
                 if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc))
+                    tasks.add(Task(id, desc, cat))
                 }
             }
         }
@@ -438,11 +507,14 @@ class AgentOrchestrator(
             onStatus("Task ${task.id}: ${task.description}")
              val toolCall = requestSingleToolCall(plan.goal, task)
              if (toolCall == null) {
+                 observations[task.id] = "could not determine action for this task"
                  onStatus("Task ${task.id}: could not determine action")
                  return
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
-                onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
+                val err = e.message ?: e.toString()
+                observations[task.id] = "error: ${err}"
+                onStatus("Task ${'$'}{task.id} failed: ${'$'}{err}")
                 ToolResult(false, null)
             }
             if (result.ok) {
@@ -456,6 +528,9 @@ class AgentOrchestrator(
                 // Refresh persisted plan statuses after each task
                 persistPlanWithStatuses(plan)
             } else {
+                if (!observations.containsKey(task.id)) {
+                    observations[task.id] = "failed without exception"
+                }
                 onStatus("Task ${'$'}{task.id}: failed")
                 return
             }
@@ -476,10 +551,11 @@ class AgentOrchestrator(
         }.toString()
         val sys = """
             You update task plans. Return ONLY a minified JSON with shape:
-            {"goal": string, "tasks": [{"id": string, "description": string, "status": "done"|"pending"}, ...]}
+            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "status": "done"|"pending"}, ...]}
             Rules:
             - Keep ids stable for already completed tasks and mark them status:"done".
             - You may add, remove, or edit pending tasks if needed.
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
             - Prefer minimal safe changes.
             - Do not include explanations.
         """.trimIndent()
@@ -503,8 +579,9 @@ class AgentOrchestrator(
             if (t != null) {
                 val id = t.optString("id").ifBlank { "t${i + 1}" }
                 val desc = t.optString("description")
+                val cat = t.optString("category").ifBlank { null }
                 if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc))
+                    tasks.add(Task(id, desc, cat))
                 }
             }
         }

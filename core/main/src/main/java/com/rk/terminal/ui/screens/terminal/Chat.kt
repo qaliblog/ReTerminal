@@ -309,7 +309,18 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
                             }
                             if (!success) {
-                                postStatus("No pending task or step failed.")
+                                // After a failure or no pending task, automatically ask the AI to update the plan
+                                scope.launch(Dispatchers.Main) { postStatus("Attempting to update plan based on the error…"); saveHistory() }
+                                val updated = agent.requestUpdatedPlan(plan)
+                                if (updated == null) {
+                                    scope.launch(Dispatchers.Main) { postStatus("Could not update plan."); saveHistory() }
+                                } else {
+                                    scope.launch(Dispatchers.Main) {
+                                        activePlan.value = updated
+                                        postStatus("Plan updated: ${updated.tasks.size} task(s). Press Proceed for next step.")
+                                        saveHistory()
+                                    }
+                                }
                             }
                             saveHistory()
                         } catch (e: Exception) {
