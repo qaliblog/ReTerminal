@@ -13,6 +13,7 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.OnBackPressedCallback
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.PermissionChecker
@@ -92,10 +93,12 @@ class MainActivity : ComponentActivity() {
         // Initialize current permission state
         storageAccessGranted.value = hasStorageAccess()
 
-        onBackPressedDispatcher.addCallback(this) {
-            // Move to background instead of closing
-            moveTaskToBack(true)
-        }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                // Move to background instead of closing
+                moveTaskToBack(true)
+            }
+        })
     }
 
     override fun onResume() {
