@@ -4,7 +4,7 @@ import com.rk.settings.Settings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.flowOn
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -53,41 +53,40 @@ object OpenAIEngine : LlmEngine {
                 .addHeader("Content-Type", "application/json")
                 .post(reqBody)
                 .build()
-            withContext(Dispatchers.IO) {
-                ApiHttp.client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        emit("[OpenAI] HTTP ${resp.code}: ${resp.message}\n")
-                        val err = resp.body?.string()
-                        if (!err.isNullOrBlank()) emit(err.take(2000))
-                        return@use
-                    }
-                    val rb = resp.body
-                    if (rb == null) {
-                        emit("[OpenAI] Empty body\n")
-                        return@use
-                    }
-                    val source: BufferedSource = rb.source()
-                    while (true) {
-                        val line = source.readUtf8Line() ?: break
-                        if (line.isBlank()) continue
-                        if (!line.startsWith("data:")) continue
-                        val payload = line.removePrefix("data:").trim()
-                        if (payload == "[DONE]") break
+
+            ApiHttp.client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    emit("[OpenAI] HTTP ${resp.code}: ${resp.message}\n")
+                    val err = resp.body?.string()
+                    if (!err.isNullOrBlank()) emit(err.take(2000))
+                    return@use
+                }
+                val rb = resp.body
+                if (rb == null) {
+                    emit("[OpenAI] Empty body\n")
+                    return@use
+                }
+                val source: BufferedSource = rb.source()
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    if (line.isBlank()) continue
+                    if (!line.startsWith("data:")) continue
+                    val payload = line.removePrefix("data:").trim()
+                    if (payload == "[DONE]") break
+                    runCatching {
+                        val obj = JSONObject(payload)
+                        val choices = obj.optJSONArray("choices") ?: JSONArray()
+                        for (i in 0 until choices.length()) {
+                            val delta = choices.getJSONObject(i).optJSONObject("delta")
+                            val content = delta?.optString("content")
+                            if (!content.isNullOrEmpty()) emit(content)
+                        }
+                    }.onFailure {
                         runCatching {
                             val obj = JSONObject(payload)
-                            val choices = obj.optJSONArray("choices") ?: JSONArray()
-                            for (i in 0 until choices.length()) {
-                                val delta = choices.getJSONObject(i).optJSONObject("delta")
-                                val content = delta?.optString("content")
-                                if (!content.isNullOrEmpty()) emit(content)
-                            }
-                        }.onFailure {
-                            runCatching {
-                                val obj = JSONObject(payload)
-                                val choices = obj.optJSONArray("choices")
-                                val content = choices?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
-                                if (!content.isNullOrEmpty()) emit(content)
-                            }
+                            val choices = obj.optJSONArray("choices")
+                            val content = choices?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                            if (!content.isNullOrEmpty()) emit(content)
                         }
                     }
                 }
@@ -95,7 +94,7 @@ object OpenAIEngine : LlmEngine {
         } catch (e: Exception) {
             emit("[OpenAI] ${e::class.simpleName}: ${e.message}\n")
         }
-    }
+    }.flowOn(Dispatchers.IO)
 }
 
 object AnthropicEngine : LlmEngine {
@@ -124,33 +123,32 @@ object AnthropicEngine : LlmEngine {
                 .addHeader("content-type", "application/json")
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
-            withContext(Dispatchers.IO) {
-                ApiHttp.client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        emit("[Anthropic] HTTP ${resp.code}: ${resp.message}\n")
-                        val err = resp.body?.string()
-                        if (!err.isNullOrBlank()) emit(err.take(2000))
-                        return@use
-                    }
-                    val txt = resp.body?.string().orEmpty()
-                    val obj = runCatching { JSONObject(txt) }.getOrNull()
-                    val contentArr = obj?.optJSONArray("content") ?: JSONArray()
-                    val sb = StringBuilder()
-                    for (i in 0 until contentArr.length()) {
-                        val part = contentArr.getJSONObject(i)
-                        if (part.optString("type") == "text") {
-                            val fragment = part.optString("text")
-                            if (fragment.isNotEmpty()) sb.append(fragment)
-                        }
-                    }
-                    val out = sb.toString()
-                    if (out.isEmpty()) emit("[Anthropic] Empty response\n") else out.chunked(64).forEach { emit(it) }
+
+            ApiHttp.client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    emit("[Anthropic] HTTP ${resp.code}: ${resp.message}\n")
+                    val err = resp.body?.string()
+                    if (!err.isNullOrBlank()) emit(err.take(2000))
+                    return@use
                 }
+                val txt = resp.body?.string().orEmpty()
+                val obj = runCatching { JSONObject(txt) }.getOrNull()
+                val contentArr = obj?.optJSONArray("content") ?: JSONArray()
+                val sb = StringBuilder()
+                for (i in 0 until contentArr.length()) {
+                    val part = contentArr.getJSONObject(i)
+                    if (part.optString("type") == "text") {
+                        val fragment = part.optString("text")
+                        if (fragment.isNotEmpty()) sb.append(fragment)
+                    }
+                }
+                val out = sb.toString()
+                if (out.isEmpty()) emit("[Anthropic] Empty response\n") else out.chunked(64).forEach { emit(it) }
             }
         } catch (e: Exception) {
             emit("[Anthropic] ${e::class.simpleName}: ${e.message}\n")
         }
-    }
+    }.flowOn(Dispatchers.IO)
 }
 
 object GeminiEngine : LlmEngine {
@@ -173,30 +171,29 @@ object GeminiEngine : LlmEngine {
                 .addHeader("content-type", "application/json")
                 .post(contents.toString().toRequestBody("application/json".toMediaType()))
                 .build()
-            withContext(Dispatchers.IO) {
-                ApiHttp.client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        emit("[Gemini] HTTP ${resp.code}: ${resp.message}\n")
-                        val err = resp.body?.string()
-                        if (!err.isNullOrBlank()) emit(err.take(2000))
-                        return@use
-                    }
-                    val txt = resp.body?.string().orEmpty()
-                    val obj = runCatching { JSONObject(txt) }.getOrNull()
-                    val cand = obj?.optJSONArray("candidates")?.optJSONObject(0)
-                    val parts = cand?.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
-                    val sb = StringBuilder()
-                    for (i in 0 until parts.length()) {
-                        val part = parts.getJSONObject(i)
-                        val fragment = part.optString("text")
-                        if (fragment.isNotEmpty()) sb.append(fragment)
-                    }
-                    val out = sb.toString()
-                    if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
+
+            ApiHttp.client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    emit("[Gemini] HTTP ${resp.code}: ${resp.message}\n")
+                    val err = resp.body?.string()
+                    if (!err.isNullOrBlank()) emit(err.take(2000))
+                    return@use
                 }
+                val txt = resp.body?.string().orEmpty()
+                val obj = runCatching { JSONObject(txt) }.getOrNull()
+                val cand = obj?.optJSONArray("candidates")?.optJSONObject(0)
+                val parts = cand?.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
+                val sb = StringBuilder()
+                for (i in 0 until parts.length()) {
+                    val part = parts.getJSONObject(i)
+                    val fragment = part.optString("text")
+                    if (fragment.isNotEmpty()) sb.append(fragment)
+                }
+                val out = sb.toString()
+                if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
             }
         } catch (e: Exception) {
             emit("[Gemini] ${e::class.simpleName}: ${e.message}\n")
         }
-    }
+    }.flowOn(Dispatchers.IO)
 }
