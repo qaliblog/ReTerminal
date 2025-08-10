@@ -132,6 +132,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             var selectedModel by remember { mutableStateOf(Settings.selected_model_folder) }
             var foldersCsv by remember { mutableStateOf(Settings.model_folders_csv) }
             val folders = remember(foldersCsv) { foldersCsv.split(',').map { it.trim() }.filter { it.isNotBlank() } }
+            val scope = rememberCoroutineScope()
 
             Text(text = if (selectedModel.isBlank()) "Selected: (auto)" else "Selected: $selectedModel", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 
@@ -142,7 +143,6 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 Text(text = "Download from Hugging Face (e.g., mlc-ai/Llama-3-8B-Instruct-q4f16_1-MLC)")
                 OutlinedTextField(value = repoInput, onValueChange = { repoInput = it }, label = { Text("Repo ID") })
                 Button(onClick = {
-                    val scope = rememberCoroutineScope()
                     scope.launch {
                         progress = "Resolving..."
                         val root = ModelLocator.modelRoot() ?: java.io.File("/sdcard/reterminalAssets").apply { mkdirs() }
