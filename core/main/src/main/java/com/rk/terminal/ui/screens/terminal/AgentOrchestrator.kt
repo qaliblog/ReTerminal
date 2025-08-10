@@ -112,11 +112,11 @@ class AgentOrchestrator(
         onStatus: (String) -> Unit
     ): Boolean {
         val task = getNextPendingTask(plan) ?: return false
-        onStatus("Task ${'$'}{task.id}: ${'$'}{task.description}")
-        val toolCall = requestSingleToolCall(plan.goal, task)
-        if (toolCall == null) {
-            onStatus("Task ${'$'}{task.id}: could not determine action")
-            return false
+        onStatus("Task ${task.id}: ${task.description}")
+         val toolCall = requestSingleToolCall(plan.goal, task)
+         if (toolCall == null) {
+             onStatus("Task ${task.id}: could not determine action")
+             return false
         }
         val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
             onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
@@ -350,11 +350,11 @@ class AgentOrchestrator(
                 onStatus("Skip ${'$'}{task.id}: already done")
                 continue
             }
-            onStatus("Task ${'$'}{task.id}: ${'$'}{task.description}")
-            val toolCall = requestSingleToolCall(plan.goal, task)
-            if (toolCall == null) {
-                onStatus("Task ${'$'}{task.id}: could not determine action")
-                return
+            onStatus("Task ${task.id}: ${task.description}")
+             val toolCall = requestSingleToolCall(plan.goal, task)
+             if (toolCall == null) {
+                 onStatus("Task ${task.id}: could not determine action")
+                 return
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")

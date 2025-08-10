@@ -163,7 +163,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(text = if (isUser) "You" else "Assistant", style = MaterialTheme.typography.labelSmall)
-                        Text(text = msg.content)
+                        Text(text = msg.content, selectable = true)
                     }
                 }
             }
@@ -288,7 +288,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 return@launch
                             }
                             activePlan.value = plan
-                            postStatus("Plan ready: ${'$'}{plan.tasks.size} task(s). Press Proceed to run the first task.")
+                            postStatus("Plan ready: ${plan.tasks.size} task(s). Press Proceed to run the first task.")
                             saveHistory()
                         } catch (e: Exception) {
                             postStatus("Agent error: ${'$'}{e.message}")
