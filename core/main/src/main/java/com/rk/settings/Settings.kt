@@ -87,7 +87,7 @@ object Settings {
         get() = Preference.getBoolean(key = "force_soft_keyboard", default = true)
         set(value) = Preference.setBoolean(key = "force_soft_keyboard",value)
 
-    // Model management
+    // Model management (legacy, kept for backward compatibility but unused in API mode)
     var model_folders_csv
         get() = Preference.getString(key = "model_folders_csv", default = "")
         set(value) = Preference.setString(key = "model_folders_csv", value)
@@ -96,8 +96,22 @@ object Settings {
         get() = Preference.getString(key = "selected_model_folder", default = "")
         set(value) = Preference.setString(key = "selected_model_folder", value)
 
+    // API-based chat settings
+    var api_provider
+        get() = Preference.getString(key = "api_provider", default = "none")
+        set(value) = Preference.setString(key = "api_provider", value)
 
+    var api_key
+        get() = Preference.getString(key = "api_key", default = "")
+        set(value) = Preference.setString(key = "api_key", value)
 
+    var api_base_url
+        get() = Preference.getString(key = "api_base_url", default = "https://api.openai.com")
+        set(value) = Preference.setString(key = "api_base_url", value)
+
+    var api_model
+        get() = Preference.getString(key = "api_model", default = "gpt-4o-mini")
+        set(value) = Preference.setString(key = "api_model", value)
 }
 
 object Preference {
@@ -168,8 +182,8 @@ object Preference {
         }.onFailure { it.printStackTrace() }
     }
 
-
-
+    
+    
     fun getString(key: String, default: String): String {
         runCatching {
             return stringCache[key] ?: sharedPreferences.getString(key, default)!!

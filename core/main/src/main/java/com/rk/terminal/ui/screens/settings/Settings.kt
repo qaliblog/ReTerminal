@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -27,17 +26,12 @@ import androidx.navigation.NavController
 import com.rk.components.compose.preferences.base.PreferenceGroup
 import com.rk.components.compose.preferences.base.PreferenceLayout
 import com.rk.components.compose.preferences.base.PreferenceTemplate
-import com.rk.terminal.ui.components.InputDialog
 import com.rk.resources.strings
 import com.rk.settings.Settings
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.components.SettingsToggle
 import com.rk.terminal.ui.routes.MainActivityRoutes
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
-import com.rk.terminal.llm.ModelLocator
-import com.rk.terminal.llm.MlcModelDownloader
 
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -127,82 +121,61 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 })
         }
 
-        PreferenceGroup(heading = "AI Model Folders") {
-            // Local reactive state for selection and list
-            var selectedModel by remember { mutableStateOf(Settings.selected_model_folder) }
-            var foldersCsv by remember { mutableStateOf(Settings.model_folders_csv) }
-            val folders = remember(foldersCsv) { foldersCsv.split(',').map { it.trim() }.filter { it.isNotBlank() } }
-            val scope = rememberCoroutineScope()
+        // AI API configuration
+        PreferenceGroup(heading = "AI Chat Provider") {
+            var provider by remember { mutableStateOf(Settings.api_provider) }
+            var apiKey by remember { mutableStateOf(Settings.api_key) }
+            var baseUrl by remember { mutableStateOf(Settings.api_base_url) }
+            var model by remember { mutableStateOf(Settings.api_model) }
 
-            Text(text = if (selectedModel.isBlank()) "Selected: (auto)" else "Selected: $selectedModel", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-
-            // MLC model downloader (Hugging Face)
-            var repoInput by remember { mutableStateOf("mlc-ai/") }
-            var progress by remember { mutableStateOf("") }
             Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                Text(text = "Download from Hugging Face (e.g., mlc-ai/Llama-3-8B-Instruct-q4f16_1-MLC)")
-                OutlinedTextField(value = repoInput, onValueChange = { repoInput = it }, label = { Text("Repo ID") })
-                Button(onClick = {
-                    scope.launch {
-                        progress = "Resolving..."
-                        val root = ModelLocator.modelRoot() ?: java.io.File("/sdcard/reterminalAssets").apply { mkdirs() }
-                        val dest = MlcModelDownloader.downloadTo(repoInput.trim(), root, onProgress = { progress = it }, options = MlcModelDownloader.Options(includeWeights = true))
-                        if (dest != null) {
-                            val updated = (folders + dest.absolutePath).toSet().joinToString(",")
-                            Settings.model_folders_csv = updated
-                            foldersCsv = updated
-                            Settings.selected_model_folder = dest.absolutePath
-                            selectedModel = dest.absolutePath
-                            com.rk.terminal.llm.ModelManager.setSelectedModel(dest.absolutePath)
-                            progress = "Downloaded to ${dest.absolutePath}"
-                        } else {
-                            progress = "Download failed"
-                        }
-                    }
-                }, modifier = Modifier.padding(top = 8.dp)) { Text("Download") }
-                if (progress.isNotBlank()) Text(text = progress, modifier = Modifier.padding(top = 6.dp))
-            }
-
-            folders.forEach { path ->
+                Text(text = "Select provider")
                 Row(modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)) {
-                    Text(text = path, modifier = Modifier.weight(1f))
-                    Button(onClick = {
-                        Settings.selected_model_folder = path
-                        selectedModel = path
-                        com.rk.terminal.llm.ModelManager.setSelectedModel(path)
-                    }) { Text("Use") }
+                    .padding(vertical = 6.dp)) {
+                    RadioButton(selected = provider.equals("openai", true), onClick = { provider = "openai"; Settings.api_provider = provider })
+                    Text(text = "OpenAI / Compatible", modifier = Modifier.padding(start = 8.dp))
                 }
-            }
+                Row(modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)) {
+                    RadioButton(selected = provider.equals("anthropic", true), onClick = { provider = "anthropic"; Settings.api_provider = provider })
+                    Text(text = "Anthropic", modifier = Modifier.padding(start = 8.dp))
+                }
+                Row(modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)) {
+                    RadioButton(selected = provider.equals("gemini", true), onClick = { provider = "gemini"; Settings.api_provider = provider })
+                    Text(text = "Google Gemini", modifier = Modifier.padding(start = 8.dp))
+                }
 
-            var showAdd by remember { mutableStateOf(false) }
-            Button(onClick = { showAdd = true }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Icon(imageVector = Icons.Default.Add, contentDescription = null)
-                Text(text = "Add folder", modifier = Modifier.padding(start = 8.dp))
-            }
-
-            if (showAdd) {
-                var input by remember { mutableStateOf("/sdcard/reterminalAssets/YourModelFolder") }
-                InputDialog(
-                    title = "Add model folder",
-                    inputLabel = "Absolute folder path",
-                    inputValue = input,
-                    onInputValueChange = { input = it },
-                    onConfirm = {
-                        val trimmed = input.trim()
-                        if (trimmed.isNotBlank()) {
-                            val updated = (folders + trimmed).toSet().joinToString(",")
-                            Settings.model_folders_csv = updated
-                            foldersCsv = updated
-                            Settings.selected_model_folder = trimmed
-                            selectedModel = trimmed
-                            com.rk.terminal.llm.ModelManager.setSelectedModel(trimmed)
-                        }
-                    },
-                    onDismiss = { showAdd = false },
-                    singleLineMode = true
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it; Settings.api_key = it },
+                    label = { Text("API Key") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
                 )
+
+                if (provider.equals("openai", true)) {
+                    OutlinedTextField(
+                        value = baseUrl,
+                        onValueChange = { baseUrl = it; Settings.api_base_url = it },
+                        label = { Text("Base URL (OpenAI-compatible)") },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        singleLine = true
+                    )
+                }
+
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = { model = it; Settings.api_model = it },
+                    label = { Text("Model (e.g., gpt-4o-mini / claude-3-haiku / gemini-1.5-flash)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+
+                Text(text = "Chat will use these API settings. Local model download and folders have been replaced.", modifier = Modifier.padding(top = 8.dp))
             }
         }
 

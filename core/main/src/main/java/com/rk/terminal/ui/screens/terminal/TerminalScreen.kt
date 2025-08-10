@@ -452,6 +452,15 @@ fun TerminalScreen(
                             val tabs = remember { mutableStateOf(listOf("Terminal", "Files", "Editor", "Chat")) }
                             var selectedTab by remember { mutableIntStateOf(0) }
 
+                            // React to tab switch bus
+                            val requestedTab = TabSwitchBus.pending()
+                            LaunchedEffect(requestedTab) {
+                                requestedTab?.let {
+                                    selectedTab = it
+                                    TabSwitchBus.clear()
+                                }
+                            }
+
                             com.rk.terminal.ui.components.ScrollableTabLayout(
                                 modifier = Modifier.fillMaxWidth(),
                                 tabs = tabs.value.toMutableList(),
