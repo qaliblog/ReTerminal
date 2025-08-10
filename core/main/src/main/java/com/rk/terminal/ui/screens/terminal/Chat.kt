@@ -1,5 +1,6 @@
 package com.rk.terminal.ui.screens.terminal
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -22,7 +24,9 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -32,7 +36,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import kotlinx.coroutines.Dispatchers
@@ -41,11 +44,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import com.rk.terminal.llm.LlmProvider
 import java.io.File
-import androidx.compose.runtime.DisposableEffect
 import org.json.JSONArray
 import org.json.JSONObject
 import com.rk.libcommons.application
-import java.nio.charset.Charset
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -100,8 +101,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
             context = mainActivityActivity,
             sessionId = sessionId,
             workingDirProvider = {
-                val svc = mainActivityActivity.sessionBinder?.getService()
-                svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard"
+                val svc2 = mainActivityActivity.sessionBinder?.getService()
+                svc2?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard"
             }
         )
     }
@@ -111,8 +112,17 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val currentWd = remember { mutableStateOf(svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard") }
     var showWdMenu by remember { mutableStateOf(false) }
 
+    // Folder picker dialog state
+    var showFolderPicker by remember { mutableStateOf(false) }
+    val pickerPath = remember { mutableStateOf(currentWd.value) }
+
+    fun listDirs(path: String): List<File> {
+        val d = File(path)
+        return d.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() } ?: emptyList()
+    }
+
     // Predefined quick paths
-    val quickPaths = listOf("/sdcard", mainActivityActivity.application!!.filesDir.absolutePath)
+    val quickPaths = listOf("/sdcard", application!!.filesDir.absolutePath)
 
     fun postStatus(s: String) {
         messages.add(ChatMessage("assistant", s))
@@ -179,6 +189,14 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         }
                     )
                 }
+                DropdownMenuItem(
+                    text = { Text("Browse…") },
+                    onClick = {
+                        pickerPath.value = currentWd.value
+                        showWdMenu = false
+                        showFolderPicker = true
+                    }
+                )
             }
             OutlinedTextField(
                 value = input,
@@ -301,6 +319,51 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 },
                 enabled = hasPlan
             ) { Text("Update Plan") }
+        }
+
+        if (showFolderPicker) {
+            AlertDialog(
+                onDismissRequest = { showFolderPicker = false },
+                title = { Text("Select Workspace") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(pickerPath.value)
+                        val dirs = listDirs(pickerPath.value)
+                        LazyColumn(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                            items(dirs) { dir ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { pickerPath.value = dir.absolutePath }
+                                        .padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Folder, contentDescription = null)
+                                    Text(text = dir.name, modifier = Modifier.padding(start = 8.dp))
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val path = pickerPath.value
+                        currentWd.value = path
+                        svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                        showFolderPicker = false
+                        postStatus("Workspace set to: ${'$'}path")
+                    }) { Text("Use this folder") }
+                },
+                dismissButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            val parent = File(pickerPath.value).parentFile
+                            if (parent != null && parent.exists()) pickerPath.value = parent.absolutePath
+                        }) { Text("Up") }
+                        TextButton(onClick = { showFolderPicker = false }) { Text("Cancel") }
+                    }
+                }
+            )
         }
     }
 }
