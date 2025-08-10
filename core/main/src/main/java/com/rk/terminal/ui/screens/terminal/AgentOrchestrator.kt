@@ -115,11 +115,15 @@ class AgentOrchestrator(
         onStatus("Task ${task.id}: ${task.description}")
          val toolCall = requestSingleToolCall(plan.goal, task)
          if (toolCall == null) {
+             // Capture as an observation so the planner can refine next steps
+             observations[task.id] = "could not determine action for this task"
              onStatus("Task ${task.id}: could not determine action")
              return false
         }
         val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
-            onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
+            val err = e.message ?: e.toString()
+            observations[task.id] = "error: ${err}"
+            onStatus("Task ${'$'}{task.id} failed: ${'$'}{err}")
             ToolResult(false, null)
         }
         if (result.ok) {
@@ -132,6 +136,9 @@ class AgentOrchestrator(
             onStatus("Task ${'$'}{task.id}: done")
             return true
         } else {
+            if (!observations.containsKey(task.id)) {
+                observations[task.id] = "failed without exception"
+            }
             onStatus("Task ${'$'}{task.id}: failed")
             return false
         }
@@ -438,11 +445,14 @@ class AgentOrchestrator(
             onStatus("Task ${task.id}: ${task.description}")
              val toolCall = requestSingleToolCall(plan.goal, task)
              if (toolCall == null) {
+                 observations[task.id] = "could not determine action for this task"
                  onStatus("Task ${task.id}: could not determine action")
                  return
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
-                onStatus("Task ${'$'}{task.id} failed: ${'$'}{e.message}")
+                val err = e.message ?: e.toString()
+                observations[task.id] = "error: ${err}"
+                onStatus("Task ${'$'}{task.id} failed: ${'$'}{err}")
                 ToolResult(false, null)
             }
             if (result.ok) {
@@ -456,6 +466,9 @@ class AgentOrchestrator(
                 // Refresh persisted plan statuses after each task
                 persistPlanWithStatuses(plan)
             } else {
+                if (!observations.containsKey(task.id)) {
+                    observations[task.id] = "failed without exception"
+                }
                 onStatus("Task ${'$'}{task.id}: failed")
                 return
             }
