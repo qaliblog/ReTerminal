@@ -73,6 +73,19 @@ class AgentOrchestrator(
 
     private fun taskStatus(taskId: String): String = if (isTaskDone(taskId)) "done" else "pending"
 
+    private fun listTopLevel(dir: File, limit: Int = 50): String {
+        val items = dir.listFiles()?.take(limit).orEmpty()
+        val arr = JSONArray()
+        items.forEach { f ->
+            arr.put(
+                JSONObject()
+                    .put("name", f.name)
+                    .put("type", if (f.isDirectory) "dir" else "file")
+            )
+        }
+        return JSONObject().put("path", dir.absolutePath).put("items", arr).toString()
+    }
+
     private fun persistPlanWithStatuses(plan: Plan) {
         val arr = JSONArray()
         plan.tasks.forEach { t ->
