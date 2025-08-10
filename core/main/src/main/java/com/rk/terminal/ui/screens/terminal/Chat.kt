@@ -38,7 +38,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.text.font.FontWeight
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -49,6 +48,8 @@ import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 import com.rk.libcommons.application
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.font.FontWeight
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -163,7 +164,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(text = if (isUser) "You" else "Assistant", style = MaterialTheme.typography.labelSmall)
-                        Text(text = msg.content, selectable = true)
+                        SelectionContainer { Text(text = msg.content) }
                     }
                 }
             }
@@ -192,7 +193,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                             showWdMenu = false
-                            postStatus("Workspace set to: ${'$'}path")
+                            postStatus("Workspace set to: $path")
                         }
                     )
                 }
@@ -206,7 +207,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                             showWdMenu = false
-                            postStatus("Workspace set to: ${'$'}path")
+                            postStatus("Workspace set to: $path")
                         }
                     )
                 }
@@ -219,7 +220,6 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     }
                 )
             }
-
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
@@ -254,9 +254,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 val lastIndex = messages.indexOfLast { it.role == "assistant" }
                                 val err = e.message ?: e.toString()
                                 if (lastIndex != -1) {
-                                    messages[lastIndex] = ChatMessage("assistant", "Error: ${'$'}err")
+                                    messages[lastIndex] = ChatMessage("assistant", "Error: $err")
                                 } else {
-                                    messages.add(ChatMessage("assistant", "Error: ${'$'}err"))
+                                    messages.add(ChatMessage("assistant", "Error: $err"))
                                 }
                                 saveHistory()
                             }
@@ -291,7 +291,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             postStatus("Plan ready: ${plan.tasks.size} task(s). Press Proceed to run the first task.")
                             saveHistory()
                         } catch (e: Exception) {
-                            postStatus("Agent error: ${'$'}{e.message}")
+                            postStatus("Agent error: ${e.message}")
                         } finally {
                             isPlanning.value = false
                         }
@@ -313,7 +313,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             }
                             saveHistory()
                         } catch (e: Exception) {
-                            postStatus("Agent error: ${'$'}{e.message}")
+                            postStatus("Agent error: ${e.message}")
                         }
                     }
                 },
@@ -331,11 +331,11 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 postStatus("Could not update plan.")
                             } else {
                                 activePlan.value = updated
-                                postStatus("Plan updated: ${'$'}{updated.tasks.size} task(s). Press Proceed for next step.")
+                                postStatus("Plan updated: ${updated.tasks.size} task(s). Press Proceed for next step.")
                             }
                             saveHistory()
                         } catch (e: Exception) {
-                            postStatus("Agent error: ${'$'}{e.message}")
+                            postStatus("Agent error: ${e.message}")
                         }
                     }
                 },
@@ -374,7 +374,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         currentWd.value = path
                         svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                         showFolderPicker = false
-                        postStatus("Workspace set to: ${'$'}path")
+                        postStatus("Workspace set to: $path")
                     }) { Text("Use this folder") }
                 },
                 dismissButton = {
@@ -415,7 +415,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                     ) {
                                         val isCurrent = cid == currentChatId.value
                                         Text(
-                                            text = if (isCurrent) "${'$'}cid (current)" else cid,
+                                            text = if (isCurrent) "$cid (current)" else cid,
                                             fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
                                         )
                                     }
