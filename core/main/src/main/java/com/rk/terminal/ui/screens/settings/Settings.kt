@@ -171,6 +171,38 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     singleLineMode = true
                 )
             }
+
+            // Quick HF downloader (MLC repo with weights) → puts under /sdcard/reterminalAssets/<repo>-MLC
+            var showHf by remember { mutableStateOf(false) }
+            Button(onClick = { showHf = true }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(text = "Download from Hugging Face (MLC)")
+            }
+            if (showHf) {
+                var repoInput by remember { mutableStateOf("HF://mlc-ai/gemma-2b-it-q4f16_1-MLC") }
+                var log by remember { mutableStateOf("") }
+                InputDialog(
+                    title = "Hugging Face repo (MLC)",
+                    inputLabel = "e.g. HF://mlc-ai/gemma-2b-it-q4f16_1-MLC",
+                    inputValue = repoInput,
+                    onInputValueChange = { repoInput = it },
+                    onConfirm = {
+                        showHf = false
+                        // Kick off download in a coroutine
+                        androidx.lifecycle.viewmodel.compose.viewModel<androidx.lifecycle.ViewModel>()
+                        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val root = com.rk.terminal.llm.ModelLocator.modelRoot() ?: java.io.File("/sdcard/reterminalAssets").apply { mkdirs() }
+                            val out = com.rk.terminal.llm.ModelManager.downloadFromHuggingFace(repoInput, root) { msg ->
+                                log = msg
+                            }
+                            if (out != null) {
+                                selectedModel = out.absolutePath
+                            }
+                        }
+                    },
+                    onDismiss = { showHf = false },
+                    singleLineMode = true
+                )
+            }
         }
 
         PreferenceGroup {

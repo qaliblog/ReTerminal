@@ -49,14 +49,31 @@ object RuntimeLoader {
             }
         }
 
-        // Detect compiled module in modelDir
-        val modules = modelDir.listFiles()?.filter { it.isFile && it.name.endsWith(".so") } ?: emptyList()
+        // Detect compiled module in modelDir (search recursively, exclude libs/ and lib*.so)
+        val modules = modelDir
+            .walkTopDown()
+            .filter { f ->
+                f.isFile && f.name.endsWith(".so") &&
+                !f.name.startsWith("lib") &&
+                !f.absolutePath.contains("${File.separator}libs${File.separator}")
+            }
+            .toList()
+
         val vulkanMod = modules.firstOrNull { it.name.contains("vulkan", ignoreCase = true) }
-        val cpuMod = modules.firstOrNull { it.name.contains("cpu", ignoreCase = true) || it.name.startsWith("model", true) }
-        moduleSo = vulkanMod ?: cpuMod
+        val cpuMod = modules.firstOrNull { it.name.contains("cpu", ignoreCase = true) }
+        val modelNamedMod = modules.firstOrNull {
+            it.name.startsWith("model", ignoreCase = true) ||
+            it.name.startsWith("mod", ignoreCase = true) ||
+            it.name.contains("module", ignoreCase = true)
+        }
+        val anyMod = modules.firstOrNull()
+
+        moduleSo = vulkanMod ?: cpuMod ?: modelNamedMod ?: anyMod
         backend = when {
             vulkanMod != null -> "vulkan"
             cpuMod != null -> "cpu"
+            // Heuristic: if we found a module but no hint, assume CPU
+            moduleSo != null -> "cpu"
             else -> null
         }
 
