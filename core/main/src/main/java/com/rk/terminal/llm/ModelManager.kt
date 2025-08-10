@@ -49,4 +49,17 @@ object ModelManager {
         // at least one params shard
         return dir.listFiles()?.any { it.name.startsWith("params_shard_") && it.name.endsWith(".bin") } == true
     }
+
+    suspend fun downloadFromHuggingFace(repoId: String, targetRoot: File, logger: (String) -> Unit = {}): File? {
+        val modelFolderName = repoId.substringAfterLast('/') + "-MLC"
+        val outDir = File(targetRoot, modelFolderName)
+        val ok = HfDownloader.downloadMlcWeights(repoId, outDir, onLog = logger)
+        if (!ok) return null
+        if (isValidModelDir(outDir)) {
+            Settings.selected_model_folder = outDir.absolutePath
+            activeModelRef.set(outDir)
+            return outDir
+        }
+        return null
+    }
 }
