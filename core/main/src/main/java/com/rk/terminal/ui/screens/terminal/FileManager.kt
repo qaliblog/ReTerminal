@@ -18,8 +18,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.NoteAdd
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,6 +59,16 @@ fun FileManagerView(
     val showNewFolderDialog = remember { mutableStateOf(false) }
     val newFolderName = remember { mutableStateOf("") }
     val showDeleteConfirm = remember { mutableStateOf<File?>(null) }
+    val showNewFileDialog = remember { mutableStateOf(false) }
+    val newFileName = remember { mutableStateOf("") }
+
+    // Selection state
+    val selectedPaths = remember { mutableStateOf(setOf<String>()) }
+    val hasSelection = selectedPaths.value.isNotEmpty()
+
+    // Clipboard for copy/cut
+    val clipboardItems = remember { mutableStateOf<List<File>>(emptyList()) }
+    val clipboardAction = remember { mutableStateOf<String?>(null) } // "copy" or "cut"
 
     suspend fun load(path: String) {
         val dir = File(path)
@@ -61,9 +76,57 @@ fun FileManagerView(
             dir.listFiles()?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
         }
         entriesState.value = files
+        // Clear selection if items no longer exist
+        selectedPaths.value = selectedPaths.value.filter { p -> files.any { it.absolutePath == p } }.toSet()
     }
 
     LaunchedEffect(currentPath) {
+        load(currentPath)
+    }
+
+    fun toggleSelection(file: File) {
+        selectedPaths.value = if (selectedPaths.value.contains(file.absolutePath)) {
+            selectedPaths.value - file.absolutePath
+        } else {
+            selectedPaths.value + file.absolutePath
+        }
+    }
+
+    suspend fun copyRecursively(src: File, dst: File) {
+        if (src.isDirectory) {
+            if (!dst.exists()) dst.mkdirs()
+            src.listFiles()?.forEach { child ->
+                copyRecursively(child, File(dst, child.name))
+            }
+        } else {
+            withContext(Dispatchers.IO) {
+                dst.parentFile?.mkdirs()
+                src.inputStream().use { input ->
+                    dst.outputStream().use { out ->
+                        input.copyTo(out)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun pasteInto(targetDir: File) {
+        val action = clipboardAction.value ?: return
+        val items = clipboardItems.value
+        if (items.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            for (item in items) {
+                val dest = File(targetDir, item.name)
+                if (dest.exists()) dest.deleteRecursively()
+                if (action == "copy") {
+                    copyRecursively(item, dest)
+                } else if (action == "cut") {
+                    item.renameTo(dest)
+                }
+            }
+        }
+        clipboardAction.value = null
+        clipboardItems.value = emptyList()
         load(currentPath)
     }
 
@@ -77,9 +140,33 @@ fun FileManagerView(
                 }) { Icon(Icons.Default.ArrowBack, contentDescription = "Up") }
             },
             actions = {
+                // New file
+                IconButton(onClick = { showNewFileDialog.value = true }) {
+                    Icon(Icons.Default.NoteAdd, contentDescription = "New file")
+                }
+                // New folder
                 IconButton(onClick = { showNewFolderDialog.value = true }) {
                     Icon(Icons.Default.CreateNewFolder, contentDescription = "New folder")
                 }
+                // Copy/Cut enabled when selection exists
+                IconButton(onClick = {
+                    if (hasSelection) {
+                        clipboardAction.value = "copy"
+                        clipboardItems.value = entriesState.value.filter { selectedPaths.value.contains(it.absolutePath) }
+                        selectedPaths.value = emptySet()
+                    }
+                }, enabled = hasSelection) { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") }
+                IconButton(onClick = {
+                    if (hasSelection) {
+                        clipboardAction.value = "cut"
+                        clipboardItems.value = entriesState.value.filter { selectedPaths.value.contains(it.absolutePath) }
+                        selectedPaths.value = emptySet()
+                    }
+                }, enabled = hasSelection) { Icon(Icons.Default.ContentCut, contentDescription = "Cut") }
+                // Paste visible when clipboard has items
+                IconButton(onClick = {
+                    scope.launch { pasteInto(File(currentPath)) }
+                }, enabled = clipboardItems.value.isNotEmpty()) { Icon(Icons.Default.ContentPaste, contentDescription = "Paste") }
             },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = androidx.compose.ui.graphics.Color.Transparent
@@ -99,7 +186,9 @@ fun FileManagerView(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            if (file.isDirectory) {
+                            if (selectedPaths.value.isNotEmpty()) {
+                                toggleSelection(file)
+                            } else if (file.isDirectory) {
                                 onNavigate(file.absolutePath)
                             }
                         }
@@ -116,8 +205,16 @@ fun FileManagerView(
                         modifier = Modifier.padding(start = 12.dp)
                     )
                     Spacer(modifier = Modifier.weight(1f))
+                    // Selection checkbox
+                    Checkbox(
+                        checked = selectedPaths.value.contains(file.absolutePath),
+                        onCheckedChange = { toggleSelection(file) }
+                    )
                     if (file.isFile) {
-                        IconButton(onClick = { onEditFile(file) }) {
+                        IconButton(onClick = {
+                            onEditFile(file)
+                            TabSwitchBus.request(2) // Editor tab index
+                        }) {
                             Icon(Icons.Default.Edit, contentDescription = "Edit")
                         }
                     }
@@ -166,6 +263,45 @@ fun FileManagerView(
         )
     }
 
+    if (showNewFileDialog.value) {
+        AlertDialog(
+            onDismissRequest = { showNewFileDialog.value = false },
+            title = { Text("New file") },
+            text = {
+                OutlinedTextField(
+                    value = newFileName.value,
+                    onValueChange = { newFileName.value = it },
+                    singleLine = true,
+                    label = { Text("File name") }
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val name = newFileName.value.trim()
+                    if (name.isNotEmpty()) {
+                        scope.launch(Dispatchers.IO) {
+                            runCatching {
+                                val f = File(currentPath, name)
+                                if (!f.exists()) f.parentFile?.mkdirs()
+                                f.writeText("")
+                            }.onSuccess {
+                                scope.launch { load(currentPath) }
+                            }
+                        }
+                    }
+                    newFileName.value = ""
+                    showNewFileDialog.value = false
+                }) { Text("Create") }
+            },
+            dismissButton = {
+                Button(onClick = {
+                    newFileName.value = ""
+                    showNewFileDialog.value = false
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
     showDeleteConfirm.value?.let { target ->
         AlertDialog(
             onDismissRequest = { showDeleteConfirm.value = null },
@@ -199,14 +335,24 @@ private fun Breadcrumbs(currentPath: String, onNavigate: (String) -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Start
     ) {
-        var accum = if (currentPath.startsWith('/')) "/" else ""
-        parts.forEachIndexed { idx, part ->
-            val next = if (accum == "/") "$accum$part" else "$accum/$part"
-            Text(
-                text = if (idx == 0 && currentPath.startsWith('/')) "/" else part,
+        var running = if (currentPath.startsWith('/')) "/" else ""
+        if (currentPath.startsWith('/')) {
+            androidx.compose.material3.Text(
+                text = "/",
                 modifier = Modifier
                     .padding(end = 8.dp)
-                    .clickable { onNavigate(next) },
+                    .clickable { onNavigate("/") },
+                color = MaterialTheme.colorScheme.primary
+            )
+            running = "/"
+        }
+        parts.forEach { part ->
+            running = if (running == "/") "/$part" else if (running.isEmpty()) part else "$running/$part"
+            androidx.compose.material3.Text(
+                text = part,
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .clickable { onNavigate(running) },
                 color = MaterialTheme.colorScheme.primary
             )
         }
@@ -219,4 +365,13 @@ object FileOpenBus {
     fun open(file: File) { selectedFileState.value = file }
     @Composable
     fun current(): File? = selectedFileState.value
+}
+
+// Bus to switch tabs by index (0: Terminal, 1: Files, 2: Editor, 3: Chat)
+object TabSwitchBus {
+    private val targetTab = mutableStateOf<Int?>(null)
+    fun request(index: Int) { targetTab.value = index }
+    @Composable
+    fun pending(): Int? = targetTab.value
+    fun clear() { targetTab.value = null }
 }
