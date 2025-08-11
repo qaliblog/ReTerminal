@@ -43,6 +43,21 @@ class AgentOrchestrator(
         val tasks: List<Task>
     )
 
+    data class MiniTask(
+        val id: String,
+        val description: String,
+        val category: String? = null,
+        val targets: List<String>? = null,
+        val search: List<String>? = null,
+        val markers: List<String>? = null
+    )
+
+    data class MiniPlan(
+        val parentTaskId: String,
+        val reason: String,
+        val tasks: List<MiniTask>
+    )
+
     private val agentDir: File by lazy {
         // Store per chat session
         File(application!!.filesDir, "chat/${sessionId}").apply { mkdirs() }
@@ -51,6 +66,7 @@ class AgentOrchestrator(
     private val progressFile: File by lazy { File(agentDir, "progress.json") }
     private val observationsFile: File by lazy { File(agentDir, "observations.json") }
     private val commandsCacheFile: File by lazy { File(agentDir, "commands.json") }
+    private val miniPlanFile: File by lazy { File(agentDir, "miniPlan.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
@@ -77,6 +93,12 @@ class AgentOrchestrator(
                 }
             }
         }
+        // Ensure mini plan storage exists
+        runCatching {
+            if (!miniPlanFile.exists()) {
+                miniPlanFile.writeText(JSONObject().put("plans", JSONObject()).toString(2))
+            }
+        }
     }
 
     private fun saveObservations() {
@@ -93,6 +115,250 @@ class AgentOrchestrator(
             commandCache.forEach { (k, v) -> obj.put(k, v) }
             commandsCacheFile.writeText(obj.toString(2))
         }
+    }
+
+    private fun loadMiniPlansRoot(): JSONObject {
+        return runCatching { JSONObject(miniPlanFile.takeIf { it.exists() }?.readText().orEmpty()) }
+            .getOrElse { JSONObject().put("plans", JSONObject()) }
+    }
+
+    private fun saveMiniPlansRoot(root: JSONObject) {
+        miniPlanFile.writeText(root.toString(2))
+    }
+
+    private fun getMiniPlanJsonForParent(parentTaskId: String): JSONObject? {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: return null
+        return plans.optJSONObject(parentTaskId)
+    }
+
+    private fun setMiniPlanJsonForParent(parentTaskId: String, miniJson: JSONObject) {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: JSONObject().also { root.put("plans", it) }
+        plans.put(parentTaskId, miniJson)
+        saveMiniPlansRoot(root)
+    }
+
+    private fun persistMiniPlanWithStatuses(mini: MiniPlan) {
+        val tasksArr = JSONArray()
+        mini.tasks.forEach { t ->
+            tasksArr.put(JSONObject().apply {
+                put("id", t.id)
+                put("description", t.description)
+                if (!t.category.isNullOrBlank()) put("category", t.category)
+                if (!t.targets.isNullOrEmpty()) put("targets", JSONArray(t.targets))
+                if (!t.search.isNullOrEmpty()) put("search", JSONArray(t.search))
+                if (!t.markers.isNullOrEmpty()) put("markers", JSONArray(t.markers))
+                put("status", "pending")
+                put("attempts", 0)
+            })
+        }
+        val json = JSONObject().apply {
+            put("parent_task_id", mini.parentTaskId)
+            put("reason", mini.reason)
+            put("tasks", tasksArr)
+        }
+        setMiniPlanJsonForParent(mini.parentTaskId, json)
+    }
+
+    private fun loadMiniPlan(parentTaskId: String): MiniPlan? {
+        val json = getMiniPlanJsonForParent(parentTaskId) ?: return null
+        val arr = json.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<MiniTask>()
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            val id = t.optString("id").ifBlank { "m${i + 1}" }
+            val desc = t.optString("description")
+            if (desc.isBlank()) continue
+            val cat = t.optString("category").ifBlank { null }
+            val targets = t.optJSONArray("targets")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val search = t.optJSONArray("search")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val markers = t.optJSONArray("markers")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            tasks.add(MiniTask(id, desc, cat, targets, search, markers))
+        }
+        val reason = json.optString("reason").ifBlank { "" }
+        return MiniPlan(parentTaskId, reason, tasks)
+    }
+
+    private fun getMiniTaskStatus(parentTaskId: String, miniTaskId: String): String {
+        val json = getMiniPlanJsonForParent(parentTaskId) ?: return "pending"
+        val arr = json.optJSONArray("tasks") ?: return "pending"
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            if (t.optString("id") == miniTaskId) return t.optString("status", "pending")
+        }
+        return "pending"
+    }
+
+    private fun markMiniTaskDone(parentTaskId: String, miniTaskId: String) {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: JSONObject().also { root.put("plans", it) }
+        val json = plans.optJSONObject(parentTaskId) ?: return
+        val arr = json.optJSONArray("tasks") ?: return
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            if (t.optString("id") == miniTaskId) {
+                t.put("status", "done")
+                t.put("ts", System.currentTimeMillis())
+            }
+        }
+        saveMiniPlansRoot(root)
+    }
+
+    private fun incrementMiniTaskAttempts(parentTaskId: String, miniTaskId: String): Int {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: JSONObject().also { root.put("plans", it) }
+        val json = plans.optJSONObject(parentTaskId) ?: return 0
+        val arr = json.optJSONArray("tasks") ?: return 0
+        var next = 0
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            if (t.optString("id") == miniTaskId) {
+                next = t.optInt("attempts", 0) + 1
+                t.put("attempts", next)
+                if (!t.has("status")) t.put("status", "pending")
+            }
+        }
+        saveMiniPlansRoot(root)
+        return next
+    }
+
+    private fun getNextPendingMiniTask(mini: MiniPlan): MiniTask? {
+        for (t in mini.tasks) {
+            if (getMiniTaskStatus(mini.parentTaskId, t.id) != "done") return t
+        }
+        return null
+    }
+
+    private suspend fun decideRemediationAction(goal: String, task: Task, failureNote: String): String = withContext(Dispatchers.IO) {
+        val sys = """
+            You are a supervisor deciding the smallest effective remediation when a task struggles.
+            Return ONLY JSON: {"action": "mini_plan"|"revise_plan"|"retry", "why": string} with no extra text.
+            - mini_plan: when a few targeted discovery/edits can unblock the task without changing the whole plan
+            - revise_plan: when the plan likely needs restructuring or different approach
+            - retry: when the failure seems transient or due to missing small context that another attempt can fetch
+        """.trimIndent()
+        val user = """
+            Goal: ${goal}
+            Current task: ${task.id} - ${task.description}
+            Task category: ${task.category ?: "unspecified"}
+            Failure note: ${failureNote}
+            Prior observations: ${(observations[task.id] ?: "(none)").take(800)}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext "mini_plan"
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext "mini_plan"
+        val action = obj.optString("action").ifBlank { "mini_plan" }
+        return@withContext action
+    }
+
+    private suspend fun requestMiniPlanForTask(plan: Plan, task: Task, failureNote: String): MiniPlan? = withContext(Dispatchers.IO) {
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        val obsJson = JSONObject().apply {
+            observations.entries.forEach { (k, v) -> put(k, if (v.length > 4000) v.take(4000) + " …" else v) }
+        }.toString()
+        val sys = """
+            You create a small remediation mini-plan to unblock a single parent task. Return ONLY JSON:
+            {"parent_task_id": string, "reason": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
+            Rules:
+            - 2 to 6 concise steps max
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - Favor discovery-first then precise, idempotent edits
+            - ids must be stable and short (m1, m2, ...)
+            - No explanations beyond the 'reason' field
+        """.trimIndent()
+        val user = """
+            Goal: ${plan.goal}
+            Parent task: ${task.id} - ${task.description}
+            Category: ${task.category ?: "unspecified"}
+            Failure note: ${failureNote}
+            Working directory: ${wdPath}
+            Workspace snapshot: ${workspaceInfo}
+            Prior observations: ${obsJson}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val parent = obj.optString("parent_task_id").ifBlank { task.id }
+        val reason = obj.optString("reason").ifBlank { "remediate failure" }
+        val arr = obj.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<MiniTask>()
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            val id = t.optString("id").ifBlank { "m${i + 1}" }
+            val desc = t.optString("description")
+            val cat = t.optString("category").ifBlank { null }
+            val targets = t.optJSONArray("targets")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val search = t.optJSONArray("search")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val markers = t.optJSONArray("markers")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            if (desc.isNotBlank()) tasks.add(MiniTask(id, desc, cat, targets, search, markers))
+        }
+        val mini = MiniPlan(parent, reason, tasks)
+        persistMiniPlanWithStatuses(mini)
+        return@withContext mini
+    }
+
+    private suspend fun executeMiniPlanForTask(plan: Plan, parentTask: Task, onStatus: (String) -> Unit): Boolean {
+        var mini = loadMiniPlan(parentTask.id)
+        if (mini == null) {
+            val created = requestMiniPlanForTask(plan, parentTask, observations[parentTask.id] ?: "no_note")
+            if (created == null) return false
+            mini = created
+            onStatus("Mini-plan created for ${parentTask.id}: ${mini.tasks.size} step(s)")
+        }
+        var steps = 0
+        val maxSteps = 12
+        while (steps < maxSteps) {
+            val mt = getNextPendingMiniTask(mini) ?: return true
+            onStatus("Mini ${mini.parentTaskId}.${mt.id}: ${mt.description}")
+            val attemptNo = incrementMiniTaskAttempts(mini.parentTaskId, mt.id)
+            if (attemptNo > 3) {
+                onStatus("Mini ${mini.parentTaskId}.${mt.id}: attempts exceeded")
+                return false
+            }
+            val pseudoTask = Task(
+                id = "${mini.parentTaskId}.${mt.id}",
+                description = mt.description,
+                category = mt.category,
+                targets = mt.targets,
+                search = mt.search,
+                markers = mt.markers
+            )
+            val toolCall = requestSingleToolCall(plan.goal, pseudoTask)
+            if (toolCall == null) {
+                observations[pseudoTask.id] = "mini could not determine action"
+                saveObservations()
+                steps++
+                continue
+            }
+            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+                val err = e.message ?: e.toString()
+                observations[pseudoTask.id] = "mini error: ${err}"
+                saveObservations()
+                steps++
+                continue
+            }
+            if (result.ok) {
+                if (!result.observation.isNullOrBlank()) {
+                    observations[pseudoTask.id] = result.observation
+                    saveObservations()
+                    onStatus("Observed (${pseudoTask.id}): ${result.observation.take(600)}${if ((result.observation?.length ?: 0) > 600) " …" else ""}")
+                }
+                // Consider the mini step done on any successful action
+                markMiniTaskDone(mini.parentTaskId, mt.id)
+                onStatus("Mini ${mini.parentTaskId}.${mt.id}: done")
+            } else {
+                if (!observations.containsKey(pseudoTask.id)) {
+                    observations[pseudoTask.id] = "mini failed without exception"
+                    saveObservations()
+                }
+                steps++
+            }
+        }
+        onStatus("Mini-plan: reached step limit")
+        return false
     }
 
     private fun loadProgress(): JSONObject {
@@ -260,15 +526,32 @@ class AgentOrchestrator(
             if (toolCall == null) {
                 observations[task.id] = "could not determine action for this task"
                 saveObservations()
-                onStatus("Task ${task.id}: could not determine action")
-                return false
+                onStatus("Task ${task.id}: no action suggested; deciding remediation…")
+                val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
+                when (decision) {
+                    "mini_plan" -> {
+                        val ok = executeMiniPlanForTask(plan, task, onStatus)
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    }
+                    "retry" -> { stepsTaken++; continue }
+                    else -> { return false }
+                }
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
-                onStatus("Task ${task.id} failed: ${err}")
-                return false
+                onStatus("Task ${task.id} failed: ${err}; deciding remediation…")
+                val decision = decideRemediationAction(plan.goal, task, "tool_error:${err}")
+                when (decision) {
+                    "mini_plan" -> {
+                        val ok = executeMiniPlanForTask(plan, task, onStatus)
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; return@while }
+                        else return false
+                    }
+                    "retry" -> { stepsTaken++; return@while }
+                    else -> { return false }
+                }
             }
 
             if (result.ok) {
@@ -297,8 +580,16 @@ class AgentOrchestrator(
                 val obs = result.observation
                 if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
                     markTaskFailed(task.id, "repeated_non_modifying_observation")
-                    onStatus("Task ${task.id}: repeated observation; requesting plan update")
-                    return false
+                    onStatus("Task ${task.id}: repeated observation; deciding remediation…")
+                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
+                    when (decision) {
+                        "mini_plan" -> {
+                            val ok = executeMiniPlanForTask(plan, task, onStatus)
+                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                        }
+                        "retry" -> { stepsTaken++; continue }
+                        else -> { return false }
+                    }
                 }
                 lastObservation = result.observation ?: lastObservation
                 lastToolType = toolCall.type
@@ -311,13 +602,26 @@ class AgentOrchestrator(
                     observations[task.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${task.id}: failed")
-                return false
+                onStatus("Task ${task.id}: failed; deciding remediation…")
+                val decision = decideRemediationAction(plan.goal, task, "unknown_failure")
+                when (decision) {
+                    "mini_plan" -> {
+                        val ok = executeMiniPlanForTask(plan, task, onStatus)
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    }
+                    "retry" -> { stepsTaken++; continue }
+                    else -> { return false }
+                }
             }
         }
 
-        onStatus("Task ${task.id}: reached step limit without completion")
-        return false
+        onStatus("Task ${task.id}: reached step limit without completion; deciding remediation…")
+        val decision = decideRemediationAction(plan.goal, task, "step_limit")
+        return when (decision) {
+            "mini_plan" -> executeMiniPlanForTask(plan, task, onStatus)
+            "retry" -> false
+            else -> false
+        }
     }
 
     private data class ToolCall(
