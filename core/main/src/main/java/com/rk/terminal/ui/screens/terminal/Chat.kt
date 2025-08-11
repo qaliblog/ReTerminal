@@ -189,6 +189,22 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
     fun appendGitLog(s: String) { gitLog.add(s) }
 
+    // Normalize Git settings: if user pasted an absolute git binary path into PATH,
+    // move it to gitBin and keep PATH as the directory
+    fun sanitizeGitSettings() {
+        val pathField = (gitPath ?: "").trim()
+        if (pathField.isNotBlank()) {
+            val looksLikeBinary = pathField.endsWith("/git") && !java.io.File(pathField).isDirectory
+            if (looksLikeBinary) {
+                gitBin = pathField
+                gitPath = java.io.File(pathField).parent
+                savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin, gitPath = gitPath)
+                appendGitLog("Detected git binary path; using $gitBin and PATH=${gitPath}")
+            }
+        }
+        if (gitBin.isBlank()) gitBin = "git"
+    }
+
     fun isGitRepo(path: String): Boolean = File(path, ".git").exists()
 
     fun runGitCommand(path: String, command: String, onDone: (Int, String) -> Unit) {
