@@ -152,7 +152,7 @@ class AgentOrchestrator(
         saveProgress(progress)
     }
 
-    private fun getPlanSignature(progress: JSONObject): String? = progress.optString("plan_signature", null)
+    private fun getPlanSignature(progress: JSONObject): String? = progress.optString("plan_signature", "").ifBlank { null }
     private fun setPlanSignature(progress: JSONObject, sig: String) {
         progress.put("plan_signature", sig)
         progress.put("plan_rev", progress.optInt("plan_rev", 0) + 1)
