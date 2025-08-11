@@ -56,6 +56,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -99,15 +102,16 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
     }
 
-    // Persist selected chat and scroll positions
-    fun savePrefs(selectedChatId: String, firstVisibleIndex: Int, firstVisibleOffset: Int, sendMode: String) {
+    // Persist selected chat and scroll positions and settings
+    fun savePrefs(selectedChatId: String, firstVisibleIndex: Int, firstVisibleOffset: Int, sendMode: String, gitBin: String? = null, gitPath: String? = null) {
         runCatching {
-            val obj = JSONObject().apply {
-                put("selected_chat", selectedChatId)
-                put("scroll_index", firstVisibleIndex)
-                put("scroll_offset", firstVisibleOffset)
-                put("send_mode", sendMode)
-            }
+            val obj = loadPrefs()
+            obj.put("selected_chat", selectedChatId)
+            obj.put("scroll_index", firstVisibleIndex)
+            obj.put("scroll_offset", firstVisibleOffset)
+            obj.put("send_mode", sendMode)
+            if (gitBin != null) obj.put("git_bin", gitBin)
+            if (gitPath != null) obj.put("git_path", gitPath)
             prefsFile.writeText(obj.toString(2))
         }
     }
@@ -179,6 +183,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val gitPickerPath = remember { mutableStateOf(gitProjectPath.value) }
     val gitCommitMsg = remember { mutableStateOf("chore: save via app") }
     val gitLog = remember { mutableStateListOf<String>() }
+    val initialPrefs = loadPrefs()
+    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "git" }) }
+    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path")) }
 
     fun appendGitLog(s: String) { gitLog.add(s) }
 
@@ -191,6 +198,13 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     .directory(File(path))
                     .redirectErrorStream(true)
                     .start()
+                // inject PATH if provided
+                try {
+                    val env = proc.processBuilder().environment()
+                    if (!gitPath.isNullOrBlank()) {
+                        env["PATH"] = gitPath + ":" + (env["PATH"] ?: "")
+                    }
+                } catch (_: Throwable) {}
                 val output = proc.inputStream.bufferedReader().use { it.readText() }
                 val code = proc.waitFor()
                 scope.launch(Dispatchers.Main) { onDone(code, output) }
@@ -218,6 +232,13 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
     }
 
+    // Back key hides keyboard like Termux when input focused
+    val focusManager = LocalFocusManager.current
+    var isInputFocused by remember { mutableStateOf(false) }
+    BackHandler(enabled = isInputFocused) {
+        focusManager.clearFocus(force = true)
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Tabs
         TabRow(selectedTabIndex = selectedTab) {
@@ -241,6 +262,17 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 IconButton(onClick = { showGitFolderPicker = true }) { Icon(Icons.Default.Folder, contentDescription = "Select project") }
                             }
                         }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(value = gitBin, onValueChange = { gitBin = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin) }, singleLine = true, label = { Text("Git binary") })
+                            OutlinedTextField(value = gitPath ?: "", onValueChange = { gitPath = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath) }, singleLine = true, label = { Text("PATH") }, modifier = Modifier.weight(1f))
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                val cmd = "$gitBin --version"
+                                appendGitLog("$ $cmd")
+                                runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                            }) { Text("Test Git") }
+                        }
                         OutlinedTextField(
                             value = gitCommitMsg.value,
                             onValueChange = { gitCommitMsg.value = it },
@@ -251,14 +283,14 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = {
                                 val path = gitProjectPath.value
-                                appendGitLog("$ git init")
-                                runGitCommand(path, "git init") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                                appendGitLog("$ $gitBin init")
+                                runGitCommand(path, "$gitBin init") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
                             }) { Text("Init Repo") }
                             Button(onClick = {
                                 val path = gitProjectPath.value
                                 val msg = gitCommitMsg.value.ifBlank { "save" }
-                                appendGitLog("$ git add . && git commit -m \"$msg\"")
-                                runGitCommand(path, "git add . && git commit -m \"$msg\"") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                                appendGitLog("$ $gitBin add . && $gitBin commit -m \"$msg\"")
+                                runGitCommand(path, "$gitBin add . && $gitBin commit -m \"$msg\"") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
                             }) { Text("Save Version") }
                         }
                     }
@@ -448,7 +480,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).onFocusChanged { isInputFocused = it.isFocused },
                 singleLine = true,
                 placeholder = { Text("Type a message…") }
             )
@@ -756,8 +788,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
             )
         }
         // Persist scroll on leave
-        DisposableEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, currentChatId.value, sendMode) {
-            onDispose { savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode) }
+        DisposableEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, currentChatId.value, sendMode, gitBin, gitPath) {
+            onDispose { savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin, gitPath) }
         }
     }
 }
