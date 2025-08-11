@@ -60,6 +60,9 @@ import androidx.compose.material3.TabRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.platform.LocalFocusManager
 
 private data class ChatMessage(val role: String, val content: String)
@@ -186,8 +189,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val gitCommitMsg = remember { mutableStateOf("chore: save via app") }
     val gitLog = remember { mutableStateListOf<String>() }
     val initialPrefs = loadPrefs()
-    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "/usr/bin/git" }) }
-    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path").ifBlank { "/usr/bin" }) }
+    val envPath = System.getenv("PATH") ?: ""
+    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "git" }) }
+    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path").ifBlank { envPath }) }
 
     fun appendGitLog(s: String) { gitLog.add(s) }
 
@@ -204,6 +208,17 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         }
         if (gitBin.isBlank()) gitBin = "git"
+        // If gitBin looks like an absolute file but does not exist, fall back to 'git'
+        runCatching {
+            if (gitBin.contains('/') && !java.io.File(gitBin).exists()) {
+                appendGitLog("git binary not found at $gitBin; falling back to 'git' on PATH")
+                gitBin = "git"
+            }
+            // If PATH is empty and gitBin is an absolute path, default PATH to its parent
+            if ((gitPath.isNullOrBlank()) && gitBin.contains('/')) {
+                gitPath = java.io.File(gitBin).parent
+            }
+        }
     }
 
     fun isGitRepo(path: String): Boolean = File(path, ".git").exists()
@@ -277,9 +292,27 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 IconButton(onClick = { showGitFolderPicker = true }) { Icon(Icons.Default.Folder, contentDescription = "Select project") }
                             }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                         OutlinedTextField(value = gitBin, onValueChange = { gitBin = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin) }, singleLine = true, label = { Text("Git binary (/usr/bin/git)") })
-                             OutlinedTextField(value = gitPath ?: "", onValueChange = { gitPath = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath) }, singleLine = true, label = { Text("PATH (/usr/bin)") }, modifier = Modifier.weight(1f))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = gitBin,
+                                onValueChange = {
+                                    gitBin = it
+                                    savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin)
+                                },
+                                singleLine = true,
+                                label = { Text("Git binary (git or /path/to/git)") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = gitPath ?: "",
+                                onValueChange = {
+                                    gitPath = it
+                                    savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath)
+                                },
+                                singleLine = true,
+                                label = { Text("PATH (e.g., /usr/bin:/bin)") },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                                          Button(onClick = {
@@ -298,11 +331,13 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = {
+                                sanitizeGitSettings()
                                 val path = gitProjectPath.value
                                 appendGitLog("$ $gitBin init")
                                 runGitCommand(path, "$gitBin init") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
                             }) { Text("Init Repo") }
                             Button(onClick = {
+                                sanitizeGitSettings()
                                 val path = gitProjectPath.value
                                 val msg = gitCommitMsg.value.ifBlank { "save" }
                                 appendGitLog("$ $gitBin add . && $gitBin commit -m \"$msg\"")
@@ -395,10 +430,10 @@ fun ChatView(mainActivityActivity: MainActivity) {
         if (hasPlan) {
             val plan = activePlan.value!!
             Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(max = 300.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
-                Column(Modifier.padding(12.dp)) {
+                Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("Plan", style = MaterialTheme.typography.titleSmall)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -822,6 +857,39 @@ fun ChatView(mainActivityActivity: MainActivity) {
         // Persist scroll on leave
         DisposableEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, currentChatId.value, sendMode, gitBin, gitPath) {
             onDispose { savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin, gitPath) }
+        }
+    }
+
+    // Auto-run loop: when enabled, automatically execute pending plan tasks until completion or error
+    LaunchedEffect(autoRun, activePlan.value) {
+        if (!autoRun) return@LaunchedEffect
+        scope.launch(Dispatchers.IO) {
+            var loops = 0
+            while (autoRun && loops < 50) {
+                val current = activePlan.value ?: break
+                if (agent.getNextPendingTask(current) == null) break
+                try {
+                    val success = agent.executeNextTask(current) { s ->
+                        scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                    }
+                    if (!success) {
+                        val updated = agent.requestUpdatedPlan(current)
+                        if (updated != null) {
+                            scope.launch(Dispatchers.Main) {
+                                activePlan.value = updated
+                                postStatus("Plan updated.")
+                                saveHistory()
+                            }
+                        } else {
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    scope.launch(Dispatchers.Main) { postStatus("Agent error: ${e.message}"); saveHistory() }
+                    break
+                }
+                loops++
+            }
         }
     }
 }
