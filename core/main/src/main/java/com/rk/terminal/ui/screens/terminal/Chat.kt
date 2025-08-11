@@ -105,7 +105,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     // Persist selected chat and scroll positions and settings
     fun savePrefs(selectedChatId: String, firstVisibleIndex: Int, firstVisibleOffset: Int, sendMode: String, gitBin: String? = null, gitPath: String? = null) {
         runCatching {
-            val obj = loadPrefs()
+            val obj = runCatching { JSONObject(prefsFile.takeIf { it.exists() }?.readText() ?: "{}") }.getOrElse { JSONObject() }
             obj.put("selected_chat", selectedChatId)
             obj.put("scroll_index", firstVisibleIndex)
             obj.put("scroll_offset", firstVisibleOffset)
@@ -194,17 +194,15 @@ fun ChatView(mainActivityActivity: MainActivity) {
     fun runGitCommand(path: String, command: String, onDone: (Int, String) -> Unit) {
         scope.launch(Dispatchers.IO) {
             try {
-                val proc = ProcessBuilder("sh", "-c", command)
+                val pb = ProcessBuilder("sh", "-c", command)
                     .directory(File(path))
                     .redirectErrorStream(true)
-                    .start()
                 // inject PATH if provided
-                try {
-                    val env = proc.processBuilder().environment()
-                    if (!gitPath.isNullOrBlank()) {
-                        env["PATH"] = gitPath + ":" + (env["PATH"] ?: "")
-                    }
-                } catch (_: Throwable) {}
+                if (!gitPath.isNullOrBlank()) {
+                    val env = pb.environment()
+                    env["PATH"] = gitPath + ":" + (env["PATH"] ?: "")
+                }
+                val proc = pb.start()
                 val output = proc.inputStream.bufferedReader().use { it.readText() }
                 val code = proc.waitFor()
                 scope.launch(Dispatchers.Main) { onDone(code, output) }
