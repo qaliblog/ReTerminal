@@ -226,7 +226,7 @@ class AgentOrchestrator(
 
     private fun isDiscoveryTool(type: String): Boolean {
         return when (type) {
-            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers" -> true
+            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive" -> true
             else -> false
         }
     }
@@ -249,9 +249,12 @@ class AgentOrchestrator(
             {"type":"make_dir","args":{"path": string}}
             {"type":"run_shell","args":{"command": string}}
             {"type":"list_dir","args":{"path": string}}
+            {"type":"list_dir_recursive","args":{"path": string, "max_depth": number, "max_entries": number}}
             {"type":"read_file","args":{"path": string, "max_bytes": number}}
             {"type":"read_file_lines","args":{"path": string, "start": number, "end": number, "max_bytes": number}}
             {"type":"read_file_section_by_markers","args":{"path": string, "start_marker": string, "end_marker": string, "include_markers": boolean}}
+            {"type":"read_files","args":{"paths": [string,...], "max_bytes": number}}
+            {"type":"read_files_glob","args":{"root": string, "glob": string, "max_files": number, "max_bytes": number, "max_depth": number}}
             {"type":"stat_file","args":{"path": string}}
             {"type":"grep","args":{"path": string, "pattern": string, "max_results": number}}
             {"type":"search_replace","args":{"path": string, "old": string, "new": string, "unique": boolean}}
@@ -268,6 +271,7 @@ class AgentOrchestrator(
             - Consider the provided observations from prior steps. If a relevant file's content has already been observed, propose the write/apply_changes directly.
             - If the task's category suggests discovery (e.g., read, list, grep) and you lack the relevant observation, propose a discovery call first.
             - If the task's category suggests modification (e.g., write/apply_changes), and needed context is missing, first propose a minimal discovery call to fetch it.
+            - For multi-file reads, keep limits small and targeted (e.g., max_files<=50, max_bytes<=65536) to avoid overload.
             - Do not return markdown code fences. Return pure JSON on a single line.
             - Do not include explanations.
         """.trimIndent()
@@ -358,6 +362,28 @@ class AgentOrchestrator(
                 val listing = if (d.exists() && d.isDirectory) listTopLevel(d, limit = 200) else JSONObject().put("path", d.absolutePath).put("items", JSONArray()).toString()
                 ToolResult(true, listing)
             }
+            "list_dir_recursive" -> {
+                val path = tc.args.optString("path")
+                val maxDepth = tc.args.optInt("max_depth", 3).coerceAtLeast(0)
+                val maxEntries = tc.args.optInt("max_entries", 500).coerceAtLeast(1)
+                require(path.isNotBlank()) { "path missing" }
+                val root = resolvePath(path)
+                val arr = JSONArray()
+                var count = 0
+                fun walk(dir: File, depth: Int) {
+                    if (depth > maxDepth || count >= maxEntries) return
+                    val files = dir.listFiles() ?: return
+                    for (f in files) {
+                        if (count >= maxEntries) break
+                        arr.put(JSONObject().put("path", f.absolutePath).put("type", if (f.isDirectory) "dir" else "file"))
+                        count++
+                        if (f.isDirectory) walk(f, depth + 1)
+                    }
+                }
+                if (root.exists() && root.isDirectory) walk(root, 0)
+                val out = JSONObject().put("root", root.absolutePath).put("max_depth", maxDepth).put("items", arr).toString()
+                ToolResult(true, out)
+            }
             "read_file" -> {
                 val path = tc.args.optString("path")
                 val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
@@ -372,6 +398,69 @@ class AgentOrchestrator(
                     JSONObject().put("path", f.absolutePath).put("missing", true).toString()
                 }
                 ToolResult(true, content)
+            }
+            "read_files" -> {
+                val arr = tc.args.optJSONArray("paths") ?: JSONArray()
+                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val results = JSONArray()
+                for (i in 0 until arr.length()) {
+                    val rawPath = arr.optString(i)
+                    if (rawPath.isNullOrBlank()) continue
+                    val f = resolvePath(rawPath)
+                    if (f.exists() && f.isFile) {
+                        val bytes = runCatching { f.readBytes() }.getOrElse { ByteArray(0) }
+                        val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
+                        val text = String(slice)
+                        results.put(JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes))
+                    } else {
+                        results.put(JSONObject().put("path", f.absolutePath).put("missing", true))
+                    }
+                }
+                val out = JSONObject().put("files", results).toString()
+                ToolResult(true, out)
+            }
+            "read_files_glob" -> {
+                val rootPath = tc.args.optString("root")
+                val glob = tc.args.optString("glob")
+                val maxFiles = tc.args.optInt("max_files", 50).coerceAtLeast(1)
+                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val maxDepth = tc.args.optInt("max_depth", 5).coerceAtLeast(0)
+                require(rootPath.isNotBlank()) { "root missing" }
+                require(glob.isNotBlank()) { "glob missing" }
+                val root = resolvePath(rootPath)
+                val regex = globToRegex(glob)
+                val results = JSONArray()
+                var count = 0
+                fun walk(dir: File, depth: Int) {
+                    if (depth > maxDepth || count >= maxFiles) return
+                    val files = dir.listFiles() ?: return
+                    for (f in files) {
+                        if (count >= maxFiles) break
+                        if (f.isDirectory) {
+                            walk(f, depth + 1)
+                        } else {
+                            val rel = f.absolutePath
+                            if (regex.matcher(f.name).matches() || regex.matcher(rel).matches()) {
+                                val bytes = runCatching { f.readBytes() }.getOrElse { ByteArray(0) }
+                                val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
+                                val text = String(slice)
+                                results.put(JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes))
+                                count++
+                            }
+                        }
+                    }
+                }
+                if (root.isDirectory) walk(root, 0) else if (root.isFile) {
+                    if (globToRegex(glob).matcher(root.name).matches()) {
+                        val bytes = runCatching { root.readBytes() }.getOrElse { ByteArray(0) }
+                        val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
+                        val text = String(slice)
+                        results.put(JSONObject().put("path", root.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes))
+                        count++
+                    }
+                }
+                val out = JSONObject().put("root", root.absolutePath).put("glob", glob).put("files", results).toString()
+                ToolResult(true, out)
             }
             "read_file_lines" -> {
                 val path = tc.args.optString("path")
@@ -558,6 +647,24 @@ class AgentOrchestrator(
             }
             else -> ToolResult(false, null)
         }
+    }
+
+    private fun globToRegex(glob: String): java.util.regex.Pattern {
+        // Convert simple glob to regex: * -> .*, ? -> ., escape others
+        val sb = StringBuilder()
+        sb.append('^')
+        for (ch in glob.toCharArray()) {
+            when (ch) {
+                '*' -> sb.append(".*")
+                '?' -> sb.append('.')
+                '.', '(', ')', '+', '|', '^', '$', '@', '%', '{', '}', '[', ']', '\\' -> {
+                    sb.append('\\').append(ch)
+                }
+                else -> sb.append(ch)
+            }
+        }
+        sb.append('$')
+        return java.util.regex.Pattern.compile(sb.toString())
     }
 
     private suspend fun collectAll(flow: Flow<String>): String = withContext(Dispatchers.IO) {
