@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
@@ -184,8 +186,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val gitCommitMsg = remember { mutableStateOf("chore: save via app") }
     val gitLog = remember { mutableStateListOf<String>() }
     val initialPrefs = loadPrefs()
-    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "git" }) }
-    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path")) }
+    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "/usr/bin/git" }) }
+    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path").ifBlank { "/usr/bin" }) }
 
     fun appendGitLog(s: String) { gitLog.add(s) }
 
@@ -277,15 +279,16 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(value = gitBin, onValueChange = { gitBin = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin) }, singleLine = true, label = { Text("Git binary") })
-                            OutlinedTextField(value = gitPath ?: "", onValueChange = { gitPath = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath) }, singleLine = true, label = { Text("PATH") }, modifier = Modifier.weight(1f))
+                                                         OutlinedTextField(value = gitBin, onValueChange = { gitBin = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin) }, singleLine = true, label = { Text("Git binary (/usr/bin/git)") })
+                             OutlinedTextField(value = gitPath ?: "", onValueChange = { gitPath = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath) }, singleLine = true, label = { Text("PATH (/usr/bin)") }, modifier = Modifier.weight(1f))
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                val cmd = "$gitBin --version"
-                                appendGitLog("$ $cmd")
-                                runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
-                            }) { Text("Test Git") }
+                                                         Button(onClick = {
+                                 sanitizeGitSettings()
+                                 val cmd = "$gitBin --version"
+                                 appendGitLog("$ $cmd")
+                                 runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                             }) { Text("Test Git") }
                         }
                         OutlinedTextField(
                             value = gitCommitMsg.value,
@@ -368,7 +371,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
 
         LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp).navigationBarsPadding().imePadding(),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             reverseLayout = false,
             state = listState
@@ -455,7 +458,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
         // Row 1: Chat session selector + Input + Send
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).navigationBarsPadding().imePadding(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -475,6 +478,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         onClick = {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                            // Persist selected chat and workspace immediately
+                            savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                             showWdMenu = false
                             postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
@@ -489,6 +494,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             val path = parent.absolutePath
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                            savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                             showWdMenu = false
                             postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
@@ -592,7 +598,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
         // Row 2: Agent controls
         Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(8.dp).navigationBarsPadding().imePadding(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -737,6 +743,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         val path = pickerPath.value
                         currentWd.value = path
                         svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                        savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                         showFolderPicker = false
                         postStatus("Workspace set to: $path (agent will use absolute paths)")
                     }) { Text("Use this folder") }
