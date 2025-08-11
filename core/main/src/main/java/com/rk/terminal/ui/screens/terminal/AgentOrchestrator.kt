@@ -52,7 +52,7 @@ class AgentOrchestrator(
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
     // Command output cache: key -> {command, wd, output, exit, ts}
-    private val commandCache: MutableMap<String, JSONObject> = linkedHashMapOf()
+    private val commandCache: MutableMap<String, JSONObject> = LinkedHashMap()
 
     init {
         // Load persisted observations if available to make the agent resilient to restarts
@@ -499,8 +499,9 @@ class AgentOrchestrator(
             "list_cached_commands" -> {
                 val max = tc.args.optInt("max", 50).coerceAtLeast(1)
                 val arr = JSONArray()
-                commandCache.entries.takeLast(max).forEach { (k, v) ->
+                commandCache.entries.toList().takeLast(max).forEach { entry ->
                     arr.put(JSONObject().apply {
+                        val v = entry.value
                         put("command", v.optString("command"))
                         put("wd", v.optString("wd"))
                         put("ts", v.optLong("ts"))
