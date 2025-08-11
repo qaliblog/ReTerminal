@@ -413,7 +413,7 @@ class AgentOrchestrator(
             Workspace snapshot: ${workspaceInfo}
         """.trimIndent()
         val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
-        val jsonText = extractFirstJsonObject(content) ?: "{"intent":"plan_and_execute"}"
+        val jsonText = extractFirstJsonObject(content) ?: "{\"intent\":\"plan_and_execute\"}"
         return@withContext runCatching { JSONObject(jsonText) }.getOrElse { JSONObject().put("intent", "plan_and_execute") }
     }
 
