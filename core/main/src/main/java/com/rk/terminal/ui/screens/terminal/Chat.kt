@@ -402,17 +402,29 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             }
                             Button(onClick = {
                                 scope.launch(Dispatchers.IO) {
-                                    val success = agent.executeNextTask(plan) { s ->
-                                        scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
-                                    }
-                                    if (!success) {
-                                        val updated = agent.requestUpdatedPlan(plan)
-                                        if (updated != null) {
-                                            scope.launch(Dispatchers.Main) { activePlan.value = updated; postStatus("Plan updated."); saveHistory() }
+                                    try {
+                                        var loops = 0
+                                        while (true) {
+                                            val current = activePlan.value ?: break
+                                            if (agent.getNextPendingTask(current) == null) break
+                                            val success = agent.executeNextTask(current) { s ->
+                                                scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                                            }
+                                            if (!success) {
+                                                val updated = agent.requestUpdatedPlan(current)
+                                                if (updated != null) {
+                                                    scope.launch(Dispatchers.Main) {
+                                                        activePlan.value = updated
+                                                        postStatus("Plan updated.")
+                                                        saveHistory()
+                                                    }
+                                                }
+                                            }
+                                            loops++
+                                            if (!autoRun || loops >= 50) break
                                         }
-                                    } else if (autoRun) {
-                                        // trigger next automatically
-                                        this.launch { /* no-op, user can press Proceed or keep auto-run */ }
+                                    } catch (e: Exception) {
+                                        scope.launch(Dispatchers.Main) { postStatus("Agent error: ${e.message}"); saveHistory() }
                                     }
                                 }
                             }) { Text("Run") }

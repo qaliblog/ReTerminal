@@ -797,6 +797,8 @@ class AgentOrchestrator(
                 if (isModifyingTool(toolCall.type)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
+                    // Ensure UI sees latest statuses
+                    persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
@@ -805,6 +807,8 @@ class AgentOrchestrator(
                 if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
+                    // Ensure UI sees latest statuses
+                    persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
