@@ -55,6 +55,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.DropdownMenuItemDefaults
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -86,6 +88,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     // Chat history persistence under chat/<chatId>/history.json
     val chatDir = remember(currentChatId.value) { File(application!!.filesDir, "chat/${currentChatId.value}").apply { mkdirs() } }
     val historyFile = remember(currentChatId.value) { File(chatDir, "history.json") }
+    val prefsFile = remember { File(application!!.filesDir, "chat_prefs.json") }
 
     fun saveHistory() {
         runCatching {
@@ -96,6 +99,20 @@ fun ChatView(mainActivityActivity: MainActivity) {
             historyFile.writeText(arr.toString(2))
         }
     }
+
+    // Persist selected chat and scroll positions
+    fun savePrefs(selectedChatId: String, firstVisibleIndex: Int, firstVisibleOffset: Int, sendMode: String) {
+        runCatching {
+            val obj = JSONObject().apply {
+                put("selected_chat", selectedChatId)
+                put("scroll_index", firstVisibleIndex)
+                put("scroll_offset", firstVisibleOffset)
+                put("send_mode", sendMode)
+            }
+            prefsFile.writeText(obj.toString(2))
+        }
+    }
+    fun loadPrefs(): JSONObject = runCatching { JSONObject(prefsFile.takeIf { it.exists() }?.readText() ?: "{}") }.getOrElse { JSONObject() }
 
     LaunchedEffect(currentChatId.value) {
         // Load history for selected chat
@@ -181,6 +198,24 @@ fun ChatView(mainActivityActivity: MainActivity) {
             } catch (e: Exception) {
                 scope.launch(Dispatchers.Main) { onDone(-1, e.message ?: e.toString()) }
             }
+        }
+    }
+
+    // Send mode dropdown: think (default) | plan | chat
+    val sendModes = listOf("think", "plan", "chat")
+    var sendMode by remember {
+        mutableStateOf(loadPrefs().optString("send_mode").ifBlank { "think" })
+    }
+    var showSendMenu by remember { mutableStateOf(false) }
+
+    // Scroll state with persistence
+    val listState = rememberLazyListState()
+    LaunchedEffect(currentChatId.value) {
+        val p = loadPrefs()
+        if (p.optString("selected_chat") == currentChatId.value) {
+            val idx = p.optInt("scroll_index", 0)
+            val off = p.optInt("scroll_offset", 0)
+            runCatching { listState.scrollToItem(idx, off) }
         }
     }
 
@@ -290,7 +325,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            reverseLayout = false
+            reverseLayout = false,
+            state = listState
         ) {
             items(messages) { msg ->
                 val isUser = msg.role == "user"
@@ -417,27 +453,66 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 singleLine = true,
                 placeholder = { Text("Type a message…") }
             )
+            // Send mode dropdown
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(sendMode.uppercase(), style = MaterialTheme.typography.labelSmall, modifier = Modifier.clickable { showSendMenu = true }.padding(bottom = 2.dp))
+                DropdownMenu(expanded = showSendMenu, onDismissRequest = { showSendMenu = false }) {
+                    sendModes.forEach { mode ->
+                        DropdownMenuItem(text = { Text(mode) }, onClick = {
+                            sendMode = mode
+                            showSendMenu = false
+                            savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
+                        })
+                    }
+                }
+            }
             IconButton(
                 onClick = {
                     val prompt = input.trim()
                     if (prompt.isEmpty()) return@IconButton
                     input = ""
                     messages.add(ChatMessage("user", prompt))
-                    messages.add(ChatMessage("assistant", "Thinking…"))
+                    messages.add(ChatMessage("assistant", if (sendMode == "chat") "…" else "Thinking…"))
                     saveHistory()
 
                     scope.launch(Dispatchers.IO) {
                         runCatching {
-                            val result = agent.thinkAndAct(prompt) { s ->
-                                scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
-                            }
-                            if (result.producedPlan != null) {
-                                scope.launch(Dispatchers.Main) { activePlan.value = result.producedPlan }
-                                postStatus("Plan ready: ${result.producedPlan.tasks.size} task(s). Press Proceed to run.")
-                            } else if (!result.answer.isNullOrBlank()) {
-                                postStatus(result.answer)
-                            } else {
-                                postStatus("No actionable result from think-and-act.")
+                            when (sendMode) {
+                                "think" -> {
+                                    val result = agent.thinkAndAct(prompt) { s ->
+                                        scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                                    }
+                                    if (result.producedPlan != null) {
+                                        scope.launch(Dispatchers.Main) { activePlan.value = result.producedPlan }
+                                        postStatus("Plan ready: ${result.producedPlan.tasks.size} task(s). Press Proceed to run.")
+                                    } else if (!result.answer.isNullOrBlank()) {
+                                        postStatus(result.answer)
+                                    } else {
+                                        postStatus("No actionable result from think-and-act.")
+                                    }
+                                }
+                                "plan" -> {
+                                    val plan = agent.generatePlan(prompt)
+                                    if (plan == null) {
+                                        postStatus("Could not parse plan from AI.")
+                                    } else {
+                                        scope.launch(Dispatchers.Main) { activePlan.value = plan }
+                                        postStatus("Plan ready: ${plan.tasks.size} task(s). Press Proceed to run the first task.")
+                                    }
+                                }
+                                else -> {
+                                    LlmProvider.current().generate(messages.map { com.rk.terminal.llm.LlmMessage(it.role, it.content) }).collect { token ->
+                                        scope.launch(Dispatchers.Main) {
+                                            val lastIndex = messages.indexOfLast { it.role == "assistant" }
+                                            if (lastIndex != -1) {
+                                                val current = messages[lastIndex]
+                                                val nextContent = if (current.content == "…") token else current.content + token
+                                                messages[lastIndex] = current.copy(content = nextContent)
+                                                saveHistory()
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }.onFailure { e ->
                             scope.launch(Dispatchers.Main) {
@@ -451,9 +526,11 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 saveHistory()
                             }
                         }
+                        // Persist prefs after sending
+                        savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                     }
                 }
-            ) { Icon(Icons.Default.Send, contentDescription = "Think") }
+            ) { Icon(Icons.Default.Send, contentDescription = "Send") }
         }
 
         // Row 2: Agent controls
@@ -639,6 +716,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                             .clickable {
                                                 currentChatId.value = cid
                                                 showChatManager = false
+                                                savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                                             }
                                             .padding(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -670,12 +748,17 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         currentChatId.value = name
                         newChatName.value = ""
                         showChatManager = false
+                        savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                     }) { Text("Create / Switch") }
                 },
                 dismissButton = {
                     TextButton(onClick = { showChatManager = false }) { Text("Close") }
                 }
             )
+        }
+        // Persist scroll on leave
+        DisposableEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, currentChatId.value, sendMode) {
+            onDispose { savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode) }
         }
     }
 }

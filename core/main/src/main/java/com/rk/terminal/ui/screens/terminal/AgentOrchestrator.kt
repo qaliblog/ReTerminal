@@ -58,16 +58,44 @@ class AgentOrchestrator(
         val tasks: List<MiniTask>
     )
 
-    data class ThinkResult(
+        data class ThinkResult(
         val producedPlan: Plan? = null,
         val answer: String? = null,
         val blueprintPath: String? = null
     )
-
-    private val agentDir: File by lazy {
-        // Store per chat session
-        File(application!!.filesDir, "chat/${sessionId}").apply { mkdirs() }
+ 
+    // Per-run stats for dynamic summary lines
+    private data class RunStats(
+        val startedMs: Long = System.currentTimeMillis(),
+        var endedMs: Long = 0L,
+        val toolCounts: MutableMap<String, Int> = LinkedHashMap(),
+        val filesRead: MutableList<String> = mutableListOf(),
+        val dirsListed: MutableList<String> = mutableListOf(),
+        val grepPatterns: MutableList<String> = mutableListOf(),
+        val commandsRun: MutableList<String> = mutableListOf(),
+        val filesModified: MutableList<String> = mutableListOf()
+    )
+    private var currentRunStats: RunStats? = null
+    private fun beginRunStats() { currentRunStats = RunStats() }
+    private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
+        val stats = currentRunStats ?: return
+        stats.endedMs = System.currentTimeMillis()
+        val secs = ((stats.endedMs - stats.startedMs).coerceAtLeast(0L) / 100L).toDouble() / 10.0
+        val parts = mutableListOf<String>()
+        if (stats.toolCounts.isNotEmpty()) parts.add(stats.toolCounts.entries.joinToString(", ") { (k, v) -> "${k}×${v}" })
+        if (stats.filesRead.isNotEmpty()) parts.add("read ${stats.filesRead.size} file(s): ${stats.filesRead.take(3).joinToString(", ")}${if (stats.filesRead.size > 3) " …" else ""}")
+        if (stats.filesModified.isNotEmpty()) parts.add("modified ${stats.filesModified.size} file(s): ${stats.filesModified.take(3).joinToString(", ")}${if (stats.filesModified.size > 3) " …" else ""}")
+        if (stats.commandsRun.isNotEmpty()) parts.add("ran ${stats.commandsRun.size} command(s): ${stats.commandsRun.take(1).joinToString()}${if (stats.commandsRun.size > 1) " …" else ""}")
+        if (stats.grepPatterns.isNotEmpty()) parts.add("grep ${stats.grepPatterns.size} pattern(s)")
+        val summary = "${verb} for ${secs}s${if (parts.isNotEmpty()) "; " + parts.joinToString("; ") else ""}"
+        onStatus(summary)
+        currentRunStats = null
     }
+ 
+     private val agentDir: File by lazy {
+         // Store per chat session
+         File(application!!.filesDir, "chat/${sessionId}").apply { mkdirs() }
+     }
     private val planFile: File by lazy { File(agentDir, "plan.json") }
     private val progressFile: File by lazy { File(agentDir, "progress.json") }
     private val observationsFile: File by lazy { File(agentDir, "observations.json") }
@@ -484,6 +512,7 @@ class AgentOrchestrator(
     }
 
     suspend fun thinkAndAct(prompt: String, onStatus: (String) -> Unit): ThinkResult {
+        beginRunStats()
         val wdPath = workingDirProvider()
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
@@ -527,6 +556,7 @@ class AgentOrchestrator(
                 }
                 val answer = answerQuestionFromObservations(prompt)
                 onStatus(answer.take(1200))
+                endRunStatsAndReport(onStatus, verb = "thought")
                 return ThinkResult(answer = answer)
             }
             "project_bootstrap" -> {
@@ -536,6 +566,7 @@ class AgentOrchestrator(
                 val bpText = runCatching { blueprintFile.readText() }.getOrElse { "{}" }
                 onStatus("Planning using blueprint…")
                 val plan = generatePlanWithContext(prompt, bpText)
+                endRunStatsAndReport(onStatus, verb = "thought")
                 return ThinkResult(producedPlan = plan, blueprintPath = bpPath)
             }
             "feature_addition" -> {
@@ -554,11 +585,13 @@ class AgentOrchestrator(
                 }
                 onStatus("Planning feature implementation…")
                 val plan = generatePlanWithContext(prompt, observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(1000)}" })
+                endRunStatsAndReport(onStatus, verb = "thought")
                 return ThinkResult(producedPlan = plan)
             }
             else -> {
                 onStatus("Generating plan…")
                 val plan = generatePlanWithContext(prompt, runCatching { blueprintFile.readText() }.getOrNull())
+                endRunStatsAndReport(onStatus, verb = "thought")
                 return ThinkResult(producedPlan = plan)
             }
         }
@@ -699,6 +732,7 @@ class AgentOrchestrator(
         plan: Plan,
         onStatus: (String) -> Unit
     ): Boolean {
+        beginRunStats()
         // Detect plan change and reset attempts if needed
         val progress = loadProgress()
         val currentSig = computePlanSignature(plan)
@@ -717,6 +751,7 @@ class AgentOrchestrator(
             val note = "attempts_exceeded_${attemptNo}"
             markTaskFailed(task.id, note)
             onStatus("Task ${task.id}: attempts exceeded; requesting plan update")
+            endRunStatsAndReport(onStatus, verb = "thought")
             return false
         }
 
@@ -760,6 +795,7 @@ class AgentOrchestrator(
                 if (isModifyingTool(toolCall.type)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
+                    endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
 
@@ -767,6 +803,7 @@ class AgentOrchestrator(
                 if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
+                    endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
 
@@ -811,11 +848,13 @@ class AgentOrchestrator(
 
         onStatus("Task ${task.id}: reached step limit without completion; deciding remediation…")
         val decision = decideRemediationAction(plan.goal, task, "step_limit")
-        return when (decision) {
+        val r = when (decision) {
             "mini_plan" -> executeMiniPlanForTask(plan, task, onStatus)
             "retry" -> false
             else -> false
         }
+        endRunStatsAndReport(onStatus, verb = "thought")
+        return r
     }
 
     private data class ToolCall(
@@ -933,6 +972,7 @@ class AgentOrchestrator(
     }
 
     private fun executeToolCall(tc: ToolCall): ToolResult {
+        currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
         return when (tc.type) {
             "create_file" -> {
                 val path = tc.args.optString("path")
@@ -990,6 +1030,7 @@ class AgentOrchestrator(
                     .put("ts", System.currentTimeMillis())
                 commandCache[cacheKey] = payload
                 saveCommandCache()
+                currentRunStats?.commandsRun?.add(command)
                 ToolResult(exit == 0, obs)
             }
             "get_cached_command_output" -> {
@@ -1035,6 +1076,7 @@ class AgentOrchestrator(
                 require(path.isNotBlank()) { "path missing" }
                 val d = resolvePath(path)
                 val listing = if (d.exists() && d.isDirectory) listTopLevel(d, limit = 200) else JSONObject().put("path", d.absolutePath).put("items", JSONArray()).toString()
+                currentRunStats?.dirsListed?.add(d.absolutePath)
                 ToolResult(true, listing)
             }
             "list_dir_recursive" -> {
@@ -1057,6 +1099,7 @@ class AgentOrchestrator(
                 }
                 if (root.exists() && root.isDirectory) walk(root, 0)
                 val out = JSONObject().put("root", root.absolutePath).put("max_depth", maxDepth).put("items", arr).toString()
+                currentRunStats?.dirsListed?.add(root.absolutePath)
                 ToolResult(true, out)
             }
             "read_file" -> {
@@ -1067,8 +1110,9 @@ class AgentOrchestrator(
                 val content = if (f.exists() && f.isFile) {
                     val bytes = f.readBytes()
                     val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
-                    val text = String(slice)
-                    JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes).toString()
+                                         val text = String(slice)
+                     currentRunStats?.filesRead?.add(f.absolutePath)
+                     JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes).toString()
                 } else {
                     JSONObject().put("path", f.absolutePath).put("missing", true).toString()
                 }
@@ -1214,7 +1258,8 @@ class AgentOrchestrator(
                         if (count >= maxResults) break
                         val m = regex.matcher(line)
                         if (m.find()) {
-                            results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
+                                                         results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
+                             currentRunStats?.grepPatterns?.add(pattern)
                             count++
                         }
                     }
