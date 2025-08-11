@@ -56,7 +56,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.DropdownMenuItemDefaults
 
 private data class ChatMessage(val role: String, val content: String)
 

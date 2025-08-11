@@ -374,7 +374,9 @@ class AgentOrchestrator(
                 steps++
                 continue
             }
-            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+            val result = try {
+                executeToolCall(toolCall)
+            } catch (e: Exception) {
                 val err = e.message ?: e.toString()
                 observations[pseudoTask.id] = "mini error: ${err}"
                 saveObservations()
