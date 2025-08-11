@@ -421,7 +421,8 @@ class AgentOrchestrator(
 
     private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands.
+            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands, run_shell.
+            Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release; command -v apt dnf yum pacman apk; command -v python3 python node npm; which gcc g++; echo $SHELL; echo $PATH.
             Schema examples same as earlier. Output must be one minified JSON object.
         """.trimIndent()
         val wd = workingDirProvider()
@@ -483,6 +484,7 @@ class AgentOrchestrator(
             - ids unique short strings (e.g., t1, t2)
             - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
             - front-load discovery; prefer precise scopes; idempotent modifications
+            - If tasks involve running commands or installing dependencies, include an initial environment discovery step (OS flavor, package manager, runtime versions) using run_shell.
             - Do not include code in the plan
         """.trimIndent()
         val user = """
@@ -882,7 +884,7 @@ class AgentOrchestrator(
 
     private fun isDiscoveryTool(type: String): Boolean {
         return when (type) {
-            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands" -> true
+            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands", "run_shell" -> true
             else -> false
         }
     }
@@ -929,10 +931,13 @@ class AgentOrchestrator(
             Tool ordering guidance:
             - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
             - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
+            - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
             - Use get_cached_command_output before re-running heavy run_shell.
             - For multi-file reads, keep limits small and targeted.
             - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
             - When context is missing, propose the minimal discovery call to fetch it.
+            - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
+              uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo $SHELL; echo $PATH
             - Return pure JSON on a single line without explanations.
         """.trimIndent()
         val wd = workingDirProvider()
