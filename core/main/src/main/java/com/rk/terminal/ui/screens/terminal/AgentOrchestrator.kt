@@ -47,9 +47,12 @@ class AgentOrchestrator(
     private val planFile: File by lazy { File(agentDir, "plan.json") }
     private val progressFile: File by lazy { File(agentDir, "progress.json") }
     private val observationsFile: File by lazy { File(agentDir, "observations.json") }
+    private val commandsCacheFile: File by lazy { File(agentDir, "commands.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
+    // Command output cache: key -> {command, wd, output, exit, ts}
+    private val commandCache: MutableMap<String, JSONObject> = linkedHashMapOf()
 
     init {
         // Load persisted observations if available to make the agent resilient to restarts
@@ -61,6 +64,16 @@ class AgentOrchestrator(
                 }
             }
         }
+        // Load command cache
+        runCatching {
+            if (commandsCacheFile.exists()) {
+                val obj = JSONObject(commandsCacheFile.readText())
+                obj.keys().forEach { k ->
+                    val v = obj.optJSONObject(k)
+                    if (v != null) commandCache[k] = v
+                }
+            }
+        }
     }
 
     private fun saveObservations() {
@@ -68,6 +81,14 @@ class AgentOrchestrator(
             val obj = JSONObject()
             observations.forEach { (k, v) -> obj.put(k, v) }
             observationsFile.writeText(obj.toString(2))
+        }
+    }
+
+    private fun saveCommandCache() {
+        runCatching {
+            val obj = JSONObject()
+            commandCache.forEach { (k, v) -> obj.put(k, v) }
+            commandsCacheFile.writeText(obj.toString(2))
         }
     }
 
@@ -309,7 +330,7 @@ class AgentOrchestrator(
 
     private fun isDiscoveryTool(type: String): Boolean {
         return when (type) {
-            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive" -> true
+            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands" -> true
             else -> false
         }
     }
@@ -331,6 +352,8 @@ class AgentOrchestrator(
             {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append"}}
             {"type":"make_dir","args":{"path": string}}
             {"type":"run_shell","args":{"command": string}}
+            {"type":"get_cached_command_output","args":{"command": string, "max_age_ms": number}}
+            {"type":"list_cached_commands","args":{"max": number}}
             {"type":"list_dir","args":{"path": string}}
             {"type":"list_dir_recursive","args":{"path": string, "max_depth": number, "max_entries": number}}
             {"type":"read_file","args":{"path": string, "max_bytes": number}}
@@ -355,6 +378,7 @@ class AgentOrchestrator(
             - If the task's category suggests discovery (e.g., read, list, grep) and you lack the relevant observation, propose a discovery call first.
             - If the task's category suggests modification (e.g., write/apply_changes), and needed context is missing, first propose a minimal discovery call to fetch it.
             - For multi-file reads, keep limits small and targeted (e.g., max_files<=50, max_bytes<=65536) to avoid overload.
+            - Prefer retrieving cached shell output via get_cached_command_output when reusing recent command results instead of re-running heavy commands.
             - Do not return markdown code fences. Return pure JSON on a single line.
             - Do not include explanations.
         """.trimIndent()
@@ -430,13 +454,62 @@ class AgentOrchestrator(
                 val command = tc.args.optString("command")
                 require(command.isNotBlank()) { "command missing" }
                 val wd = workingDirProvider()
+                // Cache key includes working directory
+                val cacheKey = commandCacheKey(command, wd)
+                // Always execute, but record to cache for future retrieval
                 val proc = ProcessBuilder("sh", "-c", command)
                     .directory(File(wd))
                     .redirectErrorStream(true)
                     .start()
                 val output = proc.inputStream.bufferedReader().use { it.readText() }
                 val exit = proc.waitFor()
-                ToolResult(exit == 0, output.ifBlank { null })
+                val obs = output.ifBlank { null }
+                val payload = JSONObject()
+                    .put("command", command)
+                    .put("wd", wd)
+                    .put("output", output)
+                    .put("exit", exit)
+                    .put("ts", System.currentTimeMillis())
+                commandCache[cacheKey] = payload
+                saveCommandCache()
+                ToolResult(exit == 0, obs)
+            }
+            "get_cached_command_output" -> {
+                val command = tc.args.optString("command")
+                val maxAgeMs = tc.args.optLong("max_age_ms", 10 * 60 * 1000L).coerceAtLeast(0L)
+                require(command.isNotBlank()) { "command missing" }
+                val wd = workingDirProvider()
+                val cacheKey = commandCacheKey(command, wd)
+                val entry = commandCache[cacheKey]
+                val now = System.currentTimeMillis()
+                val found = entry != null && (now - (entry?.optLong("ts") ?: 0L) <= maxAgeMs)
+                val obj = JSONObject().apply {
+                    put("command", command)
+                    put("wd", wd)
+                    put("found", found)
+                    if (entry != null) {
+                        put("ts", entry.optLong("ts"))
+                        put("exit", entry.optInt("exit"))
+                        put("output", entry.optString("output"))
+                        put("age_ms", now - entry.optLong("ts"))
+                    }
+                }
+                ToolResult(true, obj.toString())
+            }
+            "list_cached_commands" -> {
+                val max = tc.args.optInt("max", 50).coerceAtLeast(1)
+                val arr = JSONArray()
+                commandCache.entries.takeLast(max).forEach { (k, v) ->
+                    arr.put(JSONObject().apply {
+                        put("command", v.optString("command"))
+                        put("wd", v.optString("wd"))
+                        put("ts", v.optLong("ts"))
+                        put("exit", v.optInt("exit"))
+                        put("preview", v.optString("output").take(200))
+                    })
+                }
+                val out = JSONObject().put("items", arr).toString()
+                ToolResult(true, out)
             }
             "list_dir" -> {
                 val path = tc.args.optString("path")
@@ -945,4 +1018,6 @@ class AgentOrchestrator(
         saveProgress(progress)
         return@withContext updated
     }
+
+    private fun commandCacheKey(command: String, wd: String): String = wd + "||" + command
 }
