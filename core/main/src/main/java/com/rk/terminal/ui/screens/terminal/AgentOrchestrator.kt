@@ -102,6 +102,7 @@ class AgentOrchestrator(
     private val commandsCacheFile: File by lazy { File(agentDir, "commands.json") }
     private val miniPlanFile: File by lazy { File(agentDir, "miniPlan.json") }
     private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
+    private val cliReportFile: File by lazy { File(agentDir, "cli_report.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
@@ -127,6 +128,8 @@ class AgentOrchestrator(
                     if (v != null) commandCache[k] = v
                 }
             }
+            // Build initial CLI report from any pre-existing cache
+            persistCliReport()
         }
         // Ensure mini plan storage exists
         runCatching {
@@ -421,7 +424,8 @@ class AgentOrchestrator(
 
     private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands.
+            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands, run_shell.
+            Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release; command -v apt dnf yum pacman apk; command -v python3 python node npm; which gcc g++; echo ${'$'}SHELL; echo ${'$'}PATH.
             Schema examples same as earlier. Output must be one minified JSON object.
         """.trimIndent()
         val wd = workingDirProvider()
@@ -483,6 +487,7 @@ class AgentOrchestrator(
             - ids unique short strings (e.g., t1, t2)
             - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
             - front-load discovery; prefer precise scopes; idempotent modifications
+            - If tasks involve running commands or installing dependencies, include an initial environment discovery step (OS flavor, package manager, runtime versions) using run_shell.
             - Do not include code in the plan
         """.trimIndent()
         val user = """
@@ -506,7 +511,9 @@ class AgentOrchestrator(
             val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
             val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
             val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-            if (desc.isNotBlank()) tasks.add(Task(id, desc, cat, targets, search, markers))
+            if (desc.isNotBlank()) {
+                tasks.add(Task(id, desc, cat, targets, search, markers))
+            }
         }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
@@ -763,25 +770,43 @@ class AgentOrchestrator(
         var lastToolType: String? = null
         while (stepsTaken < maxSteps) {
             val toolCall = requestSingleToolCall(plan.goal, task)
-            if (toolCall == null) {
-                observations[task.id] = "could not determine action for this task"
-                saveObservations()
-                onStatus("Task ${task.id}: no action suggested; deciding remediation…")
-                val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
+                         if (toolCall == null) {
+                 observations[task.id] = "could not determine action for this task"
+                 saveObservations()
+                 onStatus("Task ${task.id}: no action suggested; revising plan…")
+                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
+                 if (revised != null) {
+                     persistPlanWithStatuses(revised)
+                     endRunStatsAndReport(onStatus, verb = "thought")
+                     return true
+                 }
+                 onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+                                 val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
                 when (decision) {
                     "mini_plan" -> {
                         val ok = executeMiniPlanForTask(plan, task, onStatus)
                         if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
                     }
+                    "revise_plan" -> {
+                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
+                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
+                    }
                     "retry" -> { stepsTaken++; continue }
                     else -> { return false }
                 }
-            }
+             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
-                onStatus("Task ${task.id} failed: ${err}")
+                onStatus("Task ${task.id} failed: ${err}; revising plan…")
+                val revised = revisePlanBasedOnHistoryAndError(plan.goal, err)
+                if (revised != null) {
+                    persistPlanWithStatuses(revised)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                onStatus("Task ${task.id}: plan revision unavailable; proceeding with remediation…")
                 ToolResult(false, null)
             }
 
@@ -817,16 +842,27 @@ class AgentOrchestrator(
                 val obs = result.observation
                 if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
                     markTaskFailed(task.id, "repeated_non_modifying_observation")
-                    onStatus("Task ${task.id}: repeated observation; deciding remediation…")
-                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
-                    when (decision) {
-                        "mini_plan" -> {
-                            val ok = executeMiniPlanForTask(plan, task, onStatus)
-                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
-                        }
-                        "retry" -> { stepsTaken++; continue }
-                        else -> { return false }
+                    onStatus("Task ${task.id}: repeated observation; revising plan…")
+                    val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
+                    if (revised != null) {
+                        persistPlanWithStatuses(revised)
+                        endRunStatsAndReport(onStatus, verb = "thought")
+                        return true
                     }
+                    onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+                                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
+                when (decision) {
+                    "mini_plan" -> {
+                        val ok = executeMiniPlanForTask(plan, task, onStatus)
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    }
+                    "revise_plan" -> {
+                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
+                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
+                    }
+                    "retry" -> { stepsTaken++; continue }
+                    else -> { return false }
+                }
                 }
                 lastObservation = result.observation ?: lastObservation
                 lastToolType = toolCall.type
@@ -839,12 +875,23 @@ class AgentOrchestrator(
                     observations[task.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${task.id}: failed; deciding remediation…")
+                onStatus("Task ${task.id}: failed; revising plan…")
+                val revised = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
+                if (revised != null) {
+                    persistPlanWithStatuses(revised)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
                 val decision = decideRemediationAction(plan.goal, task, "unknown_failure")
                 when (decision) {
                     "mini_plan" -> {
                         val ok = executeMiniPlanForTask(plan, task, onStatus)
                         if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    }
+                    "revise_plan" -> {
+                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
+                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
                     }
                     "retry" -> { stepsTaken++; continue }
                     else -> { return false }
@@ -852,10 +899,24 @@ class AgentOrchestrator(
             }
         }
 
-        onStatus("Task ${task.id}: reached step limit without completion; deciding remediation…")
+        onStatus("Task ${task.id}: reached step limit without completion; revising plan…")
+        val revised = revisePlanBasedOnHistoryAndError(plan.goal, "step_limit")
+        if (revised != null) {
+            persistPlanWithStatuses(revised)
+            endRunStatsAndReport(onStatus, verb = "thought")
+            return true
+        }
+        onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
         val decision = decideRemediationAction(plan.goal, task, "step_limit")
         val r = when (decision) {
             "mini_plan" -> executeMiniPlanForTask(plan, task, onStatus)
+            "revise_plan" -> {
+                val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "step_limit")
+                if (revised2 != null) {
+                    persistPlanWithStatuses(revised2)
+                    true
+                } else false
+            }
             "retry" -> false
             else -> false
         }
@@ -882,7 +943,7 @@ class AgentOrchestrator(
 
     private fun isDiscoveryTool(type: String): Boolean {
         return when (type) {
-            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands" -> true
+            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands", "run_shell" -> true
             else -> false
         }
     }
@@ -929,10 +990,13 @@ class AgentOrchestrator(
             Tool ordering guidance:
             - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
             - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
+            - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
             - Use get_cached_command_output before re-running heavy run_shell.
             - For multi-file reads, keep limits small and targeted.
             - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
             - When context is missing, propose the minimal discovery call to fetch it.
+            - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
+              uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
             - Return pure JSON on a single line without explanations.
         """.trimIndent()
         val wd = workingDirProvider()
@@ -1036,6 +1100,7 @@ class AgentOrchestrator(
                     .put("ts", System.currentTimeMillis())
                 commandCache[cacheKey] = payload
                 saveCommandCache()
+                persistCliReport()
                 currentRunStats?.commandsRun?.add(command)
                 ToolResult(exit == 0, obs)
             }
@@ -1653,4 +1718,69 @@ class AgentOrchestrator(
     }
 
     private fun commandCacheKey(command: String, wd: String): String = wd + "||" + command
+
+    private fun buildCliReport(maxItems: Int = 100): JSONObject {
+        val arr = JSONArray()
+        commandCache.entries.toList().takeLast(maxItems).forEach { entry ->
+            val v = entry.value
+            arr.put(
+                JSONObject()
+                    .put("ts", v.optLong("ts"))
+                    .put("wd", v.optString("wd"))
+                    .put("command", v.optString("command"))
+                    .put("exit", v.optInt("exit"))
+                    .put("output", v.optString("output").take(4000))
+            )
+        }
+        return JSONObject().put("items", arr)
+    }
+
+    private fun persistCliReport() {
+        runCatching { cliReportFile.writeText(buildCliReport().toString(2)) }
+    }
+
+    private suspend fun revisePlanBasedOnHistoryAndError(goal: String, errorNote: String): Plan? = withContext(Dispatchers.IO) {
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        val obsJson = JSONObject().apply {
+            observations.entries.forEach { (k, v) -> put(k, if (v.length > 2000) v.take(2000) + " …" else v) }
+        }.toString()
+        val cliJson = runCatching { cliReportFile.takeIf { it.exists() }?.readText() }.getOrNull() ?: buildCliReport().toString()
+        val sys = """
+            You will revise a failing plan using recent command-line history, observations, and the error.
+            Return ONLY a minified JSON object: {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
+            Rules:
+            - Keep steps concise, discovery-first; include environment checks via run_shell if relevant
+            - Use precise scopes and idempotent edits
+            - Do not include code blocks; only the plan JSON
+        """.trimIndent()
+        val user = """
+            Goal: ${goal}
+            Working directory: ${wdPath}
+            Workspace snapshot (top-level): ${workspaceInfo}
+            Last error: ${errorNote}
+            Observations: ${obsJson}
+            Command-line report (recent): ${cliJson}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val goalOut = obj.optString("goal").ifBlank { goal }
+        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<Task>()
+        for (i in 0 until tasksArr.length()) {
+            val t = tasksArr.optJSONObject(i) ?: continue
+            val id = t.optString("id").ifBlank { "t${i + 1}" }
+            val desc = t.optString("description")
+            val cat = t.optString("category").ifBlank { null }
+            val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            if (desc.isNotBlank()) tasks.add(Task(id, desc, cat, targets, search, markers))
+        }
+        val newPlan = Plan(goalOut, tasks)
+        persistPlanWithStatuses(newPlan)
+        return@withContext newPlan
+    }
 }
