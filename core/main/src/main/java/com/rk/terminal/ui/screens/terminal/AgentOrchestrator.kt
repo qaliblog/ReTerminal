@@ -43,14 +43,65 @@ class AgentOrchestrator(
         val tasks: List<Task>
     )
 
-    private val agentDir: File by lazy {
-        // Store per chat session
-        File(application!!.filesDir, "chat/${sessionId}").apply { mkdirs() }
+    data class MiniTask(
+        val id: String,
+        val description: String,
+        val category: String? = null,
+        val targets: List<String>? = null,
+        val search: List<String>? = null,
+        val markers: List<String>? = null
+    )
+
+    data class MiniPlan(
+        val parentTaskId: String,
+        val reason: String,
+        val tasks: List<MiniTask>
+    )
+
+        data class ThinkResult(
+        val producedPlan: Plan? = null,
+        val answer: String? = null,
+        val blueprintPath: String? = null
+    )
+ 
+    // Per-run stats for dynamic summary lines
+    private data class RunStats(
+        val startedMs: Long = System.currentTimeMillis(),
+        var endedMs: Long = 0L,
+        val toolCounts: MutableMap<String, Int> = LinkedHashMap(),
+        val filesRead: MutableList<String> = mutableListOf(),
+        val dirsListed: MutableList<String> = mutableListOf(),
+        val grepPatterns: MutableList<String> = mutableListOf(),
+        val commandsRun: MutableList<String> = mutableListOf(),
+        val filesModified: MutableList<String> = mutableListOf()
+    )
+    private var currentRunStats: RunStats? = null
+    private fun beginRunStats() { currentRunStats = RunStats() }
+    private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
+        val stats = currentRunStats ?: return
+        stats.endedMs = System.currentTimeMillis()
+        val secs = ((stats.endedMs - stats.startedMs).coerceAtLeast(0L) / 100L).toDouble() / 10.0
+        val parts = mutableListOf<String>()
+        if (stats.toolCounts.isNotEmpty()) parts.add(stats.toolCounts.entries.joinToString(", ") { (k, v) -> "${k}×${v}" })
+        if (stats.filesRead.isNotEmpty()) parts.add("read ${stats.filesRead.size} file(s): ${stats.filesRead.take(3).joinToString(", ")}${if (stats.filesRead.size > 3) " …" else ""}")
+        if (stats.filesModified.isNotEmpty()) parts.add("modified ${stats.filesModified.size} file(s): ${stats.filesModified.take(3).joinToString(", ")}${if (stats.filesModified.size > 3) " …" else ""}")
+        if (stats.commandsRun.isNotEmpty()) parts.add("ran ${stats.commandsRun.size} command(s): ${stats.commandsRun.take(1).joinToString()}${if (stats.commandsRun.size > 1) " …" else ""}")
+        if (stats.grepPatterns.isNotEmpty()) parts.add("grep ${stats.grepPatterns.size} pattern(s)")
+        val summary = "${verb} for ${secs}s${if (parts.isNotEmpty()) "; " + parts.joinToString("; ") else ""}"
+        onStatus(summary)
+        currentRunStats = null
     }
+ 
+     private val agentDir: File by lazy {
+         // Store per chat session
+         File(application!!.filesDir, "chat/${sessionId}").apply { mkdirs() }
+     }
     private val planFile: File by lazy { File(agentDir, "plan.json") }
     private val progressFile: File by lazy { File(agentDir, "progress.json") }
     private val observationsFile: File by lazy { File(agentDir, "observations.json") }
     private val commandsCacheFile: File by lazy { File(agentDir, "commands.json") }
+    private val miniPlanFile: File by lazy { File(agentDir, "miniPlan.json") }
+    private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
@@ -77,6 +128,18 @@ class AgentOrchestrator(
                 }
             }
         }
+        // Ensure mini plan storage exists
+        runCatching {
+            if (!miniPlanFile.exists()) {
+                miniPlanFile.writeText(JSONObject().put("plans", JSONObject()).toString(2))
+            }
+        }
+        // Ensure blueprint file placeholder exists (optional)
+        runCatching {
+            if (!blueprintFile.exists()) {
+                blueprintFile.writeText("{}")
+            }
+        }
     }
 
     private fun saveObservations() {
@@ -92,6 +155,447 @@ class AgentOrchestrator(
             val obj = JSONObject()
             commandCache.forEach { (k, v) -> obj.put(k, v) }
             commandsCacheFile.writeText(obj.toString(2))
+        }
+    }
+
+    private fun loadMiniPlansRoot(): JSONObject {
+        return runCatching { JSONObject(miniPlanFile.takeIf { it.exists() }?.readText().orEmpty()) }
+            .getOrElse { JSONObject().put("plans", JSONObject()) }
+    }
+
+    private fun saveMiniPlansRoot(root: JSONObject) {
+        miniPlanFile.writeText(root.toString(2))
+    }
+
+    private fun getMiniPlanJsonForParent(parentTaskId: String): JSONObject? {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: return null
+        return plans.optJSONObject(parentTaskId)
+    }
+
+    private fun setMiniPlanJsonForParent(parentTaskId: String, miniJson: JSONObject) {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: JSONObject().also { root.put("plans", it) }
+        plans.put(parentTaskId, miniJson)
+        saveMiniPlansRoot(root)
+    }
+
+    private fun persistMiniPlanWithStatuses(mini: MiniPlan) {
+        val tasksArr = JSONArray()
+        mini.tasks.forEach { t ->
+            tasksArr.put(JSONObject().apply {
+                put("id", t.id)
+                put("description", t.description)
+                if (!t.category.isNullOrBlank()) put("category", t.category)
+                if (!t.targets.isNullOrEmpty()) put("targets", JSONArray(t.targets))
+                if (!t.search.isNullOrEmpty()) put("search", JSONArray(t.search))
+                if (!t.markers.isNullOrEmpty()) put("markers", JSONArray(t.markers))
+                put("status", "pending")
+                put("attempts", 0)
+            })
+        }
+        val json = JSONObject().apply {
+            put("parent_task_id", mini.parentTaskId)
+            put("reason", mini.reason)
+            put("tasks", tasksArr)
+        }
+        setMiniPlanJsonForParent(mini.parentTaskId, json)
+    }
+
+    private fun loadMiniPlan(parentTaskId: String): MiniPlan? {
+        val json = getMiniPlanJsonForParent(parentTaskId) ?: return null
+        val arr = json.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<MiniTask>()
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            val id = t.optString("id").ifBlank { "m${i + 1}" }
+            val desc = t.optString("description")
+            if (desc.isBlank()) continue
+            val cat = t.optString("category").ifBlank { null }
+            val targets = t.optJSONArray("targets")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val search = t.optJSONArray("search")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val markers = t.optJSONArray("markers")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            tasks.add(MiniTask(id, desc, cat, targets, search, markers))
+        }
+        val reason = json.optString("reason").ifBlank { "" }
+        return MiniPlan(parentTaskId, reason, tasks)
+    }
+
+    private fun getMiniTaskStatus(parentTaskId: String, miniTaskId: String): String {
+        val json = getMiniPlanJsonForParent(parentTaskId) ?: return "pending"
+        val arr = json.optJSONArray("tasks") ?: return "pending"
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            if (t.optString("id") == miniTaskId) return t.optString("status", "pending")
+        }
+        return "pending"
+    }
+
+    private fun markMiniTaskDone(parentTaskId: String, miniTaskId: String) {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: JSONObject().also { root.put("plans", it) }
+        val json = plans.optJSONObject(parentTaskId) ?: return
+        val arr = json.optJSONArray("tasks") ?: return
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            if (t.optString("id") == miniTaskId) {
+                t.put("status", "done")
+                t.put("ts", System.currentTimeMillis())
+            }
+        }
+        saveMiniPlansRoot(root)
+    }
+
+    private fun incrementMiniTaskAttempts(parentTaskId: String, miniTaskId: String): Int {
+        val root = loadMiniPlansRoot()
+        val plans = root.optJSONObject("plans") ?: JSONObject().also { root.put("plans", it) }
+        val json = plans.optJSONObject(parentTaskId) ?: return 0
+        val arr = json.optJSONArray("tasks") ?: return 0
+        var next = 0
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            if (t.optString("id") == miniTaskId) {
+                next = t.optInt("attempts", 0) + 1
+                t.put("attempts", next)
+                if (!t.has("status")) t.put("status", "pending")
+            }
+        }
+        saveMiniPlansRoot(root)
+        return next
+    }
+
+    private fun getNextPendingMiniTask(mini: MiniPlan): MiniTask? {
+        for (t in mini.tasks) {
+            if (getMiniTaskStatus(mini.parentTaskId, t.id) != "done") return t
+        }
+        return null
+    }
+
+    private suspend fun decideRemediationAction(goal: String, task: Task, failureNote: String): String = withContext(Dispatchers.IO) {
+        val sys = """
+            You are a supervisor deciding the smallest effective remediation when a task struggles.
+            Return ONLY JSON: {"action": "mini_plan"|"revise_plan"|"retry", "why": string} with no extra text.
+            - mini_plan: when a few targeted discovery/edits can unblock the task without changing the whole plan
+            - revise_plan: when the plan likely needs restructuring or different approach
+            - retry: when the failure seems transient or due to missing small context that another attempt can fetch
+        """.trimIndent()
+        val user = """
+            Goal: ${goal}
+            Current task: ${task.id} - ${task.description}
+            Task category: ${task.category ?: "unspecified"}
+            Failure note: ${failureNote}
+            Prior observations: ${(observations[task.id] ?: "(none)").take(800)}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext "mini_plan"
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext "mini_plan"
+        val action = obj.optString("action").ifBlank { "mini_plan" }
+        return@withContext action
+    }
+
+    private suspend fun requestMiniPlanForTask(plan: Plan, task: Task, failureNote: String): MiniPlan? = withContext(Dispatchers.IO) {
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        val obsJson = JSONObject().apply {
+            observations.entries.forEach { (k, v) -> put(k, if (v.length > 4000) v.take(4000) + " …" else v) }
+        }.toString()
+        val sys = """
+            You create a small remediation mini-plan to unblock a single parent task. Return ONLY JSON:
+            {"parent_task_id": string, "reason": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
+            Rules:
+            - 2 to 6 concise steps max
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - Favor discovery-first then precise, idempotent edits
+            - ids must be stable and short (m1, m2, ...)
+            - No explanations beyond the 'reason' field
+        """.trimIndent()
+        val user = """
+            Goal: ${plan.goal}
+            Parent task: ${task.id} - ${task.description}
+            Category: ${task.category ?: "unspecified"}
+            Failure note: ${failureNote}
+            Working directory: ${wdPath}
+            Workspace snapshot: ${workspaceInfo}
+            Prior observations: ${obsJson}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val parent = obj.optString("parent_task_id").ifBlank { task.id }
+        val reason = obj.optString("reason").ifBlank { "remediate failure" }
+        val arr = obj.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<MiniTask>()
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            val id = t.optString("id").ifBlank { "m${i + 1}" }
+            val desc = t.optString("description")
+            val cat = t.optString("category").ifBlank { null }
+            val targets = t.optJSONArray("targets")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val search = t.optJSONArray("search")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            val markers = t.optJSONArray("markers")?.let { a -> (0 until a.length()).mapNotNull { idx -> a.optString(idx) } }
+            if (desc.isNotBlank()) tasks.add(MiniTask(id, desc, cat, targets, search, markers))
+        }
+        val mini = MiniPlan(parent, reason, tasks)
+        persistMiniPlanWithStatuses(mini)
+        return@withContext mini
+    }
+
+    private suspend fun executeMiniPlanForTask(plan: Plan, parentTask: Task, onStatus: (String) -> Unit): Boolean {
+        var mini = loadMiniPlan(parentTask.id)
+        if (mini == null) {
+            val created = requestMiniPlanForTask(plan, parentTask, observations[parentTask.id] ?: "no_note")
+            if (created == null) return false
+            mini = created
+            onStatus("Mini-plan created for ${parentTask.id}: ${mini.tasks.size} step(s)")
+        }
+        var steps = 0
+        val maxSteps = 12
+        while (steps < maxSteps) {
+            val mt = getNextPendingMiniTask(mini) ?: return true
+            onStatus("Mini ${mini.parentTaskId}.${mt.id}: ${mt.description}")
+            val attemptNo = incrementMiniTaskAttempts(mini.parentTaskId, mt.id)
+            if (attemptNo > 3) {
+                onStatus("Mini ${mini.parentTaskId}.${mt.id}: attempts exceeded")
+                return false
+            }
+            val pseudoTask = Task(
+                id = "${mini.parentTaskId}.${mt.id}",
+                description = mt.description,
+                category = mt.category,
+                targets = mt.targets,
+                search = mt.search,
+                markers = mt.markers
+            )
+            val toolCall = requestSingleToolCall(plan.goal, pseudoTask)
+            if (toolCall == null) {
+                observations[pseudoTask.id] = "mini could not determine action"
+                saveObservations()
+                steps++
+                continue
+            }
+            val result = try {
+                executeToolCall(toolCall)
+            } catch (e: Exception) {
+                val err = e.message ?: e.toString()
+                observations[pseudoTask.id] = "mini error: ${err}"
+                saveObservations()
+                steps++
+                continue
+            }
+            if (result.ok) {
+                if (!result.observation.isNullOrBlank()) {
+                    observations[pseudoTask.id] = result.observation
+                    saveObservations()
+                    onStatus("Observed (${pseudoTask.id}): ${result.observation.take(600)}${if ((result.observation?.length ?: 0) > 600) " …" else ""}")
+                }
+                // Consider the mini step done on any successful action
+                markMiniTaskDone(mini.parentTaskId, mt.id)
+                onStatus("Mini ${mini.parentTaskId}.${mt.id}: done")
+            } else {
+                if (!observations.containsKey(pseudoTask.id)) {
+                    observations[pseudoTask.id] = "mini failed without exception"
+                    saveObservations()
+                }
+                steps++
+            }
+        }
+        onStatus("Mini-plan: reached step limit")
+        return false
+    }
+
+    // ===================== THINK & ACT (Adaptive) =====================
+    private suspend fun classifyUserIntent(prompt: String, workspaceInfo: String): JSONObject = withContext(Dispatchers.IO) {
+        val sys = """
+            Classify the user's request into one intent. Return ONLY JSON:
+            {"intent": "error_diagnosis"|"question_analysis"|"project_bootstrap"|"feature_addition"|"plan_and_execute", "why": string}
+        """.trimIndent()
+        val user = """
+            Prompt: ${prompt}
+            Workspace snapshot: ${workspaceInfo}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: "{\"intent\":\"plan_and_execute\"}"
+        return@withContext runCatching { JSONObject(jsonText) }.getOrElse { JSONObject().put("intent", "plan_and_execute") }
+    }
+
+    private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
+        val sys = """
+            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands.
+            Schema examples same as earlier. Output must be one minified JSON object.
+        """.trimIndent()
+        val wd = workingDirProvider()
+        val user = """
+            Working directory: ${wd}
+            Context: ${contextNote}
+            Prior signals: ${(observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(200)}" }).ifBlank { "(none)" }}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val type = obj.optString("type")
+        val args = obj.optJSONObject("args") ?: JSONObject()
+        return@withContext ToolCall(type, args)
+    }
+
+    private suspend fun requestBlueprint(prompt: String, workspaceInfo: String): String? = withContext(Dispatchers.IO) {
+        val sys = """
+            Produce a concise, well-structured project blueprint as minified JSON and nothing else.
+            Shape: {"name": string, "summary": string, "stack": {"lang": string, "frameworks": [string...]}, "modules": [{"id": string, "name": string, "responsibilities": [string...] }], "apis": [{"name": string, "endpoints":[{"path": string, "method": string, "desc": string}]}]}
+            Keep it small but thoughtful; it will guide subsequent planning.
+        """.trimIndent()
+        val user = """
+            Goal: ${prompt}
+            Workspace snapshot: ${workspaceInfo}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        blueprintFile.writeText(jsonText)
+        return@withContext blueprintFile.absolutePath
+    }
+
+    private suspend fun answerQuestionFromObservations(prompt: String): String = withContext(Dispatchers.IO) {
+        val sys = """
+            You are given prior observations from a repository; answer the user's question concisely.
+            Answer in plain text, cite filenames or paths inline when helpful.
+        """.trimIndent()
+        val obs = observations.entries.joinToString("\n\n") { (k, v) -> "[${k}]\n${v.take(4000)}" }
+        val user = """
+            Question: ${prompt}
+            Observations:
+            ${obs.ifBlank { "(none)" }}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        return@withContext content
+    }
+
+    private suspend fun generatePlanWithContext(userGoal: String, extraContext: String?): Plan? = withContext(Dispatchers.IO) {
+        runCatching { if (progressFile.exists()) progressFile.delete() }
+        observations.clear()
+        saveObservations()
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        val sys = """
+            You are an autonomous software agent that plans work as structured JSON only.
+            Return ONLY a minified JSON object with the following shape and nothing else:
+            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
+            - ids unique short strings (e.g., t1, t2)
+            - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - front-load discovery; prefer precise scopes; idempotent modifications
+            - Do not include code in the plan
+        """.trimIndent()
+        val user = """
+            Goal: ${userGoal}
+            Working directory: ${wdPath}
+            Workspace snapshot (top-level): ${workspaceInfo}
+            Extra context: ${extraContext ?: "(none)"}
+        """.trimIndent()
+        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+        val content = collectAll(flow)
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val goal = obj.optString("goal").ifBlank { userGoal }
+        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<Task>()
+        for (i in 0 until tasksArr.length()) {
+            val t = tasksArr.optJSONObject(i) ?: continue
+            val id = t.optString("id").ifBlank { "t${i + 1}" }
+            val desc = t.optString("description")
+            val cat = t.optString("category").ifBlank { null }
+            val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            if (desc.isNotBlank()) tasks.add(Task(id, desc, cat, targets, search, markers))
+        }
+        val plan = Plan(goal, tasks)
+        persistPlanWithStatuses(plan)
+        return@withContext plan
+    }
+
+    suspend fun thinkAndAct(prompt: String, onStatus: (String) -> Unit): ThinkResult {
+        beginRunStats()
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        onStatus("Thinking about intent…")
+        val intentObj = classifyUserIntent(prompt, workspaceInfo)
+        val intent = intentObj.optString("intent", "plan_and_execute")
+        onStatus("Intent: ${intent}")
+        when (intent) {
+            "error_diagnosis" -> {
+                onStatus("Diagnosing error via discovery loop…")
+                var steps = 0
+                while (steps < 10) {
+                    val tc = requestDiscoveryToolCall("error-diagnosis for: ${prompt}") ?: break
+                    val result = executeToolCall(tc)
+                    val key = "think:error:${steps+1}:${tc.type}"
+                    if (result.observation != null) {
+                        observations[key] = result.observation
+                        saveObservations()
+                        onStatus("Observed (${tc.type}): ${result.observation.take(600)}${if ((result.observation?.length ?: 0) > 600) " …" else ""}")
+                    }
+                    steps++
+                    if (!isDiscoveryTool(tc.type)) break
+                }
+                onStatus("Asking AI for remediation plan…")
+                val plan = generatePlanWithContext(prompt, observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(1000)}" })
+                return ThinkResult(producedPlan = plan)
+            }
+            "question_analysis" -> {
+                onStatus("Investigating repository to answer question…")
+                var steps = 0
+                while (steps < 8) {
+                    val tc = requestDiscoveryToolCall("question-analysis for: ${prompt}") ?: break
+                    val result = executeToolCall(tc)
+                    val key = "think:qa:${steps+1}:${tc.type}"
+                    if (result.observation != null) {
+                        observations[key] = result.observation
+                        saveObservations()
+                        onStatus("Observed (${tc.type})")
+                    }
+                    steps++
+                }
+                val answer = answerQuestionFromObservations(prompt)
+                onStatus(answer.take(1200))
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return ThinkResult(answer = answer)
+            }
+            "project_bootstrap" -> {
+                onStatus("Drafting blueprint…")
+                val bpPath = requestBlueprint(prompt, workspaceInfo)
+                if (bpPath != null) onStatus("Blueprint saved: ${bpPath}") else onStatus("Blueprint not produced")
+                val bpText = runCatching { blueprintFile.readText() }.getOrElse { "{}" }
+                onStatus("Planning using blueprint…")
+                val plan = generatePlanWithContext(prompt, bpText)
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return ThinkResult(producedPlan = plan, blueprintPath = bpPath)
+            }
+            "feature_addition" -> {
+                onStatus("Analyzing project for feature addition…")
+                var steps = 0
+                while (steps < 10) {
+                    val tc = requestDiscoveryToolCall("feature-addition context for: ${prompt}") ?: break
+                    val result = executeToolCall(tc)
+                    val key = "think:feature:${steps+1}:${tc.type}"
+                    if (result.observation != null) {
+                        observations[key] = result.observation
+                        saveObservations()
+                        onStatus("Observed (${tc.type})")
+                    }
+                    steps++
+                }
+                onStatus("Planning feature implementation…")
+                val plan = generatePlanWithContext(prompt, observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(1000)}" })
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return ThinkResult(producedPlan = plan)
+            }
+            else -> {
+                onStatus("Generating plan…")
+                val plan = generatePlanWithContext(prompt, runCatching { blueprintFile.readText() }.getOrNull())
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return ThinkResult(producedPlan = plan)
+            }
         }
     }
 
@@ -230,6 +734,7 @@ class AgentOrchestrator(
         plan: Plan,
         onStatus: (String) -> Unit
     ): Boolean {
+        beginRunStats()
         // Detect plan change and reset attempts if needed
         val progress = loadProgress()
         val currentSig = computePlanSignature(plan)
@@ -248,6 +753,7 @@ class AgentOrchestrator(
             val note = "attempts_exceeded_${attemptNo}"
             markTaskFailed(task.id, note)
             onStatus("Task ${task.id}: attempts exceeded; requesting plan update")
+            endRunStatsAndReport(onStatus, verb = "thought")
             return false
         }
 
@@ -260,15 +766,23 @@ class AgentOrchestrator(
             if (toolCall == null) {
                 observations[task.id] = "could not determine action for this task"
                 saveObservations()
-                onStatus("Task ${task.id}: could not determine action")
-                return false
+                onStatus("Task ${task.id}: no action suggested; deciding remediation…")
+                val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
+                when (decision) {
+                    "mini_plan" -> {
+                        val ok = executeMiniPlanForTask(plan, task, onStatus)
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    }
+                    "retry" -> { stepsTaken++; continue }
+                    else -> { return false }
+                }
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
                 onStatus("Task ${task.id} failed: ${err}")
-                return false
+                ToolResult(false, null)
             }
 
             if (result.ok) {
@@ -283,6 +797,7 @@ class AgentOrchestrator(
                 if (isModifyingTool(toolCall.type)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
+                    endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
 
@@ -290,6 +805,7 @@ class AgentOrchestrator(
                 if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
+                    endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
 
@@ -297,8 +813,16 @@ class AgentOrchestrator(
                 val obs = result.observation
                 if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
                     markTaskFailed(task.id, "repeated_non_modifying_observation")
-                    onStatus("Task ${task.id}: repeated observation; requesting plan update")
-                    return false
+                    onStatus("Task ${task.id}: repeated observation; deciding remediation…")
+                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
+                    when (decision) {
+                        "mini_plan" -> {
+                            val ok = executeMiniPlanForTask(plan, task, onStatus)
+                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                        }
+                        "retry" -> { stepsTaken++; continue }
+                        else -> { return false }
+                    }
                 }
                 lastObservation = result.observation ?: lastObservation
                 lastToolType = toolCall.type
@@ -311,13 +835,28 @@ class AgentOrchestrator(
                     observations[task.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${task.id}: failed")
-                return false
+                onStatus("Task ${task.id}: failed; deciding remediation…")
+                val decision = decideRemediationAction(plan.goal, task, "unknown_failure")
+                when (decision) {
+                    "mini_plan" -> {
+                        val ok = executeMiniPlanForTask(plan, task, onStatus)
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    }
+                    "retry" -> { stepsTaken++; continue }
+                    else -> { return false }
+                }
             }
         }
 
-        onStatus("Task ${task.id}: reached step limit without completion")
-        return false
+        onStatus("Task ${task.id}: reached step limit without completion; deciding remediation…")
+        val decision = decideRemediationAction(plan.goal, task, "step_limit")
+        val r = when (decision) {
+            "mini_plan" -> executeMiniPlanForTask(plan, task, onStatus)
+            "retry" -> false
+            else -> false
+        }
+        endRunStatsAndReport(onStatus, verb = "thought")
+        return r
     }
 
     private data class ToolCall(
@@ -435,6 +974,7 @@ class AgentOrchestrator(
     }
 
     private fun executeToolCall(tc: ToolCall): ToolResult {
+        currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
         return when (tc.type) {
             "create_file" -> {
                 val path = tc.args.optString("path")
@@ -492,6 +1032,7 @@ class AgentOrchestrator(
                     .put("ts", System.currentTimeMillis())
                 commandCache[cacheKey] = payload
                 saveCommandCache()
+                currentRunStats?.commandsRun?.add(command)
                 ToolResult(exit == 0, obs)
             }
             "get_cached_command_output" -> {
@@ -537,6 +1078,7 @@ class AgentOrchestrator(
                 require(path.isNotBlank()) { "path missing" }
                 val d = resolvePath(path)
                 val listing = if (d.exists() && d.isDirectory) listTopLevel(d, limit = 200) else JSONObject().put("path", d.absolutePath).put("items", JSONArray()).toString()
+                currentRunStats?.dirsListed?.add(d.absolutePath)
                 ToolResult(true, listing)
             }
             "list_dir_recursive" -> {
@@ -559,6 +1101,7 @@ class AgentOrchestrator(
                 }
                 if (root.exists() && root.isDirectory) walk(root, 0)
                 val out = JSONObject().put("root", root.absolutePath).put("max_depth", maxDepth).put("items", arr).toString()
+                currentRunStats?.dirsListed?.add(root.absolutePath)
                 ToolResult(true, out)
             }
             "read_file" -> {
@@ -569,8 +1112,9 @@ class AgentOrchestrator(
                 val content = if (f.exists() && f.isFile) {
                     val bytes = f.readBytes()
                     val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
-                    val text = String(slice)
-                    JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes).toString()
+                                         val text = String(slice)
+                     currentRunStats?.filesRead?.add(f.absolutePath)
+                     JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes).toString()
                 } else {
                     JSONObject().put("path", f.absolutePath).put("missing", true).toString()
                 }
@@ -716,7 +1260,8 @@ class AgentOrchestrator(
                         if (count >= maxResults) break
                         val m = regex.matcher(line)
                         if (m.find()) {
-                            results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
+                                                         results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
+                             currentRunStats?.grepPatterns?.add(pattern)
                             count++
                         }
                     }

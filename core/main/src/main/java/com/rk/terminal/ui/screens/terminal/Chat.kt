@@ -53,6 +53,12 @@ import org.json.JSONObject
 import com.rk.libcommons.application
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -78,9 +84,13 @@ fun ChatView(mainActivityActivity: MainActivity) {
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
+    // Tab state: 0 = Chat, 1 = Git
+    var selectedTab by remember { mutableStateOf(0) }
+
     // Chat history persistence under chat/<chatId>/history.json
     val chatDir = remember(currentChatId.value) { File(application!!.filesDir, "chat/${currentChatId.value}").apply { mkdirs() } }
     val historyFile = remember(currentChatId.value) { File(chatDir, "history.json") }
+    val prefsFile = remember { File(application!!.filesDir, "chat_prefs.json") }
 
     fun saveHistory() {
         runCatching {
@@ -91,6 +101,21 @@ fun ChatView(mainActivityActivity: MainActivity) {
             historyFile.writeText(arr.toString(2))
         }
     }
+
+    // Persist selected chat and scroll positions and settings
+    fun savePrefs(selectedChatId: String, firstVisibleIndex: Int, firstVisibleOffset: Int, sendMode: String, gitBin: String? = null, gitPath: String? = null) {
+        runCatching {
+            val obj = runCatching { JSONObject(prefsFile.takeIf { it.exists() }?.readText() ?: "{}") }.getOrElse { JSONObject() }
+            obj.put("selected_chat", selectedChatId)
+            obj.put("scroll_index", firstVisibleIndex)
+            obj.put("scroll_offset", firstVisibleOffset)
+            obj.put("send_mode", sendMode)
+            if (gitBin != null) obj.put("git_bin", gitBin)
+            if (gitPath != null) obj.put("git_path", gitPath)
+            prefsFile.writeText(obj.toString(2))
+        }
+    }
+    fun loadPrefs(): JSONObject = runCatching { JSONObject(prefsFile.takeIf { it.exists() }?.readText() ?: "{}") }.getOrElse { JSONObject() }
 
     LaunchedEffect(currentChatId.value) {
         // Load history for selected chat
@@ -128,12 +153,12 @@ fun ChatView(mainActivityActivity: MainActivity) {
         )
     }
 
-    // Workspace selector state
+    // Workspace selector state (Chat tab)
     val svc = mainActivityActivity.sessionBinder?.getService()
     val currentWd = remember { mutableStateOf(svc?.fileManagerWorkingDirBySession?.get(sessionId) ?: "/sdcard") }
     var showWdMenu by remember { mutableStateOf(false) }
 
-    // Folder picker dialog state
+    // Folder picker dialog state (Chat tab)
     var showFolderPicker by remember { mutableStateOf(false) }
     val pickerPath = remember { mutableStateOf(currentWd.value) }
 
@@ -152,11 +177,185 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val hasPlan = activePlan.value != null
     val canProceed = hasPlan && agent.getNextPendingTask(activePlan.value!!) != null
 
+    // Git tab state
+    val gitProjectPath = remember { mutableStateOf(currentWd.value) }
+    var showGitFolderPicker by remember { mutableStateOf(false) }
+    val gitPickerPath = remember { mutableStateOf(gitProjectPath.value) }
+    val gitCommitMsg = remember { mutableStateOf("chore: save via app") }
+    val gitLog = remember { mutableStateListOf<String>() }
+    val initialPrefs = loadPrefs()
+    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "git" }) }
+    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path")) }
+
+    fun appendGitLog(s: String) { gitLog.add(s) }
+
+    fun isGitRepo(path: String): Boolean = File(path, ".git").exists()
+
+    fun runGitCommand(path: String, command: String, onDone: (Int, String) -> Unit) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val pb = ProcessBuilder("sh", "-c", command)
+                    .directory(File(path))
+                    .redirectErrorStream(true)
+                // inject PATH if provided
+                if (!gitPath.isNullOrBlank()) {
+                    val env = pb.environment()
+                    env["PATH"] = gitPath + ":" + (env["PATH"] ?: "")
+                }
+                val proc = pb.start()
+                val output = proc.inputStream.bufferedReader().use { it.readText() }
+                val code = proc.waitFor()
+                scope.launch(Dispatchers.Main) { onDone(code, output) }
+            } catch (e: Exception) {
+                scope.launch(Dispatchers.Main) { onDone(-1, e.message ?: e.toString()) }
+            }
+        }
+    }
+
+    // Send mode dropdown: think (default) | plan | chat
+    val sendModes = listOf("think", "plan", "chat")
+    var sendMode by remember {
+        mutableStateOf(loadPrefs().optString("send_mode").ifBlank { "think" })
+    }
+    var showSendMenu by remember { mutableStateOf(false) }
+
+    // Scroll state with persistence
+    val listState = rememberLazyListState()
+    LaunchedEffect(currentChatId.value) {
+        val p = loadPrefs()
+        if (p.optString("selected_chat") == currentChatId.value) {
+            val idx = p.optInt("scroll_index", 0)
+            val off = p.optInt("scroll_offset", 0)
+            runCatching { listState.scrollToItem(idx, off) }
+        }
+    }
+
+    // Back key hides keyboard like Termux when input focused
+    val focusManager = LocalFocusManager.current
+    var isInputFocused by remember { mutableStateOf(false) }
+    BackHandler(enabled = isInputFocused) {
+        focusManager.clearFocus(force = true)
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
+        // Tabs
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Chat") })
+            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Git") })
+        }
+
+        if (selectedTab == 1) {
+            // =============== Git Panel ===============
+            Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Version Control", style = MaterialTheme.typography.titleSmall)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Project: ${gitProjectPath.value}")
+                                val repoStatus = if (isGitRepo(gitProjectPath.value)) "Initialized" else "Not initialized"
+                                AssistChip(onClick = {}, label = { Text(repoStatus) })
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { showGitFolderPicker = true }) { Icon(Icons.Default.Folder, contentDescription = "Select project") }
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(value = gitBin, onValueChange = { gitBin = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin) }, singleLine = true, label = { Text("Git binary") })
+                            OutlinedTextField(value = gitPath ?: "", onValueChange = { gitPath = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath) }, singleLine = true, label = { Text("PATH") }, modifier = Modifier.weight(1f))
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                val cmd = "$gitBin --version"
+                                appendGitLog("$ $cmd")
+                                runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                            }) { Text("Test Git") }
+                        }
+                        OutlinedTextField(
+                            value = gitCommitMsg.value,
+                            onValueChange = { gitCommitMsg.value = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text("Commit message…") }
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                val path = gitProjectPath.value
+                                appendGitLog("$ $gitBin init")
+                                runGitCommand(path, "$gitBin init") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                            }) { Text("Init Repo") }
+                            Button(onClick = {
+                                val path = gitProjectPath.value
+                                val msg = gitCommitMsg.value.ifBlank { "save" }
+                                appendGitLog("$ $gitBin add . && $gitBin commit -m \"$msg\"")
+                                runGitCommand(path, "$gitBin add . && $gitBin commit -m \"$msg\"") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                            }) { Text("Save Version") }
+                        }
+                    }
+                }
+                Card(modifier = Modifier.fillMaxWidth().weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("Git Log", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(gitLog) { line -> Text(line) }
+                        }
+                    }
+                }
+            }
+
+            // Git Folder picker dialog
+            if (showGitFolderPicker) {
+                AlertDialog(
+                    onDismissRequest = { showGitFolderPicker = false },
+                    title = { Text("Select Project Folder") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(gitPickerPath.value)
+                            val dirs = listDirs(gitPickerPath.value)
+                            LazyColumn(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                                items(dirs) { dir ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { gitPickerPath.value = dir.absolutePath }
+                                            .padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Folder, contentDescription = null)
+                                        Text(text = dir.name, modifier = Modifier.padding(start = 8.dp))
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val path = gitPickerPath.value
+                            gitProjectPath.value = path
+                            showGitFolderPicker = false
+                            appendGitLog("Project set to: $path")
+                        }) { Text("Use this folder") }
+                    },
+                    dismissButton = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = {
+                                val parent = File(gitPickerPath.value).parentFile
+                                if (parent != null && parent.exists()) gitPickerPath.value = parent.absolutePath
+                            }) { Text("Up") }
+                            TextButton(onClick = { showGitFolderPicker = false }) { Text("Cancel") }
+                        }
+                    }
+                )
+            }
+            return@Column
+        }
+
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            reverseLayout = false
+            reverseLayout = false,
+            state = listState
         ) {
             items(messages) { msg ->
                 val isUser = msg.role == "user"
@@ -279,29 +478,68 @@ fun ChatView(mainActivityActivity: MainActivity) {
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).onFocusChanged { isInputFocused = it.isFocused },
                 singleLine = true,
                 placeholder = { Text("Type a message…") }
             )
+            // Send mode dropdown
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(sendMode.uppercase(), style = MaterialTheme.typography.labelSmall, modifier = Modifier.clickable { showSendMenu = true }.padding(bottom = 2.dp))
+                DropdownMenu(expanded = showSendMenu, onDismissRequest = { showSendMenu = false }) {
+                    sendModes.forEach { mode ->
+                        DropdownMenuItem(text = { Text(mode) }, onClick = {
+                            sendMode = mode
+                            showSendMenu = false
+                            savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
+                        })
+                    }
+                }
+            }
             IconButton(
                 onClick = {
                     val prompt = input.trim()
                     if (prompt.isEmpty()) return@IconButton
                     input = ""
                     messages.add(ChatMessage("user", prompt))
-                    messages.add(ChatMessage("assistant", "…"))
+                    messages.add(ChatMessage("assistant", if (sendMode == "chat") "…" else "Thinking…"))
                     saveHistory()
 
                     scope.launch(Dispatchers.IO) {
                         runCatching {
-                            LlmProvider.current().generate(messages.map { com.rk.terminal.llm.LlmMessage(it.role, it.content) }).collect { token ->
-                                scope.launch(Dispatchers.Main) {
-                                    val lastIndex = messages.indexOfLast { it.role == "assistant" }
-                                    if (lastIndex != -1) {
-                                        val current = messages[lastIndex]
-                                        val nextContent = if (current.content == "…") token else current.content + token
-                                        messages[lastIndex] = current.copy(content = nextContent)
-                                        saveHistory()
+                            when (sendMode) {
+                                "think" -> {
+                                    val result = agent.thinkAndAct(prompt) { s ->
+                                        scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                                    }
+                                    if (result.producedPlan != null) {
+                                        scope.launch(Dispatchers.Main) { activePlan.value = result.producedPlan }
+                                        postStatus("Plan ready: ${result.producedPlan.tasks.size} task(s). Press Proceed to run.")
+                                    } else if (!result.answer.isNullOrBlank()) {
+                                        postStatus(result.answer)
+                                    } else {
+                                        postStatus("No actionable result from think-and-act.")
+                                    }
+                                }
+                                "plan" -> {
+                                    val plan = agent.generatePlan(prompt)
+                                    if (plan == null) {
+                                        postStatus("Could not parse plan from AI.")
+                                    } else {
+                                        scope.launch(Dispatchers.Main) { activePlan.value = plan }
+                                        postStatus("Plan ready: ${plan.tasks.size} task(s). Press Proceed to run the first task.")
+                                    }
+                                }
+                                else -> {
+                                    LlmProvider.current().generate(messages.map { com.rk.terminal.llm.LlmMessage(it.role, it.content) }).collect { token ->
+                                        scope.launch(Dispatchers.Main) {
+                                            val lastIndex = messages.indexOfLast { it.role == "assistant" }
+                                            if (lastIndex != -1) {
+                                                val current = messages[lastIndex]
+                                                val nextContent = if (current.content == "…") token else current.content + token
+                                                messages[lastIndex] = current.copy(content = nextContent)
+                                                saveHistory()
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -317,6 +555,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 saveHistory()
                             }
                         }
+                        // Persist prefs after sending
+                        savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                     }
                 }
             ) { Icon(Icons.Default.Send, contentDescription = "Send") }
@@ -328,6 +568,36 @@ fun ChatView(mainActivityActivity: MainActivity) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            Button(
+                onClick = {
+                    val prompt = input.trim()
+                    if (prompt.isEmpty()) return@Button
+                    input = ""
+                    messages.add(ChatMessage("user", prompt))
+                    messages.add(ChatMessage("assistant", "Thinking…"))
+                    saveHistory()
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val result = agent.thinkAndAct(prompt) { s ->
+                                scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                            }
+                            if (result.producedPlan != null) {
+                                scope.launch(Dispatchers.Main) { activePlan.value = result.producedPlan }
+                                postStatus("Plan ready: ${result.producedPlan.tasks.size} task(s). Press Proceed to run.")
+                            } else if (!result.answer.isNullOrBlank()) {
+                                postStatus(result.answer)
+                            } else {
+                                postStatus("No actionable result from think-and-act.")
+                            }
+                            saveHistory()
+                        } catch (e: Exception) {
+                            postStatus("Agent error: ${e.message}")
+                        }
+                    }
+                },
+                enabled = input.isNotBlank() && !isPlanning.value
+            ) { Text("Think") }
+
             Button(
                 onClick = {
                     val goal = input.trim()
@@ -475,6 +745,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                             .clickable {
                                                 currentChatId.value = cid
                                                 showChatManager = false
+                                                savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                                             }
                                             .padding(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -506,12 +777,17 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         currentChatId.value = name
                         newChatName.value = ""
                         showChatManager = false
+                        savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                     }) { Text("Create / Switch") }
                 },
                 dismissButton = {
                     TextButton(onClick = { showChatManager = false }) { Text("Close") }
                 }
             )
+        }
+        // Persist scroll on leave
+        DisposableEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, currentChatId.value, sendMode, gitBin, gitPath) {
+            onDispose { savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin, gitPath) }
         }
     }
 }
