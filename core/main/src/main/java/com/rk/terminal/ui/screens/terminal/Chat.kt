@@ -170,6 +170,30 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         }
 
+        // Lightweight plan status panel
+        if (hasPlan) {
+            val plan = activePlan.value!!
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Plan", style = MaterialTheme.typography.titleSmall)
+                    val statuses = agent.getPlanStatuses()
+                    plan.tasks.take(8).forEach { t ->
+                        val st = statuses[t.id] ?: "pending"
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("${t.id}: ${t.description}", modifier = Modifier.weight(1f))
+                            Text(st)
+                        }
+                    }
+                    if (plan.tasks.size > 8) {
+                        Text("… and ${plan.tasks.size - 8} more", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+
         // Row 1: Chat session selector + Input + Send
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -309,8 +333,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
                             }
                             if (!success) {
-                                // After a failure or no pending task, automatically ask the AI to update the plan
-                                scope.launch(Dispatchers.Main) { postStatus("Attempting to update plan based on the error…"); saveHistory() }
+                                scope.launch(Dispatchers.Main) { postStatus("Attempting to update plan based on the error or loop prevention…"); saveHistory() }
                                 val updated = agent.requestUpdatedPlan(plan)
                                 if (updated == null) {
                                     scope.launch(Dispatchers.Main) { postStatus("Could not update plan."); saveHistory() }

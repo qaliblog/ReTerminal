@@ -115,11 +115,13 @@ object AnthropicEngine : LlmEngine {
                 item.put("content", JSONArray().put(JSONObject().put("type", "text").put("text", m.content)))
                 conv.put(item)
             }
+            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
             val body = JSONObject().apply {
                 put("model", model)
                 put("max_tokens", 1024)
                 put("messages", conv)
                 if (!sys.isNullOrBlank()) put("system", sys)
+                if (forceJson) put("temperature", 0)
             }
             val req = Request.Builder()
                 .url(url)
@@ -163,7 +165,11 @@ object GeminiEngine : LlmEngine {
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${Settings.api_key}"
             val userText = messages.filter { it.role == "user" }.joinToString("\n\n") { it.content }
             val sys = messages.firstOrNull { it.role == "system" }?.content
+            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
             val contents = JSONObject().apply {
+                put("generationConfig", JSONObject().apply {
+                    if (forceJson) put("temperature", 0)
+                })
                 put("contents", JSONArray().put(
                     JSONObject().put("parts", JSONArray().apply {
                         if (!sys.isNullOrBlank()) put(JSONObject().put("text", sys))

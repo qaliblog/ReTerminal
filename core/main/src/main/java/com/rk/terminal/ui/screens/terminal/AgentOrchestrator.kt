@@ -83,11 +83,75 @@ class AgentOrchestrator(
     private fun markTaskDone(taskId: String) {
         val progress = loadProgress()
         val tasks = progress.optJSONObject("tasks") ?: JSONObject().also { progress.put("tasks", it) }
-        tasks.put(taskId, JSONObject().apply {
-            put("status", "done")
-            put("ts", System.currentTimeMillis())
-        })
+        val tObj = tasks.optJSONObject(taskId) ?: JSONObject()
+        tObj.put("status", "done")
+        tObj.put("ts", System.currentTimeMillis())
+        tObj.put("attempts", tObj.optInt("attempts", 0))
+        tasks.put(taskId, tObj)
         saveProgress(progress)
+    }
+
+    private fun markTaskFailed(taskId: String, note: String) {
+        val progress = loadProgress()
+        val tasks = progress.optJSONObject("tasks") ?: JSONObject().also { progress.put("tasks", it) }
+        val tObj = tasks.optJSONObject(taskId) ?: JSONObject()
+        tObj.put("status", "failed")
+        tObj.put("ts", System.currentTimeMillis())
+        tObj.put("attempts", tObj.optInt("attempts", 0))
+        tasks.put(taskId, tObj)
+        saveProgress(progress)
+        observations[taskId] = note
+        saveObservations()
+    }
+
+    private fun incrementAttempts(taskId: String): Int {
+        val progress = loadProgress()
+        val tasks = progress.optJSONObject("tasks") ?: JSONObject().also { progress.put("tasks", it) }
+        val tObj = tasks.optJSONObject(taskId) ?: JSONObject()
+        val next = tObj.optInt("attempts", 0) + 1
+        tObj.put("attempts", next)
+        if (!tObj.has("status")) tObj.put("status", "pending")
+        tasks.put(taskId, tObj)
+        saveProgress(progress)
+        return next
+    }
+
+    private fun resetAllAttempts() {
+        val progress = loadProgress()
+        val tasks = progress.optJSONObject("tasks") ?: return
+        val keys = tasks.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val t = tasks.optJSONObject(k) ?: continue
+            t.put("attempts", 0)
+        }
+        saveProgress(progress)
+    }
+
+    private fun getPlanSignature(progress: JSONObject): String? = progress.optString("plan_signature", null)
+    private fun setPlanSignature(progress: JSONObject, sig: String) {
+        progress.put("plan_signature", sig)
+        progress.put("plan_rev", progress.optInt("plan_rev", 0) + 1)
+    }
+
+    private fun computePlanSignature(plan: Plan): String {
+        val sb = StringBuilder()
+        plan.tasks.forEach { sb.append(it.id).append('|').append(it.category ?: "").append('|').append(it.description).append('\n') }
+        return sb.toString().hashCode().toString()
+    }
+
+    fun getPlanStatuses(): Map<String, String> {
+        return runCatching {
+            if (!planFile.exists()) return emptyMap()
+            val obj = JSONObject(planFile.readText())
+            val arr = obj.optJSONArray("tasks") ?: return emptyMap()
+            buildMap {
+                for (i in 0 until arr.length()) {
+                    val t = arr.getJSONObject(i)
+                    put(t.optString("id"), t.optString("status", "pending"))
+                }
+            }
+        }.getOrElse { emptyMap() }
     }
 
     private fun isTaskDone(taskId: String): Boolean {
@@ -136,8 +200,26 @@ class AgentOrchestrator(
         plan: Plan,
         onStatus: (String) -> Unit
     ): Boolean {
+        // Detect plan change and reset attempts if needed
+        val progress = loadProgress()
+        val currentSig = computePlanSignature(plan)
+        val prevSig = getPlanSignature(progress)
+        if (prevSig != currentSig) {
+            resetAllAttempts()
+            setPlanSignature(progress, currentSig)
+            saveProgress(progress)
+        }
+
         val task = getNextPendingTask(plan) ?: return false
         onStatus("Task ${task.id}: ${task.description}")
+
+        val attemptNo = incrementAttempts(task.id)
+        if (attemptNo > 3) {
+            val note = "attempts_exceeded_${attemptNo}"
+            markTaskFailed(task.id, note)
+            onStatus("Task ${task.id}: attempts exceeded; requesting plan update")
+            return false
+        }
 
         var stepsTaken = 0
         val maxSteps = 5
@@ -184,7 +266,8 @@ class AgentOrchestrator(
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
                 if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
-                    onStatus("Task ${task.id}: no new information; stopping to request plan update")
+                    markTaskFailed(task.id, "repeated_non_modifying_observation")
+                    onStatus("Task ${task.id}: repeated observation; requesting plan update")
                     return false
                 }
                 lastObservation = result.observation ?: lastObservation
@@ -804,6 +887,13 @@ class AgentOrchestrator(
         val completed = JSONArray().apply {
             plan.tasks.forEach { if (isTaskDone(it.id)) put(it.id) }
         }
+        val failed = JSONArray().apply {
+            val progress = loadProgress()
+            val tasks = progress.optJSONObject("tasks") ?: JSONObject()
+            tasks.keys().forEach { k ->
+                if (tasks.optJSONObject(k)?.optString("status") == "failed") put(k)
+            }
+        }
         val currentPlanJson = runCatching { JSONObject(planFile.readText()) }.getOrNull()?.toString() ?: "{}"
         val obsJson = JSONObject().apply {
             observations.entries.forEach { (k, v) -> put(k, if (v.length > 5000) v.take(5000) + " …" else v) }
@@ -813,16 +903,18 @@ class AgentOrchestrator(
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "status": "done"|"pending"}, ...]}
             Rules:
             - Keep ids stable for already completed tasks and mark them status:"done".
+            - For failed tasks, either refine them into safer, smaller discovery steps or replace them.
             - You may add, remove, or edit pending tasks if needed.
             - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
-            - Prefer minimal safe changes.
+            - Prefer minimal safe changes. Avoid repeating identical discovery without new signals.
             - Do not include explanations.
         """.trimIndent()
         val user = """
             Current working directory: ${wdPath}
             Workspace snapshot: ${workspaceInfo}
             Completed task ids: ${completed}
-            Prior observations: ${obsJson}
+            Failed task ids: ${failed}
+            Prior observations and failure notes: ${obsJson}
             Current plan JSON: ${currentPlanJson}
             Produce the updated plan JSON now.
         """.trimIndent()
@@ -846,6 +938,11 @@ class AgentOrchestrator(
         }
         val updated = Plan(goal, tasks)
         persistPlanWithStatuses(updated)
+        // update plan signature and reset attempts upon new plan
+        val progress = loadProgress()
+        setPlanSignature(progress, computePlanSignature(updated))
+        resetAllAttempts()
+        saveProgress(progress)
         return@withContext updated
     }
 }
