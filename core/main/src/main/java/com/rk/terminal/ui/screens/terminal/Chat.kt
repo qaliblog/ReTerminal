@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
@@ -184,10 +186,25 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val gitCommitMsg = remember { mutableStateOf("chore: save via app") }
     val gitLog = remember { mutableStateListOf<String>() }
     val initialPrefs = loadPrefs()
-    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "git" }) }
-    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path")) }
+    var gitBin by remember { mutableStateOf(initialPrefs.optString("git_bin").ifBlank { "/usr/bin/git" }) }
+    var gitPath by remember { mutableStateOf(initialPrefs.optString("git_path").ifBlank { "/usr/bin" }) }
 
     fun appendGitLog(s: String) { gitLog.add(s) }
+
+    // Normalize Git settings: if user pasted an absolute git binary path into PATH,
+    // move it to gitBin and keep PATH as the directory
+    fun sanitizeGitSettings() {
+        val pathField = (gitPath ?: "").trim()
+        if (pathField.isNotBlank()) {
+            val looksLikeBinary = pathField.endsWith("/git") && !java.io.File(pathField).isDirectory
+            if (looksLikeBinary) {
+                gitBin = pathField
+                gitPath = java.io.File(pathField).parent
+                appendGitLog("Detected git binary path; using $gitBin and PATH=${gitPath}")
+            }
+        }
+        if (gitBin.isBlank()) gitBin = "git"
+    }
 
     fun isGitRepo(path: String): Boolean = File(path, ".git").exists()
 
@@ -261,15 +278,16 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(value = gitBin, onValueChange = { gitBin = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin) }, singleLine = true, label = { Text("Git binary") })
-                            OutlinedTextField(value = gitPath ?: "", onValueChange = { gitPath = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath) }, singleLine = true, label = { Text("PATH") }, modifier = Modifier.weight(1f))
+                                                         OutlinedTextField(value = gitBin, onValueChange = { gitBin = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin) }, singleLine = true, label = { Text("Git binary (/usr/bin/git)") })
+                             OutlinedTextField(value = gitPath ?: "", onValueChange = { gitPath = it; savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitPath = gitPath) }, singleLine = true, label = { Text("PATH (/usr/bin)") }, modifier = Modifier.weight(1f))
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                val cmd = "$gitBin --version"
-                                appendGitLog("$ $cmd")
-                                runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
-                            }) { Text("Test Git") }
+                                                         Button(onClick = {
+                                 sanitizeGitSettings()
+                                 val cmd = "$gitBin --version"
+                                 appendGitLog("$ $cmd")
+                                 runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                             }) { Text("Test Git") }
                         }
                         OutlinedTextField(
                             value = gitCommitMsg.value,
@@ -352,7 +370,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
 
         LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp).navigationBarsPadding().imePadding(),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             reverseLayout = false,
             state = listState
@@ -402,17 +420,29 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             }
                             Button(onClick = {
                                 scope.launch(Dispatchers.IO) {
-                                    val success = agent.executeNextTask(plan) { s ->
-                                        scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
-                                    }
-                                    if (!success) {
-                                        val updated = agent.requestUpdatedPlan(plan)
-                                        if (updated != null) {
-                                            scope.launch(Dispatchers.Main) { activePlan.value = updated; postStatus("Plan updated."); saveHistory() }
+                                    try {
+                                        var loops = 0
+                                        while (true) {
+                                            val current = activePlan.value ?: break
+                                            if (agent.getNextPendingTask(current) == null) break
+                                            val success = agent.executeNextTask(current) { s ->
+                                                scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                                            }
+                                            if (!success) {
+                                                val updated = agent.requestUpdatedPlan(current)
+                                                if (updated != null) {
+                                                    scope.launch(Dispatchers.Main) {
+                                                        activePlan.value = updated
+                                                        postStatus("Plan updated.")
+                                                        saveHistory()
+                                                    }
+                                                }
+                                            }
+                                            loops++
+                                            if (!autoRun || loops >= 50) break
                                         }
-                                    } else if (autoRun) {
-                                        // trigger next automatically
-                                        this.launch { /* no-op, user can press Proceed or keep auto-run */ }
+                                    } catch (e: Exception) {
+                                        scope.launch(Dispatchers.Main) { postStatus("Agent error: ${e.message}"); saveHistory() }
                                     }
                                 }
                             }) { Text("Run") }
@@ -427,7 +457,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
         // Row 1: Chat session selector + Input + Send
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).navigationBarsPadding().imePadding(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -447,6 +477,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         onClick = {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                            // Persist selected chat and workspace immediately
+                            savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                             showWdMenu = false
                             postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
@@ -461,6 +493,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             val path = parent.absolutePath
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                            savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                             showWdMenu = false
                             postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
@@ -564,7 +597,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
         // Row 2: Agent controls
         Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(8.dp).navigationBarsPadding().imePadding(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -709,6 +742,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         val path = pickerPath.value
                         currentWd.value = path
                         svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
+                        savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                         showFolderPicker = false
                         postStatus("Workspace set to: $path (agent will use absolute paths)")
                     }) { Text("Use this folder") }
