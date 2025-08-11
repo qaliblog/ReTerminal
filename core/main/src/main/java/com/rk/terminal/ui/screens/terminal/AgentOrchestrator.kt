@@ -11,6 +11,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.regex.Pattern
+import java.util.concurrent.TimeUnit
 
 /**
  * Minimal agent orchestrator that:
@@ -44,9 +46,30 @@ class AgentOrchestrator(
     }
     private val planFile: File by lazy { File(agentDir, "plan.json") }
     private val progressFile: File by lazy { File(agentDir, "progress.json") }
+    private val observationsFile: File by lazy { File(agentDir, "observations.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
+
+    init {
+        // Load persisted observations if available to make the agent resilient to restarts
+        runCatching {
+            if (observationsFile.exists()) {
+                val obj = JSONObject(observationsFile.readText())
+                obj.keys().forEach { k ->
+                    observations[k] = obj.optString(k)
+                }
+            }
+        }
+    }
+
+    private fun saveObservations() {
+        runCatching {
+            val obj = JSONObject()
+            observations.forEach { (k, v) -> obj.put(k, v) }
+            observationsFile.writeText(obj.toString(2))
+        }
+    }
 
     private fun loadProgress(): JSONObject {
         return runCatching { JSONObject(progressFile.takeIf { it.exists() }?.readText().orEmpty()) }
@@ -124,19 +147,22 @@ class AgentOrchestrator(
             val toolCall = requestSingleToolCall(plan.goal, task)
             if (toolCall == null) {
                 observations[task.id] = "could not determine action for this task"
+                saveObservations()
                 onStatus("Task ${task.id}: could not determine action")
                 return false
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
-                onStatus("Task ${'$'}{task.id} failed: ${'$'}{err}")
+                saveObservations()
+                onStatus("Task ${task.id} failed: ${err}")
                 return false
             }
 
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
                     observations[task.id] = result.observation
+                    saveObservations()
                     val preview = result.observation.take(800)
                     onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                 }
@@ -144,21 +170,21 @@ class AgentOrchestrator(
                 // If the tool modified the workspace, consider the task complete.
                 if (isModifyingTool(toolCall.type)) {
                     markTaskDone(task.id)
-                    onStatus("Task ${'$'}{task.id}: done")
+                    onStatus("Task ${task.id}: done")
                     return true
                 }
 
                 // If this is a discovery tool and the task category is discovery, complete the task now.
                 if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
                     markTaskDone(task.id)
-                    onStatus("Task ${'$'}{task.id}: done")
+                    onStatus("Task ${task.id}: done")
                     return true
                 }
 
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
                 if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
-                    onStatus("Task ${'$'}{task.id}: no new information; stopping to request plan update")
+                    onStatus("Task ${task.id}: no new information; stopping to request plan update")
                     return false
                 }
                 lastObservation = result.observation ?: lastObservation
@@ -170,13 +196,14 @@ class AgentOrchestrator(
             } else {
                 if (!observations.containsKey(task.id)) {
                     observations[task.id] = "failed without exception"
+                    saveObservations()
                 }
-                onStatus("Task ${'$'}{task.id}: failed")
+                onStatus("Task ${task.id}: failed")
                 return false
             }
         }
 
-        onStatus("Task ${'$'}{task.id}: reached step limit without completion")
+        onStatus("Task ${task.id}: reached step limit without completion")
         return false
     }
 
@@ -192,14 +219,14 @@ class AgentOrchestrator(
 
     private fun isModifyingTool(type: String): Boolean {
         return when (type) {
-            "write_file", "apply_changes", "make_dir", "create_file" -> true
+            "write_file", "apply_changes", "make_dir", "create_file", "search_replace" -> true
             else -> false
         }
     }
 
     private fun isDiscoveryTool(type: String): Boolean {
         return when (type) {
-            "read_file", "list_dir" -> true
+            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers" -> true
             else -> false
         }
     }
@@ -214,6 +241,7 @@ class AgentOrchestrator(
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
             You are orchestrating a short inner loop to complete the current task.
+            The API is stateless. Never rely on hidden memory. Use ONLY the provided goal, task, working directory and observations.
             Return ONLY a single minified JSON object describing ONE tool call to move the task forward.
             Allowed schemas:
             {"type":"create_file","args":{"path": string}}
@@ -222,6 +250,11 @@ class AgentOrchestrator(
             {"type":"run_shell","args":{"command": string}}
             {"type":"list_dir","args":{"path": string}}
             {"type":"read_file","args":{"path": string, "max_bytes": number}}
+            {"type":"read_file_lines","args":{"path": string, "start": number, "end": number, "max_bytes": number}}
+            {"type":"read_file_section_by_markers","args":{"path": string, "start_marker": string, "end_marker": string, "include_markers": boolean}}
+            {"type":"stat_file","args":{"path": string}}
+            {"type":"grep","args":{"path": string, "pattern": string, "max_results": number}}
+            {"type":"search_replace","args":{"path": string, "old": string, "new": string, "unique": boolean}}
             {"type":"apply_changes","args":{"edits": [
                 {"path": string, "op": "replace_exact", "old": string, "new": string},
                 {"path": string, "op": "replace_between_markers", "start_marker": string, "end_marker": string, "new_content": string, "include_markers": false},
@@ -229,7 +262,7 @@ class AgentOrchestrator(
                 {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string}
             ]}}
             Rules:
-            - Use relative paths with respect to the current working directory unless absolute is required.
+            - Prefer ABSOLUTE paths. When ambiguous, resolve relative paths against the working directory and then output absolute.
             - When writing source code that implements the goal, include the full file content in "content" for write_file. Do not use placeholders.
             - For updating existing files, prefer apply_changes with minimal edits over sending full file content. Use unique anchors and exact old text for precise replacements.
             - Consider the provided observations from prior steps. If a relevant file's content has already been observed, propose the write/apply_changes directly.
@@ -267,7 +300,7 @@ class AgentOrchestrator(
     private fun resolvePath(raw: String): File {
         val base = File(workingDirProvider())
         val f = File(raw)
-        return if (f.isAbsolute) f else File(base, raw)
+        return if (f.isAbsolute) f else File(base, raw).absoluteFile
     }
 
     private fun ensureParentDirs(file: File) {
@@ -339,6 +372,100 @@ class AgentOrchestrator(
                     JSONObject().put("path", f.absolutePath).put("missing", true).toString()
                 }
                 ToolResult(true, content)
+            }
+            "read_file_lines" -> {
+                val path = tc.args.optString("path")
+                val start = tc.args.optInt("start", 1).coerceAtLeast(1)
+                val end = tc.args.optInt("end", start + 500).coerceAtLeast(start)
+                val maxBytes = tc.args.optInt("max_bytes", 131072).coerceAtLeast(4096)
+                require(path.isNotBlank()) { "path missing" }
+                val f = resolvePath(path)
+                val obs = if (f.exists() && f.isFile) {
+                    val lines = f.readLines()
+                    val actualEnd = end.coerceAtMost(lines.size)
+                    val slice = if (start <= lines.size) lines.subList(start - 1, actualEnd) else emptyList()
+                    val text = slice.joinToString("\n")
+                    val clipped = if (text.toByteArray().size > maxBytes) String(text.toByteArray().copyOf(maxBytes)) else text
+                    JSONObject().put("path", f.absolutePath).put("start", start).put("end", actualEnd).put("content", clipped).put("truncated", clipped.length < text.length).toString()
+                } else {
+                    JSONObject().put("path", f.absolutePath).put("missing", true).toString()
+                }
+                ToolResult(true, obs)
+            }
+            "read_file_section_by_markers" -> {
+                val path = tc.args.optString("path")
+                val startMarker = tc.args.optString("start_marker")
+                val endMarker = tc.args.optString("end_marker")
+                val includeMarkers = tc.args.optBoolean("include_markers", false)
+                require(path.isNotBlank()) { "path missing" }
+                require(startMarker.isNotBlank() && endMarker.isNotBlank()) { "markers missing" }
+                val f = resolvePath(path)
+                val obs = if (f.exists() && f.isFile) {
+                    val original = f.readText()
+                    val sIdx = original.indexOf(startMarker)
+                    if (sIdx < 0) {
+                        JSONObject().put("path", f.absolutePath).put("start_found", false).toString()
+                    } else {
+                        val eIdx = original.indexOf(endMarker, sIdx + startMarker.length)
+                        if (eIdx < 0) {
+                            JSONObject().put("path", f.absolutePath).put("end_found", false).toString()
+                        } else {
+                            val content = if (includeMarkers) original.substring(sIdx, eIdx + endMarker.length) else original.substring(sIdx + startMarker.length, eIdx)
+                            JSONObject().put("path", f.absolutePath).put("content", content).toString()
+                        }
+                    }
+                } else {
+                    JSONObject().put("path", f.absolutePath).put("missing", true).toString()
+                }
+                ToolResult(true, obs)
+            }
+            "stat_file" -> {
+                val path = tc.args.optString("path")
+                require(path.isNotBlank()) { "path missing" }
+                val f = resolvePath(path)
+                val obj = JSONObject().put("path", f.absolutePath)
+                    .put("exists", f.exists())
+                    .put("is_dir", f.isDirectory)
+                    .put("is_file", f.isFile)
+                    .put("size", if (f.exists() && f.isFile) f.length() else 0L)
+                    .put("modified", if (f.exists()) f.lastModified() else 0L)
+                ToolResult(true, obj.toString())
+            }
+            "grep" -> {
+                val path = tc.args.optString("path")
+                val pattern = tc.args.optString("pattern")
+                val maxResults = tc.args.optInt("max_results", 200).coerceAtLeast(1)
+                require(path.isNotBlank()) { "path missing" }
+                require(pattern.isNotBlank()) { "pattern missing" }
+                val root = resolvePath(path)
+                val regex = runCatching { Pattern.compile(pattern) }.getOrElse { Pattern.compile(Pattern.quote(pattern)) }
+                val results = JSONArray()
+                var count = 0
+                fun scanFile(file: File) {
+                    if (count >= maxResults) return
+                    val sz = runCatching { file.length() }.getOrElse { 0L }
+                    if (sz > 2_000_000L) return // skip files > 2MB
+                    val lines = runCatching { file.readLines() }.getOrElse { emptyList() }
+                    for ((idx, line) in lines.withIndex()) {
+                        if (count >= maxResults) break
+                        val m = regex.matcher(line)
+                        if (m.find()) {
+                            results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
+                            count++
+                        }
+                    }
+                }
+                fun walk(dir: File) {
+                    if (count >= maxResults) return
+                    val list = dir.listFiles() ?: return
+                    for (f in list) {
+                        if (count >= maxResults) break
+                        if (f.isDirectory) walk(f) else scanFile(f)
+                    }
+                }
+                if (root.isDirectory) walk(root) else if (root.isFile) scanFile(root)
+                val out = JSONObject().put("root", root.absolutePath).put("matches", results).toString()
+                ToolResult(true, out)
             }
             "apply_changes" -> {
                 val edits = tc.args.optJSONArray("edits") ?: JSONArray()
@@ -413,6 +540,22 @@ class AgentOrchestrator(
                 val summary = (if (results.isEmpty()) "no edits" else results.joinToString("; "))
                 ToolResult(true, summary)
             }
+            "search_replace" -> {
+                val path = tc.args.optString("path")
+                val old = tc.args.optString("old")
+                val new = tc.args.optString("new")
+                val unique = tc.args.optBoolean("unique", true)
+                require(path.isNotBlank()) { "path missing" }
+                require(old.isNotBlank()) { "old missing" }
+                val file = resolvePath(path)
+                if (!file.exists()) return ToolResult(false, "file missing: ${file.path}")
+                val original = file.readText()
+                val occurrences = Regex(Pattern.quote(old)).findAll(original).count()
+                if (unique && occurrences != 1) return ToolResult(false, "non-unique match count: ${occurrences}")
+                val updated = original.replaceFirst(old, new)
+                file.writeText(updated)
+                ToolResult(true, "replaced ${if (unique) 1 else occurrences} occurrence(s) in ${file.absolutePath}")
+            }
             else -> ToolResult(false, null)
         }
     }
@@ -439,7 +582,10 @@ class AgentOrchestrator(
                 }
             }
         }
-        return null
+        // fallback: try to find last '}' and first '{'
+        val first = text.indexOf('{')
+        val last = text.lastIndexOf('}')
+        return if (first >= 0 && last > first) text.substring(first, last + 1) else null
     }
 
     suspend fun generatePlan(userGoal: String): Plan? = withContext(Dispatchers.IO) {
@@ -448,11 +594,13 @@ class AgentOrchestrator(
         // incorrectly mark new plan tasks as done.
         runCatching { if (progressFile.exists()) progressFile.delete() }
         observations.clear()
+        saveObservations()
         val wdPath = workingDirProvider()
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
         val sys = """
             You are an autonomous software agent that plans work as structured JSON only.
+            The API is stateless; never rely on hidden memory. Use the provided goal and workspace snapshot.
             Return ONLY a minified JSON object with the following shape and nothing else:
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string}, ...]}
             - ids must be unique short strings (e.g., t1, t2, t3)
@@ -501,37 +649,41 @@ class AgentOrchestrator(
     ) {
         for (task in plan.tasks) {
             if (isTaskDone(task.id)) {
-                onStatus("Skip ${'$'}{task.id}: already done")
+                onStatus("Skip ${task.id}: already done")
                 continue
             }
             onStatus("Task ${task.id}: ${task.description}")
              val toolCall = requestSingleToolCall(plan.goal, task)
              if (toolCall == null) {
                  observations[task.id] = "could not determine action for this task"
+                 saveObservations()
                  onStatus("Task ${task.id}: could not determine action")
                  return
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
-                onStatus("Task ${'$'}{task.id} failed: ${'$'}{err}")
+                saveObservations()
+                onStatus("Task ${task.id} failed: ${err}")
                 ToolResult(false, null)
             }
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
                     observations[task.id] = result.observation
+                    saveObservations()
                     val preview = result.observation.take(800)
                     onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                 }
                 markTaskDone(task.id)
-                onStatus("Task ${'$'}{task.id}: done")
+                onStatus("Task ${task.id}: done")
                 // Refresh persisted plan statuses after each task
                 persistPlanWithStatuses(plan)
             } else {
                 if (!observations.containsKey(task.id)) {
                     observations[task.id] = "failed without exception"
+                    saveObservations()
                 }
-                onStatus("Task ${'$'}{task.id}: failed")
+                onStatus("Task ${task.id}: failed")
                 return
             }
         }

@@ -193,7 +193,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                             showWdMenu = false
-                            postStatus("Workspace set to: $path")
+                            postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
                     )
                 }
@@ -207,7 +207,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                             showWdMenu = false
-                            postStatus("Workspace set to: $path")
+                            postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
                     )
                 }
@@ -281,7 +281,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     scope.launch(Dispatchers.IO) {
                         try {
                             isPlanning.value = true
-                            messages.add(ChatMessage("assistant", "Planning…"))
+                            messages.add(ChatMessage("assistant", "Planning… (stateless, JSON-only)"))
                             val plan = agent.generatePlan(goal)
                             if (plan == null) {
                                 postStatus("Could not parse plan from AI.")
@@ -385,7 +385,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         currentWd.value = path
                         svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                         showFolderPicker = false
-                        postStatus("Workspace set to: $path")
+                        postStatus("Workspace set to: $path (agent will use absolute paths)")
                     }) { Text("Use this folder") }
                 },
                 dismissButton = {

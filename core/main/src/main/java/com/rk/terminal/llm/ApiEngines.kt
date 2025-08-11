@@ -41,10 +41,15 @@ object OpenAIEngine : LlmEngine {
             val base = Settings.api_base_url.trim().ifBlank { "https://api.openai.com" }.removeSuffix("/")
             val url = "$base/v1/chat/completions"
             val model = Settings.api_model.ifBlank { "gpt-4o-mini" }
+            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
             val bodyJson = JSONObject().apply {
                 put("model", model)
                 put("stream", true)
                 put("messages", buildChatHistoryArray(messages))
+                if (forceJson) {
+                    put("response_format", JSONObject().put("type", "json_object"))
+                    put("temperature", 0)
+                }
             }
             val reqBody: RequestBody = bodyJson.toString().toRequestBody("application/json".toMediaType())
             val req = Request.Builder()
