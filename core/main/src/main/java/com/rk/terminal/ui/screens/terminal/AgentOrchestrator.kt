@@ -58,6 +58,12 @@ class AgentOrchestrator(
         val tasks: List<MiniTask>
     )
 
+    data class ThinkResult(
+        val producedPlan: Plan? = null,
+        val answer: String? = null,
+        val blueprintPath: String? = null
+    )
+
     private val agentDir: File by lazy {
         // Store per chat session
         File(application!!.filesDir, "chat/${sessionId}").apply { mkdirs() }
@@ -67,6 +73,7 @@ class AgentOrchestrator(
     private val observationsFile: File by lazy { File(agentDir, "observations.json") }
     private val commandsCacheFile: File by lazy { File(agentDir, "commands.json") }
     private val miniPlanFile: File by lazy { File(agentDir, "miniPlan.json") }
+    private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
@@ -97,6 +104,12 @@ class AgentOrchestrator(
         runCatching {
             if (!miniPlanFile.exists()) {
                 miniPlanFile.writeText(JSONObject().put("plans", JSONObject()).toString(2))
+            }
+        }
+        // Ensure blueprint file placeholder exists (optional)
+        runCatching {
+            if (!blueprintFile.exists()) {
+                blueprintFile.writeText("{}")
             }
         }
     }
@@ -361,6 +374,196 @@ class AgentOrchestrator(
         return false
     }
 
+    // ===================== THINK & ACT (Adaptive) =====================
+    private suspend fun classifyUserIntent(prompt: String, workspaceInfo: String): JSONObject = withContext(Dispatchers.IO) {
+        val sys = """
+            Classify the user's request into one intent. Return ONLY JSON:
+            {"intent": "error_diagnosis"|"question_analysis"|"project_bootstrap"|"feature_addition"|"plan_and_execute", "why": string}
+        """.trimIndent()
+        val user = """
+            Prompt: ${prompt}
+            Workspace snapshot: ${workspaceInfo}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: "{"intent":"plan_and_execute"}"
+        return@withContext runCatching { JSONObject(jsonText) }.getOrElse { JSONObject().put("intent", "plan_and_execute") }
+    }
+
+    private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
+        val sys = """
+            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands.
+            Schema examples same as earlier. Output must be one minified JSON object.
+        """.trimIndent()
+        val wd = workingDirProvider()
+        val user = """
+            Working directory: ${wd}
+            Context: ${contextNote}
+            Prior signals: ${(observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(200)}" }).ifBlank { "(none)" }}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val type = obj.optString("type")
+        val args = obj.optJSONObject("args") ?: JSONObject()
+        return@withContext ToolCall(type, args)
+    }
+
+    private suspend fun requestBlueprint(prompt: String, workspaceInfo: String): String? = withContext(Dispatchers.IO) {
+        val sys = """
+            Produce a concise, well-structured project blueprint as minified JSON and nothing else.
+            Shape: {"name": string, "summary": string, "stack": {"lang": string, "frameworks": [string...]}, "modules": [{"id": string, "name": string, "responsibilities": [string...] }], "apis": [{"name": string, "endpoints":[{"path": string, "method": string, "desc": string}]}]}
+            Keep it small but thoughtful; it will guide subsequent planning.
+        """.trimIndent()
+        val user = """
+            Goal: ${prompt}
+            Workspace snapshot: ${workspaceInfo}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        blueprintFile.writeText(jsonText)
+        return@withContext blueprintFile.absolutePath
+    }
+
+    private suspend fun answerQuestionFromObservations(prompt: String): String = withContext(Dispatchers.IO) {
+        val sys = """
+            You are given prior observations from a repository; answer the user's question concisely.
+            Answer in plain text, cite filenames or paths inline when helpful.
+        """.trimIndent()
+        val obs = observations.entries.joinToString("\n\n") { (k, v) -> "[${k}]\n${v.take(4000)}" }
+        val user = """
+            Question: ${prompt}
+            Observations:
+            ${obs.ifBlank { "(none)" }}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        return@withContext content
+    }
+
+    private suspend fun generatePlanWithContext(userGoal: String, extraContext: String?): Plan? = withContext(Dispatchers.IO) {
+        runCatching { if (progressFile.exists()) progressFile.delete() }
+        observations.clear()
+        saveObservations()
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        val sys = """
+            You are an autonomous software agent that plans work as structured JSON only.
+            Return ONLY a minified JSON object with the following shape and nothing else:
+            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
+            - ids unique short strings (e.g., t1, t2)
+            - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - front-load discovery; prefer precise scopes; idempotent modifications
+            - Do not include code in the plan
+        """.trimIndent()
+        val user = """
+            Goal: ${userGoal}
+            Working directory: ${wdPath}
+            Workspace snapshot (top-level): ${workspaceInfo}
+            Extra context: ${extraContext ?: "(none)"}
+        """.trimIndent()
+        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+        val content = collectAll(flow)
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
+        val goal = obj.optString("goal").ifBlank { userGoal }
+        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+        val tasks = mutableListOf<Task>()
+        for (i in 0 until tasksArr.length()) {
+            val t = tasksArr.optJSONObject(i) ?: continue
+            val id = t.optString("id").ifBlank { "t${i + 1}" }
+            val desc = t.optString("description")
+            val cat = t.optString("category").ifBlank { null }
+            val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+            if (desc.isNotBlank()) tasks.add(Task(id, desc, cat, targets, search, markers))
+        }
+        val plan = Plan(goal, tasks)
+        persistPlanWithStatuses(plan)
+        return@withContext plan
+    }
+
+    suspend fun thinkAndAct(prompt: String, onStatus: (String) -> Unit): ThinkResult {
+        val wdPath = workingDirProvider()
+        val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        onStatus("Thinking about intent…")
+        val intentObj = classifyUserIntent(prompt, workspaceInfo)
+        val intent = intentObj.optString("intent", "plan_and_execute")
+        onStatus("Intent: ${intent}")
+        when (intent) {
+            "error_diagnosis" -> {
+                onStatus("Diagnosing error via discovery loop…")
+                var steps = 0
+                while (steps < 10) {
+                    val tc = requestDiscoveryToolCall("error-diagnosis for: ${prompt}") ?: break
+                    val result = executeToolCall(tc)
+                    val key = "think:error:${steps+1}:${tc.type}"
+                    if (result.observation != null) {
+                        observations[key] = result.observation
+                        saveObservations()
+                        onStatus("Observed (${tc.type}): ${result.observation.take(600)}${if ((result.observation?.length ?: 0) > 600) " …" else ""}")
+                    }
+                    steps++
+                    if (!isDiscoveryTool(tc.type)) break
+                }
+                onStatus("Asking AI for remediation plan…")
+                val plan = generatePlanWithContext(prompt, observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(1000)}" })
+                return ThinkResult(producedPlan = plan)
+            }
+            "question_analysis" -> {
+                onStatus("Investigating repository to answer question…")
+                var steps = 0
+                while (steps < 8) {
+                    val tc = requestDiscoveryToolCall("question-analysis for: ${prompt}") ?: break
+                    val result = executeToolCall(tc)
+                    val key = "think:qa:${steps+1}:${tc.type}"
+                    if (result.observation != null) {
+                        observations[key] = result.observation
+                        saveObservations()
+                        onStatus("Observed (${tc.type})")
+                    }
+                    steps++
+                }
+                val answer = answerQuestionFromObservations(prompt)
+                onStatus(answer.take(1200))
+                return ThinkResult(answer = answer)
+            }
+            "project_bootstrap" -> {
+                onStatus("Drafting blueprint…")
+                val bpPath = requestBlueprint(prompt, workspaceInfo)
+                if (bpPath != null) onStatus("Blueprint saved: ${bpPath}") else onStatus("Blueprint not produced")
+                val bpText = runCatching { blueprintFile.readText() }.getOrElse { "{}" }
+                onStatus("Planning using blueprint…")
+                val plan = generatePlanWithContext(prompt, bpText)
+                return ThinkResult(producedPlan = plan, blueprintPath = bpPath)
+            }
+            "feature_addition" -> {
+                onStatus("Analyzing project for feature addition…")
+                var steps = 0
+                while (steps < 10) {
+                    val tc = requestDiscoveryToolCall("feature-addition context for: ${prompt}") ?: break
+                    val result = executeToolCall(tc)
+                    val key = "think:feature:${steps+1}:${tc.type}"
+                    if (result.observation != null) {
+                        observations[key] = result.observation
+                        saveObservations()
+                        onStatus("Observed (${tc.type})")
+                    }
+                    steps++
+                }
+                onStatus("Planning feature implementation…")
+                val plan = generatePlanWithContext(prompt, observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(1000)}" })
+                return ThinkResult(producedPlan = plan)
+            }
+            else -> {
+                onStatus("Generating plan…")
+                val plan = generatePlanWithContext(prompt, runCatching { blueprintFile.readText() }.getOrNull())
+                return ThinkResult(producedPlan = plan)
+            }
+        }
+    }
+
     private fun loadProgress(): JSONObject {
         return runCatching { JSONObject(progressFile.takeIf { it.exists() }?.readText().orEmpty()) }
             .getOrElse { JSONObject() }
@@ -541,17 +744,8 @@ class AgentOrchestrator(
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
-                onStatus("Task ${task.id} failed: ${err}; deciding remediation…")
-                val decision = decideRemediationAction(plan.goal, task, "tool_error:${err}")
-                when (decision) {
-                    "mini_plan" -> {
-                        val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; return@while }
-                        else return false
-                    }
-                    "retry" -> { stepsTaken++; return@while }
-                    else -> { return false }
-                }
+                onStatus("Task ${task.id} failed: ${err}")
+                ToolResult(false, null)
             }
 
             if (result.ok) {

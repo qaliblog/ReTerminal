@@ -330,6 +330,36 @@ fun ChatView(mainActivityActivity: MainActivity) {
         ) {
             Button(
                 onClick = {
+                    val prompt = input.trim()
+                    if (prompt.isEmpty()) return@Button
+                    input = ""
+                    messages.add(ChatMessage("user", prompt))
+                    messages.add(ChatMessage("assistant", "Thinking…"))
+                    saveHistory()
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val result = agent.thinkAndAct(prompt) { s ->
+                                scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                            }
+                            if (result.producedPlan != null) {
+                                scope.launch(Dispatchers.Main) { activePlan.value = result.producedPlan }
+                                postStatus("Plan ready: ${result.producedPlan.tasks.size} task(s). Press Proceed to run.")
+                            } else if (!result.answer.isNullOrBlank()) {
+                                postStatus(result.answer)
+                            } else {
+                                postStatus("No actionable result from think-and-act.")
+                            }
+                            saveHistory()
+                        } catch (e: Exception) {
+                            postStatus("Agent error: ${e.message}")
+                        }
+                    }
+                },
+                enabled = input.isNotBlank() && !isPlanning.value
+            ) { Text("Think") }
+
+            Button(
+                onClick = {
                     val goal = input.trim()
                     if (goal.isEmpty() || isPlanning.value) return@Button
                     input = ""
