@@ -200,7 +200,6 @@ fun ChatView(mainActivityActivity: MainActivity) {
             if (looksLikeBinary) {
                 gitBin = pathField
                 gitPath = java.io.File(pathField).parent
-                savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode, gitBin = gitBin, gitPath = gitPath)
                 appendGitLog("Detected git binary path; using $gitBin and PATH=${gitPath}")
             }
         }
