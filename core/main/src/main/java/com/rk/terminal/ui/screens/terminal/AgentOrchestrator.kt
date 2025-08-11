@@ -425,7 +425,7 @@ class AgentOrchestrator(
     private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
             Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands, run_shell.
-            Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release; command -v apt dnf yum pacman apk; command -v python3 python node npm; which gcc g++; echo $SHELL; echo $PATH.
+            Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release; command -v apt dnf yum pacman apk; command -v python3 python node npm; which gcc g++; echo ${'$'}SHELL; echo ${'$'}PATH.
             Schema examples same as earlier. Output must be one minified JSON object.
         """.trimIndent()
         val wd = workingDirProvider()
@@ -996,7 +996,7 @@ class AgentOrchestrator(
             - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
             - When context is missing, propose the minimal discovery call to fetch it.
             - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
-              uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo $SHELL; echo $PATH
+              uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
             - Return pure JSON on a single line without explanations.
         """.trimIndent()
         val wd = workingDirProvider()
