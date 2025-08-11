@@ -4,8 +4,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +28,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -40,8 +45,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import com.rk.terminal.llm.LlmProvider
 import java.io.File
@@ -111,6 +114,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     // Agent state
     val activePlan = remember(currentChatId.value) { mutableStateOf<AgentOrchestrator.Plan?>(null) }
     val isPlanning = remember { mutableStateOf(false) }
+    var autoRun by remember { mutableStateOf(false) }
 
     // Single agent instance per chat session id
     val agent = remember(currentChatId.value) {
@@ -170,6 +174,58 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         }
 
+        // Plan panel
+        if (hasPlan) {
+            val plan = activePlan.value!!
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Plan", style = MaterialTheme.typography.titleSmall)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Auto-run")
+                            Switch(checked = autoRun, onCheckedChange = { autoRun = it })
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    val statuses = agent.getPlanStatuses()
+                    plan.tasks.take(12).forEach { t ->
+                        val st = statuses[t.id] ?: "pending"
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("${t.id}: ${t.description}")
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    AssistChip(onClick = {}, label = { Text(st) }, colors = AssistChipDefaults.assistChipColors())
+                                    if (!t.category.isNullOrBlank()) AssistChip(onClick = {}, label = { Text(t.category!!) })
+                                }
+                            }
+                            Button(onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    val success = agent.executeNextTask(plan) { s ->
+                                        scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                                    }
+                                    if (!success) {
+                                        val updated = agent.requestUpdatedPlan(plan)
+                                        if (updated != null) {
+                                            scope.launch(Dispatchers.Main) { activePlan.value = updated; postStatus("Plan updated."); saveHistory() }
+                                        }
+                                    } else if (autoRun) {
+                                        // trigger next automatically
+                                        this.launch { /* no-op, user can press Proceed or keep auto-run */ }
+                                    }
+                                }
+                            }) { Text("Run") }
+                        }
+                    }
+                    if (plan.tasks.size > 12) {
+                        Text("… and ${plan.tasks.size - 12} more", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+
         // Row 1: Chat session selector + Input + Send
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -193,7 +249,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                             showWdMenu = false
-                            postStatus("Workspace set to: $path")
+                            postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
                     )
                 }
@@ -207,7 +263,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             currentWd.value = path
                             svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                             showWdMenu = false
-                            postStatus("Workspace set to: $path")
+                            postStatus("Workspace set to: $path (agent will use absolute paths)")
                         }
                     )
                 }
@@ -281,7 +337,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     scope.launch(Dispatchers.IO) {
                         try {
                             isPlanning.value = true
-                            messages.add(ChatMessage("assistant", "Planning…"))
+                            messages.add(ChatMessage("assistant", "Planning… (stateless, JSON-only)"))
                             val plan = agent.generatePlan(goal)
                             if (plan == null) {
                                 postStatus("Could not parse plan from AI.")
@@ -309,8 +365,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
                             }
                             if (!success) {
-                                // After a failure or no pending task, automatically ask the AI to update the plan
-                                scope.launch(Dispatchers.Main) { postStatus("Attempting to update plan based on the error…"); saveHistory() }
+                                scope.launch(Dispatchers.Main) { postStatus("Attempting to update plan based on the error or loop prevention…"); saveHistory() }
                                 val updated = agent.requestUpdatedPlan(plan)
                                 if (updated == null) {
                                     scope.launch(Dispatchers.Main) { postStatus("Could not update plan."); saveHistory() }
@@ -385,7 +440,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         currentWd.value = path
                         svc?.fileManagerWorkingDirBySession?.set(sessionId, path)
                         showFolderPicker = false
-                        postStatus("Workspace set to: $path")
+                        postStatus("Workspace set to: $path (agent will use absolute paths)")
                     }) { Text("Use this folder") }
                 },
                 dismissButton = {
