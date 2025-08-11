@@ -32,7 +32,10 @@ class AgentOrchestrator(
     data class Task(
         val id: String,
         val description: String,
-        val category: String? = null
+        val category: String? = null,
+        val targets: List<String>? = null,   // optional absolute/relative paths or globs
+        val search: List<String>? = null,    // optional regex patterns to grep
+        val markers: List<String>? = null    // optional markers to locate sections
     )
 
     data class Plan(
@@ -157,7 +160,10 @@ class AgentOrchestrator(
 
     private fun computePlanSignature(plan: Plan): String {
         val sb = StringBuilder()
-        plan.tasks.forEach { sb.append(it.id).append('|').append(it.category ?: "").append('|').append(it.description).append('\n') }
+        plan.tasks.forEach { sb.append(it.id).append('|').append(it.category ?: "").append('|').append(it.description).append('|')
+            .append(it.targets?.joinToString(",") ?: "").append('|')
+            .append(it.search?.joinToString(",") ?: "").append('|')
+            .append(it.markers?.joinToString(",") ?: "").append('\n') }
         return sb.toString().hashCode().toString()
     }
 
@@ -203,6 +209,9 @@ class AgentOrchestrator(
                 put("id", t.id)
                 put("description", t.description)
                 if (t.category != null) put("category", t.category)
+                if (!t.targets.isNullOrEmpty()) put("targets", JSONArray(t.targets))
+                if (!t.search.isNullOrEmpty()) put("search", JSONArray(t.search))
+                if (!t.markers.isNullOrEmpty()) put("markers", JSONArray(t.markers))
                 put("status", taskStatus(t.id))
             })
         }
@@ -344,12 +353,12 @@ class AgentOrchestrator(
 
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            You are orchestrating a short inner loop to complete the current task.
-            The API is stateless. Never rely on hidden memory. Use ONLY the provided goal, task, working directory and observations.
+            You orchestrate a short inner loop to complete the current task using the available tools.
+            The API is stateless. Never rely on hidden memory. Use ONLY the provided goal, task, working directory, observations, and optional task hints.
             Return ONLY a single minified JSON object describing ONE tool call to move the task forward.
             Allowed schemas:
             {"type":"create_file","args":{"path": string}}
-            {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append"}}
+            {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean}}
             {"type":"make_dir","args":{"path": string}}
             {"type":"run_shell","args":{"command": string}}
             {"type":"get_cached_command_output","args":{"command": string, "max_age_ms": number}}
@@ -368,31 +377,38 @@ class AgentOrchestrator(
                 {"path": string, "op": "replace_exact", "old": string, "new": string},
                 {"path": string, "op": "replace_between_markers", "start_marker": string, "end_marker": string, "new_content": string, "include_markers": false},
                 {"path": string, "op": "insert_after_anchor", "anchor": string, "new_content": string},
-                {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string}
+                {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string},
+                {"path": string, "op": "replace_regex", "pattern": string, "replacement": string, "unique": boolean},
+                {"path": string, "op": "ensure_block_present", "block": string, "idempotent_marker": string, "anchor_before": string, "anchor_after": string},
+                {"path": string, "op": "append_once", "block": string, "idempotent_marker": string},
+                {"path": string, "op": "write_if_missing", "content": string}
             ]}}
-            Rules:
-            - Prefer ABSOLUTE paths. When ambiguous, resolve relative paths against the working directory and then output absolute.
-            - When writing source code that implements the goal, include the full file content in "content" for write_file. Do not use placeholders.
-            - For updating existing files, prefer apply_changes with minimal edits over sending full file content. Use unique anchors and exact old text for precise replacements.
-            - Consider the provided observations from prior steps. If a relevant file's content has already been observed, propose the write/apply_changes directly.
-            - If the task's category suggests discovery (e.g., read, list, grep) and you lack the relevant observation, propose a discovery call first.
-            - If the task's category suggests modification (e.g., write/apply_changes), and needed context is missing, first propose a minimal discovery call to fetch it.
-            - For multi-file reads, keep limits small and targeted (e.g., max_files<=50, max_bytes<=65536) to avoid overload.
-            - Prefer retrieving cached shell output via get_cached_command_output when reusing recent command results instead of re-running heavy commands.
-            - Do not return markdown code fences. Return pure JSON on a single line.
-            - Do not include explanations.
+            Tool ordering guidance:
+            - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
+            - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
+            - Use get_cached_command_output before re-running heavy run_shell.
+            - For multi-file reads, keep limits small and targeted.
+            - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
+            - When context is missing, propose the minimal discovery call to fetch it.
+            - Return pure JSON on a single line without explanations.
         """.trimIndent()
         val wd = workingDirProvider()
         val prior = if (observations.isEmpty()) "(none)" else observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(500)}${if (v.length > 500) " …" else ""}" }
+        val hints = buildString {
+            if (!task.targets.isNullOrEmpty()) append("targets: ").append(task.targets.joinToString(", ")).append('\n')
+            if (!task.search.isNullOrEmpty()) append("search: ").append(task.search.joinToString(", ")).append('\n')
+            if (!task.markers.isNullOrEmpty()) append("markers: ").append(task.markers.joinToString(", ")).append('\n')
+        }.ifBlank { "(none)" }
         val prompt = """
             Goal: ${goal}
             Working directory: ${wd}
             Current task id: ${task.id}
             Task: ${task.description}
             Task category: ${task.category ?: "unspecified"}
+            Task hints: ${hints}
             Prior observations (latest first):
             ${prior}
-            Produce one tool call JSON now, following the Rules and leveraging the observations to avoid redundant discovery.
+            Produce one tool call JSON now, following the Rules and leveraging hints and observations to avoid redundant discovery.
         """.trimIndent()
         val flow = LlmProvider.current().generate(
             listOf(
@@ -432,9 +448,13 @@ class AgentOrchestrator(
                 val path = tc.args.optString("path")
                 val content = tc.args.optString("content")
                 val mode = tc.args.optString("mode", "overwrite")
+                val ifNotExists = tc.args.optBoolean("if_not_exists", false)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 ensureParentDirs(f)
+                if (ifNotExists && f.exists()) {
+                    return ToolResult(true, "skipped_write_existing:${f.absolutePath}")
+                }
                 if (mode == "append" && f.exists()) {
                     f.appendText(content)
                 } else {
@@ -722,7 +742,17 @@ class AgentOrchestrator(
                     val path = e.optString("path")
                     if (path.isBlank()) { results.add("edit[$i]: missing path"); continue }
                     val file = resolvePath(path)
-                    if (!file.exists()) { results.add("edit[$i]: file missing: ${file.path}"); continue }
+                    if (!file.exists()) {
+                        // allow write_if_missing as part of apply_changes
+                        if (op == "write_if_missing") {
+                            val content = e.optString("content")
+                            ensureParentDirs(file)
+                            file.writeText(content)
+                            results.add("edit[$i]: created (${path})")
+                            continue
+                        }
+                        results.add("edit[$i]: file missing: ${file.path}"); continue
+                    }
                     val original = runCatching { file.readText() }.getOrElse { "" }
                     val updated = when (op) {
                         "replace_exact" -> {
@@ -772,6 +802,52 @@ class AgentOrchestrator(
                             if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
                                 original.substring(0, aIdx) + newContent + original.substring(aIdx)
                             }
+                        }
+                        "replace_regex" -> {
+                            val pattern = e.optString("pattern")
+                            val replacement = e.optString("replacement")
+                            val unique = e.optBoolean("unique", true)
+                            if (pattern.isBlank()) { results.add("edit[$i]: pattern empty"); null } else {
+                                val regex = runCatching { Regex(pattern) }.getOrElse { Regex(Pattern.quote(pattern)) }
+                                val count = regex.findAll(original).count()
+                                if (unique && count != 1) { results.add("edit[$i]: non-unique matches=$count"); null } else {
+                                    original.replace(regex, replacement)
+                                }
+                            }
+                        }
+                        "ensure_block_present" -> {
+                            val block = e.optString("block")
+                            val idMarker = e.optString("idempotent_marker")
+                            val before = e.optString("anchor_before")
+                            val after = e.optString("anchor_after")
+                            val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
+                            if (contains) {
+                                results.add("edit[$i]: already present")
+                                null
+                            } else {
+                                when {
+                                    before.isNotBlank() -> {
+                                        val idx = original.indexOf(before)
+                                        if (idx < 0) { results.add("edit[$i]: anchor_before not found"); null } else {
+                                            original.substring(0, idx) + block + original.substring(idx)
+                                        }
+                                    }
+                                    after.isNotBlank() -> {
+                                        val idx = original.indexOf(after)
+                                        if (idx < 0) { results.add("edit[$i]: anchor_after not found"); null } else {
+                                            val pos = idx + after.length
+                                            original.substring(0, pos) + block + original.substring(pos)
+                                        }
+                                    }
+                                    else -> original + block
+                                }
+                            }
+                        }
+                        "append_once" -> {
+                            val block = e.optString("block")
+                            val idMarker = e.optString("idempotent_marker")
+                            val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
+                            if (contains) { results.add("edit[$i]: already present"); null } else original + block
                         }
                         else -> { results.add("edit[$i]: unknown op ${op}"); null }
                     }
@@ -864,15 +940,15 @@ class AgentOrchestrator(
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
         val sys = """
             You are an autonomous software agent that plans work as structured JSON only.
-            The API is stateless; never rely on hidden memory. Use the provided goal and workspace snapshot.
+            The API is stateless; never rely on hidden memory. Design the plan to front-load discovery, order tools well, and include optional hints to guide the inner loop.
             Return ONLY a minified JSON object with the following shape and nothing else:
-            {"goal": string, "tasks": [{"id": string, "category": string, "description": string}, ...]}
+            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             - ids must be unique short strings (e.g., t1, t2, t3)
             - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
             - descriptions must be concrete and atomic
-            - Include discovery tasks when needed (list_dir/read_file/grep) before modification tasks (write_file/apply_changes).
-            - If a task requires reading then fixing a file, categorize the task based on the dominant action (e.g., apply_changes), and the inner loop will do discovery first if needed.
-            - Prefer minimal, safe, idempotent steps.
+            - Include discovery tasks (list_dir_recursive/grep/read_files_glob) before modification tasks (apply_changes/write_file) and prefer precise scopes
+            - Optional fields (targets/search/markers) should propose concrete globs, regexes, or section markers you expect to use, to prevent disruption if memory is truncated later
+            - Prefer minimal, safe, idempotent steps
             - Do not include code in the plan. Code will be generated later via tool calls.
         """.trimIndent()
         val user = """
@@ -897,8 +973,11 @@ class AgentOrchestrator(
                 val id = t.optString("id").ifBlank { "t${i + 1}" }
                 val desc = t.optString("description")
                 val cat = t.optString("category").ifBlank { null }
+                val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
                 if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc, cat))
+                    tasks.add(Task(id, desc, cat, targets, search, markers))
                 }
             }
         }
@@ -974,13 +1053,14 @@ class AgentOrchestrator(
         }.toString()
         val sys = """
             You update task plans. Return ONLY a minified JSON with shape:
-            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "status": "done"|"pending"}, ...]}
+            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "status": "done"|"pending", "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             Rules:
             - Keep ids stable for already completed tasks and mark them status:"done".
             - For failed tasks, either refine them into safer, smaller discovery steps or replace them.
             - You may add, remove, or edit pending tasks if needed.
             - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
             - Prefer minimal safe changes. Avoid repeating identical discovery without new signals.
+            - Include optional hints (targets/search/markers) to guide discovery and precise editing in a stateless environment.
             - Do not include explanations.
         """.trimIndent()
         val user = """
@@ -1005,8 +1085,11 @@ class AgentOrchestrator(
                 val id = t.optString("id").ifBlank { "t${i + 1}" }
                 val desc = t.optString("description")
                 val cat = t.optString("category").ifBlank { null }
+                val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
                 if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc, cat))
+                    tasks.add(Task(id, desc, cat, targets, search, markers))
                 }
             }
         }
