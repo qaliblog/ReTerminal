@@ -532,12 +532,7 @@ class AgentOrchestrator(
             Workspace snapshot (top-level): ${workspaceInfo}
             Extra context: ${extraContext ?: "(none)"}
         """.trimIndent()
-        val flow = LlmProvider.current().generate(
-            listOf(
-                LlmMessage("system", sys),
-                LlmMessage("user", user)
-            )
-        )
+        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
@@ -555,6 +550,14 @@ class AgentOrchestrator(
             if (desc.isNotBlank()) {
                 tasks.add(Task(id, desc, cat, targets, search, markers))
             }
+        }
+        if (tasks.isEmpty()) {
+            // Fallback minimal discovery plan to avoid zero-task output
+            val fallback = mutableListOf<Task>()
+            fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
+            fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
+            fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+            tasks.addAll(fallback)
         }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
@@ -1897,6 +1900,13 @@ class AgentOrchestrator(
                     tasks.add(Task(id, desc, cat, targets, search, markers))
                 }
             }
+        }
+        if (tasks.isEmpty()) {
+            val fallback = mutableListOf<Task>()
+            fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
+            fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
+            fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+            tasks.addAll(fallback)
         }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
