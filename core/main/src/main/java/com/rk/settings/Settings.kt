@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.os.Build
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.pm.PackageInfoCompat
 import com.rk.components.compose.preferences.normal.Preference
@@ -33,7 +34,7 @@ object Settings {
         set(value) = Preference.setBoolean(key = "github",value)
 
 
-   var default_night_mode
+    var default_night_mode
         get() = Preference.getInt(key = "default_night_mode", default = AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
         set(value) = Preference.setInt(key = "default_night_mode",value)
 
@@ -112,17 +113,104 @@ object Settings {
     var api_model
         get() = Preference.getString(key = "api_model", default = "gpt-4o-mini")
         set(value) = Preference.setString(key = "api_model", value)
+
+    // Helper agent toggle
+    var helper_agent_enabled
+        get() = Preference.getBoolean(key = "helper_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "helper_agent_enabled", value)
+
+    // Optional overrides that helper can set ephemerally
+    var ai_max_tokens
+        get() = Preference.getInt(key = "ai_max_tokens", default = 1024)
+        set(value) = Preference.setInt(key = "ai_max_tokens", value)
+
+    var ai_temperature_str
+        get() = Preference.getString(key = "ai_temperature_str", default = "")
+        set(value) = Preference.setString(key = "ai_temperature_str", value)
+
+    // Codebase agent
+    var codebase_agent_enabled
+        get() = Preference.getBoolean(key = "codebase_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "codebase_agent_enabled", value)
+
+    var codebase_cache_path
+        get() = Preference.getString(key = "codebase_cache_path", default = "codebase_cache.json")
+        set(value) = Preference.setString(key = "codebase_cache_path", value)
+
+    // Informative agent
+    var informative_agent_enabled
+        get() = Preference.getBoolean(key = "informative_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "informative_agent_enabled", value)
+
+    // Researcher agent
+    var researcher_agent_enabled
+        get() = Preference.getBoolean(key = "researcher_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "researcher_agent_enabled", value)
+
+    // Writer agent
+    var writer_agent_enabled
+        get() = Preference.getBoolean(key = "writer_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "writer_agent_enabled", value)
 }
 
 object Preference {
     private var sharedPreferences: SharedPreferences = application!!.getSharedPreferences("Settings", Context.MODE_PRIVATE)
 
     //store the result into memory for faster access
-    private val stringCache = hashMapOf<String, String?>()
-    private val boolCache = hashMapOf<String, Boolean>()
-    private val intCache = hashMapOf<String, Int>()
-    private val longCache = hashMapOf<String, Long>()
-    private val floatCache = hashMapOf<String, Float>()
+    private val memory = HashMap<String,Any>()
+    fun getBoolean(key: String,default: Boolean): Boolean{
+        return if (memory.containsKey(key) && memory[key] is Boolean) memory[key] as Boolean
+        else{
+            if (sharedPreferences.contains(key)){
+                val result = sharedPreferences.getBoolean(key,default)
+                memory[key] = result
+                result
+            }else{
+                memory[key] = default
+                sharedPreferences.getBoolean(key,default)
+            }
+        }
+    }
+    fun setBoolean(key: String,value: Boolean){
+        memory[key] = value
+        sharedPreferences.edit().putBoolean(key, value).apply()
+    }
+
+    fun getString(key: String,default: String): String{
+        return if (memory.containsKey(key) && memory[key] is String) memory[key] as String
+        else{
+            if (sharedPreferences.contains(key)){
+                val result = sharedPreferences.getString(key,default) ?: default
+                memory[key] = result
+                result
+            }else{
+                memory[key] = default
+                sharedPreferences.getString(key,default) ?: default
+            }
+        }
+    }
+    fun setString(key: String,value: String){
+        memory[key] = value
+        sharedPreferences.edit().putString(key, value).apply()
+    }
+
+    fun getInt(key: String,default: Int): Int{
+        return if (memory.containsKey(key) && memory[key] is Int) memory[key] as Int
+        else{
+            if (sharedPreferences.contains(key)){
+                val result = sharedPreferences.getInt(key,default)
+                memory[key] = result
+                result
+            }else{
+                memory[key] = default
+                sharedPreferences.getInt(key,default)
+            }
+        }
+    }
+    fun setInt(key: String,value: Int){
+        memory[key] = value
+        sharedPreferences.edit().putInt(key, value).apply()
+    }
 
     @SuppressLint("ApplySharedPref")
     fun clearData(){
@@ -133,144 +221,6 @@ object Preference {
         if (sharedPreferences.contains(key).not()){
             return
         }
-
         sharedPreferences.edit().remove(key).apply()
-
-        if (stringCache.containsKey(key)){
-            stringCache.remove(key)
-            return
-        }
-
-        if (boolCache.containsKey(key)){
-            boolCache.remove(key)
-            return
-        }
-
-        if (intCache.containsKey(key)){
-            intCache.remove(key)
-            return
-        }
-
-        if (longCache.containsKey(key)){
-            longCache.remove(key)
-            return
-        }
-
-        if (floatCache.containsKey(key)){
-            floatCache.remove(key)
-            return
-        }
     }
-
-    fun getBoolean(key: String, default: Boolean): Boolean {
-        runCatching {
-            return boolCache[key] ?: sharedPreferences.getBoolean(key, default)
-                .also { boolCache[key] = it }
-        }.onFailure {
-            it.printStackTrace()
-            setBoolean(key, default)
-        }
-        return default
-    }
-
-    fun setBoolean(key: String, value: Boolean) {
-        boolCache[key] = value
-        runCatching {
-            val editor = sharedPreferences.edit()
-            editor.putBoolean(key, value)
-            editor.apply()
-        }.onFailure { it.printStackTrace() }
-    }
-
-    
-    
-    fun getString(key: String, default: String): String {
-        runCatching {
-            return stringCache[key] ?: sharedPreferences.getString(key, default)!!
-                .also { stringCache[key] = it }
-        }.onFailure {
-            it.printStackTrace()
-            setString(key, default)
-        }
-        return default
-    }
-    fun setString(key: String, value: String?) {
-        stringCache[key] = value
-        runCatching {
-            val editor = sharedPreferences.edit()
-            editor.putString(key, value)
-            editor.apply()
-        }.onFailure {
-            it.printStackTrace()
-        }
-
-    }
-
-    fun getInt(key: String, default: Int): Int {
-        runCatching {
-            return intCache[key] ?: sharedPreferences.getInt(key, default)
-                .also { intCache[key] = it }
-        }.onFailure {
-            it.printStackTrace()
-            setInt(key, default)
-        }
-        return default
-    }
-
-    fun setInt(key: String, value: Int) {
-        intCache[key] = value
-        runCatching {
-            val editor = sharedPreferences.edit()
-            editor.putInt(key, value)
-            editor.apply()
-        }.onFailure {
-            it.printStackTrace()
-        }
-
-    }
-
-    fun getLong(key: String, default: Long): Long {
-        runCatching {
-            return longCache[key] ?: sharedPreferences.getLong(key, default)
-                .also { longCache[key] = it }
-        }.onFailure {
-            it.printStackTrace()
-            setLong(key, default)
-        }
-        return default
-    }
-
-    fun setLong(key: String, value: Long) {
-        longCache[key] = value
-        runCatching {
-            val editor = sharedPreferences.edit()
-            editor.putLong(key,value)
-            editor.apply()
-        }.onFailure {
-            it.printStackTrace()
-        }
-    }
-
-    fun getFloat(key: String, default: Float): Float {
-        runCatching {
-            return floatCache[key] ?: sharedPreferences.getFloat(key, default)
-                .also { floatCache[key] = it }
-        }.onFailure {
-            it.printStackTrace()
-            setFloat(key, default)
-        }
-        return default
-    }
-
-    fun setFloat(key: String, value: Float) {
-        floatCache[key] = value
-        runCatching {
-            val editor = sharedPreferences.edit()
-            editor.putFloat(key,value)
-            editor.apply()
-        }.onFailure {
-            it.printStackTrace()
-        }
-    }
-
 }

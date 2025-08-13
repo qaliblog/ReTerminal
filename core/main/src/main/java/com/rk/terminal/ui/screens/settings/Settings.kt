@@ -179,6 +179,113 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             }
         }
 
+        // Helper agent configuration
+        PreferenceGroup(heading = "Helper Agent") {
+            var enabled by remember { mutableStateOf(Settings.helper_agent_enabled) }
+            var maxTokens by remember { mutableIntStateOf(Settings.ai_max_tokens) }
+            var tempStr by remember { mutableStateOf(Settings.ai_temperature_str) }
+
+            SettingsToggle(
+                label = "Enable helper agent",
+                description = "Use a side helper to optimize prompts, tools, and AI settings",
+                showSwitch = true,
+                default = enabled,
+                sideEffect = { checked ->
+                    enabled = checked
+                    Settings.helper_agent_enabled = checked
+                }
+            )
+
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                OutlinedTextField(
+                    value = maxTokens.toString(),
+                    onValueChange = { v -> v.toIntOrNull()?.let { maxTokens = it; Settings.ai_max_tokens = it } },
+                    label = { Text("Max tokens override (optional)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = tempStr,
+                    onValueChange = { v -> tempStr = v; Settings.ai_temperature_str = v },
+                    label = { Text("Temperature override (e.g., 0, 0.2, 0.7)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+            }
+        }
+
+        // Informative agent configuration
+        PreferenceGroup(heading = "Informative Agent") {
+            var infoEnabled by remember { mutableStateOf(Settings.informative_agent_enabled) }
+            SettingsToggle(
+                label = "Enable informative agent",
+                description = "Adds richer task progress blurbs in chat",
+                showSwitch = true,
+                default = infoEnabled,
+                sideEffect = { checked ->
+                    infoEnabled = checked
+                    Settings.informative_agent_enabled = checked
+                }
+            )
+        }
+
+        // Researcher agent configuration
+        PreferenceGroup(heading = "Researcher Agent") {
+            var resEnabled by remember { mutableStateOf(Settings.researcher_agent_enabled) }
+            SettingsToggle(
+                label = "Enable researcher agent",
+                description = "Search docs/errors when debugging or investigating APIs",
+                showSwitch = true,
+                default = resEnabled,
+                sideEffect = { checked ->
+                    resEnabled = checked
+                    Settings.researcher_agent_enabled = checked
+                }
+            )
+        }
+
+        // Writer agent configuration
+        PreferenceGroup(heading = "Writer Agent") {
+            var wEnabled by remember { mutableStateOf(Settings.writer_agent_enabled) }
+            SettingsToggle(
+                label = "Enable writer agent",
+                description = "Suggests safest write tools and regex patterns for edits",
+                showSwitch = true,
+                default = wEnabled,
+                sideEffect = { checked ->
+                    wEnabled = checked
+                    Settings.writer_agent_enabled = checked
+                }
+            )
+        }
+
+        // Codebase agent configuration
+        PreferenceGroup(heading = "Codebase Agent") {
+            var cbEnabled by remember { mutableStateOf(Settings.codebase_agent_enabled) }
+            var cachePath by remember { mutableStateOf(Settings.codebase_cache_path) }
+
+            SettingsToggle(
+                label = "Enable codebase agent",
+                description = "Scan and analyze repo to build an overview and important files cache",
+                showSwitch = true,
+                default = cbEnabled,
+                sideEffect = { checked ->
+                    cbEnabled = checked
+                    Settings.codebase_agent_enabled = checked
+                }
+            )
+
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                OutlinedTextField(
+                    value = cachePath,
+                    onValueChange = { v -> cachePath = v; Settings.codebase_cache_path = v },
+                    label = { Text("Cache path (relative to workspace)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+            }
+        }
+
         PreferenceGroup {
             SettingsToggle(
                 label = "Customizations",

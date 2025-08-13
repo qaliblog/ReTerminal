@@ -11,8 +11,16 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import android.util.Base64
 import java.util.regex.Pattern
 import java.util.concurrent.TimeUnit
+import kotlin.math.min
+import com.rk.settings.Settings
+import java.util.ArrayDeque
 
 /**
  * Minimal agent orchestrator that:
@@ -103,11 +111,15 @@ class AgentOrchestrator(
     private val miniPlanFile: File by lazy { File(agentDir, "miniPlan.json") }
     private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
     private val cliReportFile: File by lazy { File(agentDir, "cli_report.json") }
+    private val writerToolsFile: File by lazy { File(agentDir, "writer_tools.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
     // Command output cache: key -> {command, wd, output, exit, ts}
     private val commandCache: MutableMap<String, JSONObject> = LinkedHashMap()
+    // Track workspace changes to refresh codebase cache
+    private val pendingCodebaseChanges: MutableSet<String> = linkedSetOf()
+    private var lastCodebaseRefreshMs: Long = 0L
 
     init {
         // Load persisted observations if available to make the agent resilient to restarts
@@ -141,6 +153,12 @@ class AgentOrchestrator(
         runCatching {
             if (!blueprintFile.exists()) {
                 blueprintFile.writeText("{}")
+            }
+        }
+        // Ensure writer tools suggestions store exists
+        runCatching {
+            if (!writerToolsFile.exists()) {
+                writerToolsFile.writeText(JSONObject().put("suggestions", JSONArray()).toString(2))
             }
         }
     }
@@ -289,7 +307,10 @@ class AgentOrchestrator(
             Failure note: ${failureNote}
             Prior observations: ${(observations[task.id] ?: "(none)").take(800)}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("remediation_decision", mapOf("task" to task.description.take(300)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext "mini_plan"
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext "mini_plan"
         val action = obj.optString("action").ifBlank { "mini_plan" }
@@ -308,7 +329,7 @@ class AgentOrchestrator(
             {"parent_task_id": string, "reason": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             Rules:
             - 2 to 6 concise steps max
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - Favor discovery-first then precise, idempotent edits
             - ids must be stable and short (m1, m2, ...)
             - No explanations beyond the 'reason' field
@@ -322,7 +343,10 @@ class AgentOrchestrator(
             Workspace snapshot: ${workspaceInfo}
             Prior observations: ${obsJson}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("mini_plan", mapOf("parent_task" to task.description.take(300)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val parent = obj.optString("parent_task_id").ifBlank { task.id }
@@ -417,15 +441,18 @@ class AgentOrchestrator(
             Prompt: ${prompt}
             Workspace snapshot: ${workspaceInfo}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("classify_intent", mapOf("prompt" to prompt.take(500)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: "{\"intent\":\"plan_and_execute\"}"
         return@withContext runCatching { JSONObject(jsonText) }.getOrElse { JSONObject().put("intent", "plan_and_execute") }
     }
 
     private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands, run_shell.
-            Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release; command -v apt dnf yum pacman apk; command -v python3 python node npm; which gcc g++; echo ${'$'}SHELL; echo ${'$'}PATH.
+            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, head_file, tail_file, read_file_chunk, read_file_section_by_markers, read_files_glob, stat_file, json_get, get_cached_command_output, list_cached_commands, run_shell.
+            Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH.
             Schema examples same as earlier. Output must be one minified JSON object.
         """.trimIndent()
         val wd = workingDirProvider()
@@ -434,7 +461,10 @@ class AgentOrchestrator(
             Context: ${contextNote}
             Prior signals: ${(observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(200)}" }).ifBlank { "(none)" }}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val msgs = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("discovery", mapOf("wd" to wd, "context" to contextNote))
+        applyHelperToMessages(reco, msgs)
+        val content = collectAll(LlmProvider.current().generate(msgs))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val type = obj.optString("type")
@@ -452,7 +482,10 @@ class AgentOrchestrator(
             Goal: ${prompt}
             Workspace snapshot: ${workspaceInfo}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("blueprint", mapOf("goal" to prompt.take(500)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         blueprintFile.writeText(jsonText)
         return@withContext blueprintFile.absolutePath
@@ -469,7 +502,10 @@ class AgentOrchestrator(
             Observations:
             ${obs.ifBlank { "(none)" }}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("qa_answer", mapOf("obs_preview" to obs.take(800)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         return@withContext content
     }
 
@@ -485,7 +521,7 @@ class AgentOrchestrator(
             Return ONLY a minified JSON object with the following shape and nothing else:
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             - ids unique short strings (e.g., t1, t2)
-            - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - front-load discovery; prefer precise scopes; idempotent modifications
             - If tasks involve running commands or installing dependencies, include an initial environment discovery step (OS flavor, package manager, runtime versions) using run_shell.
             - Do not include code in the plan
@@ -515,6 +551,14 @@ class AgentOrchestrator(
                 tasks.add(Task(id, desc, cat, targets, search, markers))
             }
         }
+        if (tasks.isEmpty()) {
+            // Fallback minimal discovery plan to avoid zero-task output
+            val fallback = mutableListOf<Task>()
+            fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
+            fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
+            fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+            tasks.addAll(fallback)
+        }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
         return@withContext plan
@@ -525,10 +569,23 @@ class AgentOrchestrator(
         val wdPath = workingDirProvider()
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        if (Settings.codebase_agent_enabled) {
+            runCatching { buildCodebaseCache(onStatus) }
+        }
+        // After executing a modifying tool, we already schedule cache upgrade via notifyWorkspaceChanged
+
+        // Apply any pending codebase cache upgrades due to file changes
+        performCodebaseUpgradeIfPending(onStatus)
         onStatus("Thinking about intent…")
         val intentObj = classifyUserIntent(prompt, workspaceInfo)
         val intent = intentObj.optString("intent", "plan_and_execute")
         onStatus("Intent: ${intent}")
+        // Search suggestion
+        if (Settings.helper_agent_enabled && promptSuggestsSearch(prompt)) {
+            onStatus("Search hint: query seems to need external info. Running search…")
+            val info = runSearchAgent(prompt, onStatus)
+            onStatus(info.take(1200))
+        }
         when (intent) {
             "error_diagnosis" -> {
                 onStatus("Diagnosing error via discovery loop…")
@@ -604,6 +661,86 @@ class AgentOrchestrator(
                 return ThinkResult(producedPlan = plan)
             }
         }
+    }
+
+    private suspend fun runSearchAgent(query: String, onStatus: (String) -> Unit): String = withContext(Dispatchers.IO) {
+        val suggestSys = """
+            You suggest 1-3 websites to consult for the given query. Return ONLY minified JSON:
+            {"sites": [{"url": string, "why": string}...]}
+        """.trimIndent()
+        val suggestUser = """
+            Query: ${query}
+            Prefer official docs, MDN, language/framework docs, reputable blogs.
+        """.trimIndent()
+        val suggestContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", suggestSys), LlmMessage("user", suggestUser))))
+        val suggestJson = extractFirstJsonObject(suggestContent)
+        val sites = runCatching { JSONObject(suggestJson).optJSONArray("sites") }.getOrNull() ?: JSONArray()
+        val fetched = JSONArray()
+        fun curl(url: String): String {
+            val cmd = "curl -L --max-time 15 --silent --show-error --compressed --user-agent 'Mozilla/5.0' '" + url.replace("'", "%27") + "'"
+            val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd)))
+            return res.observation ?: ""
+        }
+        val linkRegex = Regex("href=\"(https?://[^\"]+)\"", RegexOption.IGNORE_CASE)
+        val toVisit = ArrayDeque<String>()
+        for (i in 0 until sites.length()) {
+            val u = sites.optJSONObject(i)?.optString("url").orEmpty()
+            if (u.isNotBlank()) toVisit.add(u)
+        }
+        val visited = mutableSetOf<String>()
+        var pages = 0
+        while (toVisit.isNotEmpty() && pages < 3) {
+            val u = toVisit.removeFirst()
+            if (visited.contains(u)) continue
+            visited.add(u)
+            onStatus("Search: fetching ${u}")
+            val html = curl(u)
+            if (html.isNotBlank()) {
+                fetched.put(JSONObject().put("url", u).put("html", html.take(20000)))
+                // enqueue a couple more links from this page
+                linkRegex.findAll(html).take(2).forEach { m ->
+                    val link = m.groupValues[1]
+                    if (!visited.contains(link)) toVisit.add(link)
+                }
+                pages++
+            }
+        }
+        val synthSys = """
+            You synthesize concise, accurate information from fetched pages. Return ONLY text. Cite URLs inline.
+        """.trimIndent()
+        val bundle = (0 until fetched.length()).joinToString("\n\n") { idx ->
+            val o = fetched.getJSONObject(idx)
+            "URL: ${o.optString("url")}\nHTML:\n" + o.optString("html")
+        }
+        val synthUser = """
+            Query: ${query}
+            Fetched pages:
+            ${bundle}
+        """.trimIndent()
+        val final = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", synthSys), LlmMessage("user", synthUser))))
+        return@withContext final
+    }
+
+    private fun promptSuggestsSearch(prompt: String): Boolean {
+        val p = prompt.lowercase()
+        return listOf("what is", "how to", "error ", "exception ", "docs", "documentation", "api", "install", "tutorial").any { p.contains(it) }
+    }
+
+    private suspend fun researcherAssistIfNeeded(errorNote: String, latestObs: String?): String? = withContext(Dispatchers.IO) {
+        if (!Settings.researcher_agent_enabled) return@withContext null
+        val sys = """
+            You decide what to research to resolve an error.
+            Return ONLY minified JSON: {"query": string}
+        """.trimIndent()
+        val user = """
+            Error: ${errorNote}
+            Context: ${latestObs?.take(800) ?: "(none)"}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@withContext null
+        val q = obj.optString("query").ifBlank { null } ?: return@withContext null
+        return@withContext runSearchAgent(q) { }
     }
 
     private fun loadProgress(): JSONObject {
@@ -770,18 +907,18 @@ class AgentOrchestrator(
         var lastToolType: String? = null
         while (stepsTaken < maxSteps) {
             val toolCall = requestSingleToolCall(plan.goal, task)
-                         if (toolCall == null) {
-                 observations[task.id] = "could not determine action for this task"
-                 saveObservations()
-                 onStatus("Task ${task.id}: no action suggested; revising plan…")
-                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
-                 if (revised != null) {
-                     persistPlanWithStatuses(revised)
-                     endRunStatsAndReport(onStatus, verb = "thought")
-                     return true
-                 }
-                 onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                                 val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
+            if (toolCall == null) {
+                observations[task.id] = "could not determine action for this task"
+                saveObservations()
+                onStatus("Task ${task.id}: no action suggested; revising plan…")
+                val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
+                if (revised != null) {
+                    persistPlanWithStatuses(revised)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+                val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
                 when (decision) {
                     "mini_plan" -> {
                         val ok = executeMiniPlanForTask(plan, task, onStatus)
@@ -794,8 +931,12 @@ class AgentOrchestrator(
                     "retry" -> { stepsTaken++; continue }
                     else -> { return false }
                 }
-             }
-            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+            }
+            // Writer agent may refine write tool selections for modifying actions
+            val effectiveToolCall = if (isModifyingTool(toolCall.type) && Settings.writer_agent_enabled) {
+                runCatching { writerSuggestTool(plan.goal, task, toolCall) }.getOrNull() ?: toolCall
+            } else toolCall
+            val result = runCatching { executeToolCall(effectiveToolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
@@ -815,13 +956,25 @@ class AgentOrchestrator(
                     observations[task.id] = result.observation
                     saveObservations()
                     val preview = result.observation.take(800)
-                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    val info = informativeForTask(plan.goal, task, result.observation)
+                    if (info != null) {
+                        val what = info.optString("what").ifBlank { null }
+                        if (what != null) onStatus(what) else onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    } else {
+                        onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    }
                 }
 
                 // If the tool modified the workspace, consider the task complete.
-                if (isModifyingTool(toolCall.type)) {
+                if (isModifyingTool(effectiveToolCall.type)) {
                     markTaskDone(task.id)
-                    onStatus("Task ${task.id}: done")
+                    val info = informativeForTask(plan.goal, task, observations[task.id])
+                    if (info != null) {
+                        val success = info.optString("success").ifBlank { null }
+                        if (success != null) onStatus(success) else onStatus("Task ${task.id}: done")
+                    } else {
+                        onStatus("Task ${task.id}: done")
+                    }
                     // Ensure UI sees latest statuses
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
@@ -829,7 +982,7 @@ class AgentOrchestrator(
                 }
 
                 // If this is a discovery tool and the task category is discovery, complete the task now.
-                if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
+                if (isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
                     // Ensure UI sees latest statuses
@@ -840,7 +993,7 @@ class AgentOrchestrator(
 
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
-                if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
+                if (lastToolType == effectiveToolCall.type && obs != null && lastObservation == obs) {
                     markTaskFailed(task.id, "repeated_non_modifying_observation")
                     onStatus("Task ${task.id}: repeated observation; revising plan…")
                     val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
@@ -850,22 +1003,22 @@ class AgentOrchestrator(
                         return true
                     }
                     onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
-                when (decision) {
-                    "mini_plan" -> {
-                        val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
+                    when (decision) {
+                        "mini_plan" -> {
+                            val ok = executeMiniPlanForTask(plan, task, onStatus)
+                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                        }
+                        "revise_plan" -> {
+                            val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
+                            if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
+                        }
+                        "retry" -> { stepsTaken++; continue }
+                        else -> { return false }
                     }
-                    "revise_plan" -> {
-                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
-                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
-                    }
-                    "retry" -> { stepsTaken++; continue }
-                    else -> { return false }
-                }
                 }
                 lastObservation = result.observation ?: lastObservation
-                lastToolType = toolCall.type
+                lastToolType = effectiveToolCall.type
 
                 // Discovery-type call; iterate to request the next action using fresh observation
                 stepsTaken++
@@ -924,6 +1077,22 @@ class AgentOrchestrator(
         return r
     }
 
+    private suspend fun informativeForTask(planGoal: String, task: Task, lastObservation: String?): JSONObject? = withContext(Dispatchers.IO) {
+        if (!Settings.informative_agent_enabled) return@withContext null
+        val sys = """
+            You generate brief, friendly progress updates.
+            Return ONLY minified JSON: {"what": string, "success": string}
+        """.trimIndent()
+        val user = """
+            Goal: ${planGoal}
+            Task: ${task.id} - ${task.description}
+            Context: ${lastObservation?.take(600) ?: "(none)"}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        return@withContext runCatching { JSONObject(json) }.getOrNull()
+    }
+
     private data class ToolCall(
         val type: String,
         val args: JSONObject
@@ -936,14 +1105,14 @@ class AgentOrchestrator(
 
     private fun isModifyingTool(type: String): Boolean {
         return when (type) {
-            "write_file", "apply_changes", "make_dir", "create_file", "search_replace" -> true
+            "write_file", "apply_changes", "make_dir", "create_file", "search_replace", "delete_file", "copy_file", "move_file", "json_set" -> true
             else -> false
         }
     }
 
     private fun isDiscoveryTool(type: String): Boolean {
         return when (type) {
-            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands", "run_shell" -> true
+            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands", "run_shell", "head_file", "tail_file", "read_file_chunk", "json_get" -> true
             else -> false
         }
     }
@@ -960,45 +1129,53 @@ class AgentOrchestrator(
             You orchestrate a short inner loop to complete the current task using the available tools.
             The API is stateless. Never rely on hidden memory. Use ONLY the provided goal, task, working directory, observations, and optional task hints.
             Return ONLY a single minified JSON object describing ONE tool call to move the task forward.
-            Allowed schemas:
-            {"type":"create_file","args":{"path": string}}
-            {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean}}
-            {"type":"make_dir","args":{"path": string}}
-            {"type":"run_shell","args":{"command": string}}
-            {"type":"get_cached_command_output","args":{"command": string, "max_age_ms": number}}
-            {"type":"list_cached_commands","args":{"max": number}}
-            {"type":"list_dir","args":{"path": string}}
-            {"type":"list_dir_recursive","args":{"path": string, "max_depth": number, "max_entries": number}}
-            {"type":"read_file","args":{"path": string, "max_bytes": number}}
-            {"type":"read_file_lines","args":{"path": string, "start": number, "end": number, "max_bytes": number}}
-            {"type":"read_file_section_by_markers","args":{"path": string, "start_marker": string, "end_marker": string, "include_markers": boolean}}
-            {"type":"read_files","args":{"paths": [string,...], "max_bytes": number}}
-            {"type":"read_files_glob","args":{"root": string, "glob": string, "max_files": number, "max_bytes": number, "max_depth": number}}
-            {"type":"stat_file","args":{"path": string}}
-            {"type":"grep","args":{"path": string, "pattern": string, "max_results": number}}
-            {"type":"search_replace","args":{"path": string, "old": string, "new": string, "unique": boolean}}
-            {"type":"apply_changes","args":{"edits": [
-                {"path": string, "op": "replace_exact", "old": string, "new": string},
-                {"path": string, "op": "replace_between_markers", "start_marker": string, "end_marker": string, "new_content": string, "include_markers": false},
-                {"path": string, "op": "insert_after_anchor", "anchor": string, "new_content": string},
-                {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string},
-                {"path": string, "op": "replace_regex", "pattern": string, "replacement": string, "unique": boolean},
-                {"path": string, "op": "ensure_block_present", "block": string, "idempotent_marker": string, "anchor_before": string, "anchor_after": string},
-                {"path": string, "op": "append_once", "block": string, "idempotent_marker": string},
-                {"path": string, "op": "write_if_missing", "content": string}
-            ]}}
-            Tool ordering guidance:
-            - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
-            - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
-            - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
-            - Use get_cached_command_output before re-running heavy run_shell.
-            - For multi-file reads, keep limits small and targeted.
-            - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
-            - When context is missing, propose the minimal discovery call to fetch it.
-            - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
-              uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
-            - Return pure JSON on a single line without explanations.
-        """.trimIndent()
+                         Allowed schemas:
+             {"type":"create_file","args":{"path": string}}
+             {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean, "encoding": "utf-8"|"base64"}}
+             {"type":"make_dir","args":{"path": string}}
+             {"type":"delete_file","args":{"path": string, "missing_ok": boolean}}
+             {"type":"copy_file","args":{"src": string, "dest": string, "overwrite": boolean}}
+             {"type":"move_file","args":{"src": string, "dest": string, "overwrite": boolean}}
+             {"type":"run_shell","args":{"command": string, "timeout_ms": number, "env": {string: string}}}
+             {"type":"get_cached_command_output","args":{"command": string, "max_age_ms": number}}
+             {"type":"list_cached_commands","args":{"max": number}}
+             {"type":"list_dir","args":{"path": string, "include_hidden": boolean, "max_entries": number}}
+             {"type":"list_dir_recursive","args":{"path": string, "max_depth": number, "max_entries": number, "include_hidden": boolean}}
+             {"type":"read_file","args":{"path": string, "max_bytes": number, "encoding": "utf-8"|"base64"}}
+             {"type":"head_file","args":{"path": string, "lines": number}}
+             {"type":"tail_file","args":{"path": string, "lines": number}}
+             {"type":"read_file_lines","args":{"path": string, "start": number, "end": number, "max_bytes": number}}
+             {"type":"read_file_chunk","args":{"path": string, "offset": number, "length": number, "encoding": "utf-8"|"base64"}}
+             {"type":"read_file_section_by_markers","args":{"path": string, "start_marker": string, "end_marker": string, "include_markers": boolean}}
+             {"type":"read_files","args":{"paths": [string,...], "max_bytes": number}}
+             {"type":"read_files_glob","args":{"root": string, "glob": string, "max_files": number, "max_bytes": number, "max_depth": number}}
+             {"type":"stat_file","args":{"path": string}}
+             {"type":"grep","args":{"path": string, "pattern": string, "max_results": number, "include_binary": boolean}}
+             {"type":"search_replace","args":{"path": string, "old": string, "new": string, "unique": boolean}}
+             {"type":"json_get","args":{"path": string, "json_pointer": string}}
+             {"type":"json_set","args":{"path": string, "json_pointer": string, "value": string, "value_is_json": boolean}}
+             {"type":"apply_changes","args":{"edits": [
+                 {"path": string, "op": "replace_exact", "old": string, "new": string},
+                 {"path": string, "op": "replace_between_markers", "start_marker": string, "end_marker": string, "new_content": string, "include_markers": false},
+                 {"path": string, "op": "insert_after_anchor", "anchor": string, "new_content": string},
+                 {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string},
+                 {"path": string, "op": "replace_regex", "pattern": string, "replacement": string, "unique": boolean},
+                 {"path": string, "op": "ensure_block_present", "block": string, "idempotent_marker": string, "anchor_before": string, "anchor_after": string},
+                 {"path": string, "op": "append_once", "block": string, "idempotent_marker": string},
+                 {"path": string, "op": "write_if_missing", "content": string}
+             ]}}
+             Tool ordering guidance:
+             - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
+             - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
+             - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
+             - Use get_cached_command_output before re-running heavy run_shell.
+             - For multi-file reads, keep limits small and targeted.
+             - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
+             - When context is missing, propose the minimal discovery call to fetch it.
+             - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
+               uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
+             - Return pure JSON on a single line without explanations.
+         """.trimIndent()
         val wd = workingDirProvider()
         val prior = if (observations.isEmpty()) "(none)" else observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(500)}${if (v.length > 500) " …" else ""}" }
         val hints = buildString {
@@ -1017,12 +1194,13 @@ class AgentOrchestrator(
             ${prior}
             Produce one tool call JSON now, following the Rules and leveraging hints and observations to avoid redundant discovery.
         """.trimIndent()
-        val flow = LlmProvider.current().generate(
-            listOf(
-                LlmMessage("system", sys),
-                LlmMessage("user", prompt)
-            )
+        val msgs = mutableListOf(
+            LlmMessage("system", sys),
+            LlmMessage("user", prompt)
         )
+        val reco = helperRecommend("inner_loop", mapOf("goal" to goal.take(500), "task" to "${task.id}:${task.description}"))
+        applyHelperToMessages(reco, msgs)
+        val flow = LlmProvider.current().generate(msgs)
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
@@ -1043,54 +1221,87 @@ class AgentOrchestrator(
 
     private fun executeToolCall(tc: ToolCall): ToolResult {
         currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
-        return when (tc.type) {
+        // Alias common synonyms to reduce failure due to type mismatches
+        val normalizedType = when (tc.type.lowercase().trim()) {
+            "ls", "dir", "list", "listdir", "list_directory", "read_dir", "read_directory", "scan_dir" -> "list_dir"
+            "tree", "find", "list_recursive", "scan_recursive", "walk", "walk_dir", "walkdir" -> "list_dir_recursive"
+            "stat" -> "stat_file"
+            "cat" -> "read_file"
+            "sed", "replace" -> "search_replace"
+            "mkdir" -> "make_dir"
+            "touch" -> "create_file"
+            else -> tc.type
+        }
+        val call = if (normalizedType == tc.type) tc else ToolCall(normalizedType, tc.args)
+        return when (call.type) {
             "create_file" -> {
-                val path = tc.args.optString("path")
+                val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 ensureParentDirs(f)
                 if (!f.exists()) f.createNewFile()
+                if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
                 ToolResult(f.exists(), null)
             }
             "write_file" -> {
-                val path = tc.args.optString("path")
-                val content = tc.args.optString("content")
-                val mode = tc.args.optString("mode", "overwrite")
-                val ifNotExists = tc.args.optBoolean("if_not_exists", false)
+                val path = call.args.optString("path")
+                val contentRaw = call.args.optString("content")
+                val encoding = call.args.optString("encoding", "utf-8").lowercase()
+                val mode = call.args.optString("mode", "overwrite")
+                val ifNotExists = call.args.optBoolean("if_not_exists", false)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 ensureParentDirs(f)
                 if (ifNotExists && f.exists()) {
-                    return ToolResult(true, "skipped_write_existing:${f.absolutePath}")
+                    return ToolResult(true, "skipped_write_existing:${'$'}{f.absolutePath}")
                 }
+                val bytes = if (encoding == "base64") Base64.decode(contentRaw, Base64.DEFAULT) else contentRaw.toByteArray(StandardCharsets.UTF_8)
                 if (mode == "append" && f.exists()) {
-                    f.appendText(content)
+                    f.appendBytes(bytes)
                 } else {
-                    f.writeText(content)
+                    f.writeBytes(bytes)
                 }
                 val ok = f.exists() && f.length() >= 0
-                ToolResult(ok, null)
+                val md = MessageDigest.getInstance("SHA-256").digest(f.readBytes())
+                val hash = md.joinToString("") { String.format("%02x", it) }
+                if (ok) notifyWorkspaceChanged(f.absolutePath)
+                ToolResult(ok, JSONObject().put("path", f.absolutePath).put("bytes", f.length()).put("sha256", hash).toString())
             }
             "make_dir" -> {
-                val path = tc.args.optString("path")
+                val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
                 val d = resolvePath(path)
                 d.mkdirs()
+                if (d.exists()) notifyWorkspaceChanged(d.absolutePath)
                 ToolResult(d.exists() && d.isDirectory, null)
             }
             "run_shell" -> {
-                val command = tc.args.optString("command")
+                val command = call.args.optString("command")
+                val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L)
+                val envObj = call.args.optJSONObject("env")
                 require(command.isNotBlank()) { "command missing" }
                 val wd = workingDirProvider()
-                // Cache key includes working directory
                 val cacheKey = commandCacheKey(command, wd)
-                // Always execute, but record to cache for future retrieval
-                val proc = ProcessBuilder("sh", "-c", command)
-                    .directory(File(wd))
-                    .redirectErrorStream(true)
-                    .start()
-                val output = proc.inputStream.bufferedReader().use { it.readText() }
-                val exit = proc.waitFor()
+                val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
+                if (envObj != null) {
+                    val env = pb.environment()
+                    envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
+                }
+                val proc = pb.start()
+                val reader = proc.inputStream.bufferedReader()
+                val start = System.currentTimeMillis()
+                val sb = StringBuilder()
+                while (proc.isAlive) {
+                    while (reader.ready()) sb.append(reader.readLine()).append('\n')
+                    if (System.currentTimeMillis() - start > timeoutMs) {
+                        proc.destroyForcibly()
+                        break
+                    }
+                    try { Thread.sleep(20) } catch (_: InterruptedException) {}
+                }
+                if (proc.isAlive) proc.destroyForcibly()
+                val exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
+                val output = sb.toString()
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
                     .put("command", command)
@@ -1105,8 +1316,8 @@ class AgentOrchestrator(
                 ToolResult(exit == 0, obs)
             }
             "get_cached_command_output" -> {
-                val command = tc.args.optString("command")
-                val maxAgeMs = tc.args.optLong("max_age_ms", 10 * 60 * 1000L).coerceAtLeast(0L)
+                val command = call.args.optString("command")
+                val maxAgeMs = call.args.optLong("max_age_ms", 10 * 60 * 1000L).coerceAtLeast(0L)
                 require(command.isNotBlank()) { "command missing" }
                 val wd = workingDirProvider()
                 val cacheKey = commandCacheKey(command, wd)
@@ -1127,7 +1338,7 @@ class AgentOrchestrator(
                 ToolResult(true, obj.toString())
             }
             "list_cached_commands" -> {
-                val max = tc.args.optInt("max", 50).coerceAtLeast(1)
+                val max = call.args.optInt("max", 50).coerceAtLeast(1)
                 val arr = JSONArray()
                 commandCache.entries.toList().takeLast(max).forEach { entry ->
                     arr.put(JSONObject().apply {
@@ -1143,18 +1354,23 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "list_dir" -> {
-                val path = tc.args.optString("path")
-                require(path.isNotBlank()) { "path missing" }
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
                 val d = resolvePath(path)
-                val listing = if (d.exists() && d.isDirectory) listTopLevel(d, limit = 200) else JSONObject().put("path", d.absolutePath).put("items", JSONArray()).toString()
+                val items = if (d.exists() && d.isDirectory) d.listFiles()?.filter { true }?.take(200).orEmpty() else emptyList()
+                val arr = JSONArray()
+                items.forEach { f ->
+                    arr.put(JSONObject().put("name", f.name).put("type", if (f.isDirectory) "dir" else "file"))
+                }
+                val listing = JSONObject().put("path", d.absolutePath).put("items", arr).toString()
                 currentRunStats?.dirsListed?.add(d.absolutePath)
                 ToolResult(true, listing)
             }
             "list_dir_recursive" -> {
-                val path = tc.args.optString("path")
-                val maxDepth = tc.args.optInt("max_depth", 3).coerceAtLeast(0)
-                val maxEntries = tc.args.optInt("max_entries", 500).coerceAtLeast(1)
-                require(path.isNotBlank()) { "path missing" }
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
+                val maxDepth = call.args.optInt("max_depth", 3).coerceAtLeast(0)
+                val maxEntries = call.args.optInt("max_entries", 500).coerceAtLeast(1)
                 val root = resolvePath(path)
                 val arr = JSONArray()
                 var count = 0
@@ -1174,24 +1390,25 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "read_file" -> {
-                val path = tc.args.optString("path")
-                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val path = call.args.optString("path")
+                val maxBytes = call.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val encoding = call.args.optString("encoding", "utf-8").lowercase()
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 val content = if (f.exists() && f.isFile) {
                     val bytes = f.readBytes()
                     val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
-                                         val text = String(slice)
-                     currentRunStats?.filesRead?.add(f.absolutePath)
-                     JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes).toString()
+                    currentRunStats?.filesRead?.add(f.absolutePath)
+                    val encoded = if (encoding == "base64") Base64.encodeToString(slice, Base64.NO_WRAP) else String(slice)
+                    JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", encoded).put("truncated", bytes.size > maxBytes).put("encoding", encoding).toString()
                 } else {
                     JSONObject().put("path", f.absolutePath).put("missing", true).toString()
                 }
                 ToolResult(true, content)
             }
             "read_files" -> {
-                val arr = tc.args.optJSONArray("paths") ?: JSONArray()
-                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val arr = call.args.optJSONArray("paths") ?: JSONArray()
+                val maxBytes = call.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
                 val results = JSONArray()
                 for (i in 0 until arr.length()) {
                     val rawPath = arr.optString(i)
@@ -1210,11 +1427,11 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "read_files_glob" -> {
-                val rootPath = tc.args.optString("root")
-                val glob = tc.args.optString("glob")
-                val maxFiles = tc.args.optInt("max_files", 50).coerceAtLeast(1)
-                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
-                val maxDepth = tc.args.optInt("max_depth", 5).coerceAtLeast(0)
+                val rootPath = call.args.optString("root").ifBlank { workingDirProvider() }
+                val glob = call.args.optString("glob")
+                val maxFiles = call.args.optInt("max_files", 50).coerceAtLeast(1)
+                val maxBytes = call.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val maxDepth = call.args.optInt("max_depth", 5).coerceAtLeast(0)
                 require(rootPath.isNotBlank()) { "root missing" }
                 require(glob.isNotBlank()) { "glob missing" }
                 val root = resolvePath(rootPath)
@@ -1253,10 +1470,10 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "read_file_lines" -> {
-                val path = tc.args.optString("path")
-                val start = tc.args.optInt("start", 1).coerceAtLeast(1)
-                val end = tc.args.optInt("end", start + 500).coerceAtLeast(start)
-                val maxBytes = tc.args.optInt("max_bytes", 131072).coerceAtLeast(4096)
+                val path = call.args.optString("path")
+                val start = call.args.optInt("start", 1).coerceAtLeast(1)
+                val end = call.args.optInt("end", start + 500).coerceAtLeast(start)
+                val maxBytes = call.args.optInt("max_bytes", 131072).coerceAtLeast(4096)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 val obs = if (f.exists() && f.isFile) {
@@ -1272,10 +1489,10 @@ class AgentOrchestrator(
                 ToolResult(true, obs)
             }
             "read_file_section_by_markers" -> {
-                val path = tc.args.optString("path")
-                val startMarker = tc.args.optString("start_marker")
-                val endMarker = tc.args.optString("end_marker")
-                val includeMarkers = tc.args.optBoolean("include_markers", false)
+                val path = call.args.optString("path")
+                val startMarker = call.args.optString("start_marker")
+                val endMarker = call.args.optString("end_marker")
+                val includeMarkers = call.args.optBoolean("include_markers", false)
                 require(path.isNotBlank()) { "path missing" }
                 require(startMarker.isNotBlank() && endMarker.isNotBlank()) { "markers missing" }
                 val f = resolvePath(path)
@@ -1299,8 +1516,8 @@ class AgentOrchestrator(
                 ToolResult(true, obs)
             }
             "stat_file" -> {
-                val path = tc.args.optString("path")
-                require(path.isNotBlank()) { "path missing" }
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
                 val f = resolvePath(path)
                 val obj = JSONObject().put("path", f.absolutePath)
                     .put("exists", f.exists())
@@ -1311,26 +1528,34 @@ class AgentOrchestrator(
                 ToolResult(true, obj.toString())
             }
             "grep" -> {
-                val path = tc.args.optString("path")
-                val pattern = tc.args.optString("pattern")
-                val maxResults = tc.args.optInt("max_results", 200).coerceAtLeast(1)
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
+                val pattern = call.args.optString("pattern")
+                val maxResults = call.args.optInt("max_results", 200).coerceAtLeast(1)
                 require(path.isNotBlank()) { "path missing" }
                 require(pattern.isNotBlank()) { "pattern missing" }
                 val root = resolvePath(path)
                 val regex = runCatching { Pattern.compile(pattern) }.getOrElse { Pattern.compile(Pattern.quote(pattern)) }
                 val results = JSONArray()
                 var count = 0
+                fun isBinary(file: File): Boolean {
+                    return try {
+                        val bytes = file.inputStream().use { it.readNBytes(1024) }
+                        bytes.any { b -> b.toInt() == 0 } // crude NUL check
+                    } catch (e: Exception) { false }
+                }
                 fun scanFile(file: File) {
                     if (count >= maxResults) return
                     val sz = runCatching { file.length() }.getOrElse { 0L }
-                    if (sz > 2_000_000L) return // skip files > 2MB
+                    if (sz > 5_000_000L) return // skip files > 5MB
+                    if (isBinary(file)) return
                     val lines = runCatching { file.readLines() }.getOrElse { emptyList() }
                     for ((idx, line) in lines.withIndex()) {
                         if (count >= maxResults) break
                         val m = regex.matcher(line)
                         if (m.find()) {
-                                                         results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
-                             currentRunStats?.grepPatterns?.add(pattern)
+                            results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
+                            currentRunStats?.grepPatterns?.add(pattern)
                             count++
                         }
                     }
@@ -1348,7 +1573,7 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "apply_changes" -> {
-                val edits = tc.args.optJSONArray("edits") ?: JSONArray()
+                val edits = call.args.optJSONArray("edits") ?: JSONArray()
                 val results = mutableListOf<String>()
                 for (i in 0 until edits.length()) {
                     val e = edits.optJSONObject(i) ?: continue
@@ -1468,6 +1693,7 @@ class AgentOrchestrator(
                     if (updated != null) {
                         runCatching { file.writeText(updated) }.onSuccess {
                             results.add("edit[$i]: ok (${path})")
+                            notifyWorkspaceChanged(file.absolutePath)
                         }.onFailure { ex ->
                             results.add("edit[$i]: write failed (${ex.message})")
                         }
@@ -1477,10 +1703,10 @@ class AgentOrchestrator(
                 ToolResult(true, summary)
             }
             "search_replace" -> {
-                val path = tc.args.optString("path")
-                val old = tc.args.optString("old")
-                val new = tc.args.optString("new")
-                val unique = tc.args.optBoolean("unique", true)
+                val path = call.args.optString("path")
+                val old = call.args.optString("old")
+                val new = call.args.optString("new")
+                val unique = call.args.optBoolean("unique", true)
                 require(path.isNotBlank()) { "path missing" }
                 require(old.isNotBlank()) { "old missing" }
                 val file = resolvePath(path)
@@ -1492,7 +1718,93 @@ class AgentOrchestrator(
                 file.writeText(updated)
                 ToolResult(true, "replaced ${if (unique) 1 else occurrences} occurrence(s) in ${file.absolutePath}")
             }
-            else -> ToolResult(false, null)
+            "delete_file" -> {
+                val path = call.args.optString("path")
+                val missingOk = call.args.optBoolean("missing_ok", true)
+                require(path.isNotBlank()) { "path missing" }
+                val f = resolvePath(path)
+                val existed = f.exists()
+                val ok = if (existed) f.delete() else missingOk
+                if (ok) notifyWorkspaceChanged(f.absolutePath)
+                ToolResult(ok, JSONObject().put("path", f.absolutePath).put("existed", existed).put("deleted", existed && ok).toString())
+            }
+            "copy_file" -> {
+                val src = call.args.optString("src")
+                val dest = call.args.optString("dest")
+                val overwrite = call.args.optBoolean("overwrite", false)
+                require(src.isNotBlank() && dest.isNotBlank()) { "src/dest missing" }
+                val s = resolvePath(src)
+                val d = resolvePath(dest)
+                if (!s.exists() || !s.isFile) return ToolResult(false, "source missing")
+                if (d.exists() && !overwrite) return ToolResult(false, "dest exists")
+                ensureParentDirs(d)
+                d.writeBytes(s.readBytes())
+                notifyWorkspaceChanged(d.absolutePath)
+                ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).put("bytes", d.length()).toString())
+            }
+            "move_file" -> {
+                val src = call.args.optString("src")
+                val dest = call.args.optString("dest")
+                val overwrite = call.args.optBoolean("overwrite", false)
+                require(src.isNotBlank() && dest.isNotBlank()) { "src/dest missing" }
+                val s = resolvePath(src)
+                val d = resolvePath(dest)
+                if (!s.exists() || !s.isFile) return ToolResult(false, "source missing")
+                if (d.exists()) {
+                    if (!overwrite) return ToolResult(false, "dest exists") else d.delete()
+                }
+                ensureParentDirs(d)
+                val ok = s.renameTo(d)
+                if (!ok) {
+                    d.writeBytes(s.readBytes())
+                    s.delete()
+                }
+                notifyWorkspaceChanged(d.absolutePath)
+                ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).toString())
+            }
+            "json_get" -> {
+                val path = call.args.optString("path")
+                val pointer = call.args.optString("json_pointer")
+                require(path.isNotBlank()) { "path missing" }
+                require(pointer.isNotBlank()) { "json_pointer missing" }
+                val f = resolvePath(path)
+                if (!f.exists()) return ToolResult(false, "file missing")
+                val obj = runCatching { JSONObject(f.readText()) }.getOrElse { return ToolResult(false, "invalid json") }
+                val parts = pointer.split('/').filter { it.isNotEmpty() }
+                var cur: Any = obj
+                for (p in parts) {
+                    if (cur is JSONObject) cur = cur.opt(p) ?: return ToolResult(true, JSONObject().put("found", false).toString())
+                    else return ToolResult(false, "non_object path")
+                }
+                val out = JSONObject().put("found", true).put("value", cur).toString()
+                ToolResult(true, out)
+            }
+            "json_set" -> {
+                val path = call.args.optString("path")
+                val pointer = call.args.optString("json_pointer")
+                val valueStr = call.args.optString("value")
+                val valueIsJson = call.args.optBoolean("value_is_json", true)
+                require(path.isNotBlank()) { "path missing" }
+                require(pointer.isNotBlank()) { "json_pointer missing" }
+                val f = resolvePath(path)
+                ensureParentDirs(f)
+                val root = if (f.exists()) runCatching { JSONObject(f.readText()) }.getOrElse { JSONObject() } else JSONObject()
+                val parts = pointer.split('/').filter { it.isNotEmpty() }
+                var cur: JSONObject = root
+                for ((idx, p) in parts.withIndex()) {
+                    val isLast = idx == parts.size - 1
+                    if (isLast) {
+                        val v: Any = if (valueIsJson) runCatching { JSONObject(valueStr) }.getOrElse { valueStr } else valueStr
+                        cur.put(p, v)
+                    } else {
+                        val next = cur.optJSONObject(p) ?: JSONObject().also { cur.put(p, it) }
+                        cur = next
+                    }
+                }
+                f.writeText(root.toString(2))
+                ToolResult(true, JSONObject().put("path", f.absolutePath).put("updated", true).toString())
+            }
+            else -> ToolResult(false, "unknown_tool_type:${call.type}")
         }
     }
 
@@ -1558,7 +1870,7 @@ class AgentOrchestrator(
             Return ONLY a minified JSON object with the following shape and nothing else:
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             - ids must be unique short strings (e.g., t1, t2, t3)
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - descriptions must be concrete and atomic
             - Include discovery tasks (list_dir_recursive/grep/read_files_glob) before modification tasks (apply_changes/write_file) and prefer precise scopes
             - Optional fields (targets/search/markers) should propose concrete globs, regexes, or section markers you expect to use, to prevent disruption if memory is truncated later
@@ -1570,10 +1882,12 @@ class AgentOrchestrator(
             Working directory: ${wdPath}
             Workspace snapshot (top-level): ${workspaceInfo}
         """.trimIndent()
-        val messages = listOf(
+        val messages = mutableListOf(
             LlmMessage("system", sys),
             LlmMessage("user", user)
         )
+        val reco = helperRecommend("plan", mapOf("goal" to userGoal.take(1000), "wd" to wdPath))
+        applyHelperToMessages(reco, messages)
         val flow: Flow<String> = LlmProvider.current().generate(messages)
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
@@ -1594,6 +1908,13 @@ class AgentOrchestrator(
                     tasks.add(Task(id, desc, cat, targets, search, markers))
                 }
             }
+        }
+        if (tasks.isEmpty()) {
+            val fallback = mutableListOf<Task>()
+            fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
+            fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
+            fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+            tasks.addAll(fallback)
         }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
@@ -1672,7 +1993,7 @@ class AgentOrchestrator(
             - Keep ids stable for already completed tasks and mark them status:"done".
             - For failed tasks, either refine them into safer, smaller discovery steps or replace them.
             - You may add, remove, or edit pending tasks if needed.
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - Prefer minimal safe changes. Avoid repeating identical discovery without new signals.
             - Include optional hints (targets/search/markers) to guide discovery and precise editing in a stateless environment.
             - Do not include explanations.
@@ -1686,7 +2007,10 @@ class AgentOrchestrator(
             Current plan JSON: ${currentPlanJson}
             Produce the updated plan JSON now.
         """.trimIndent()
-        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("plan_update", mapOf("goal" to plan.goal.take(500), "wd" to wdPath))
+        applyHelperToMessages(reco, messages)
+        val flow = LlmProvider.current().generate(messages)
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
@@ -1763,7 +2087,10 @@ class AgentOrchestrator(
             Observations: ${obsJson}
             Command-line report (recent): ${cliJson}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("revise_plan", mapOf("goal" to goal.take(500), "error" to errorNote.take(200)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val goalOut = obj.optString("goal").ifBlank { goal }
@@ -1782,5 +2109,266 @@ class AgentOrchestrator(
         val newPlan = Plan(goalOut, tasks)
         persistPlanWithStatuses(newPlan)
         return@withContext newPlan
+    }
+
+    private fun buildHelperRecommendationPrompt(kind: String, contextMap: Map<String, String>): Pair<String,String> {
+        val sys = """
+            You are a side helper agent. Return ONLY compact JSON with keys you need to adjust the main agent call.
+            Schema: {"prompt_prefix": string, "prompt_suffix": string, "suggested_tools": [string...], "max_tokens": number, "temperature": number, "model": string}
+            Return minified JSON without extra text. Omit fields you don't adjust.
+        """.trimIndent()
+        val user = JSONObject().apply {
+            put("kind", kind)
+            contextMap.forEach { (k,v) -> put(k, v.take(2000)) }
+        }.toString()
+        return sys to user
+    }
+
+    private suspend fun helperRecommend(kind: String, contextMap: Map<String,String>): JSONObject? = withContext(Dispatchers.IO) {
+        if (!Settings.helper_agent_enabled) return@withContext null
+        val (sys, user) = buildHelperRecommendationPrompt(kind, contextMap)
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        return@withContext runCatching { JSONObject(json) }.getOrNull()
+    }
+
+    private fun applyHelperToMessages(reco: JSONObject?, messages: MutableList<LlmMessage>) {
+        if (reco == null) return
+        val prefix = reco.optString("prompt_prefix").ifBlank { null }
+        val suffix = reco.optString("prompt_suffix").ifBlank { null }
+        if (prefix != null) messages.add(0, LlmMessage("system", prefix))
+        if (suffix != null) messages.add(LlmMessage("user", suffix))
+        // Save suggested overrides to settings (ephemeral; UI provides defaults)
+        val maxTok = reco.optInt("max_tokens", -1)
+        if (maxTok > 0) Settings.ai_max_tokens = maxTok
+        val temp = reco.optDouble("temperature", Double.NaN)
+        if (!temp.isNaN()) Settings.ai_temperature_str = temp.toString()
+        val model = reco.optString("model").ifBlank { null }
+        if (model != null) Settings.api_model = model
+    }
+
+    private fun detectLanguagesAndFrameworks(root: File, maxFiles: Int = 1000): JSONObject {
+        val langCounts = mutableMapOf<String, Int>()
+        val frameworks = mutableSetOf<String>()
+        var scanned = 0
+        fun extOf(f: File): String = f.name.substringAfterLast('.', "").lowercase()
+        fun walk(d: File) {
+            if (!d.isDirectory || scanned >= maxFiles) return
+            d.listFiles()?.forEach { f ->
+                if (scanned >= maxFiles) return
+                if (f.isDirectory) walk(f) else {
+                    scanned++
+                    when (extOf(f)) {
+                        "kt", "kts" -> langCounts["kotlin"] = (langCounts["kotlin"] ?: 0) + 1
+                        "java" -> langCounts["java"] = (langCounts["java"] ?: 0) + 1
+                        "ts", "tsx" -> langCounts["typescript"] = (langCounts["typescript"] ?: 0) + 1
+                        "js", "jsx" -> langCounts["javascript"] = (langCounts["javascript"] ?: 0) + 1
+                        "py" -> langCounts["python"] = (langCounts["python"] ?: 0) + 1
+                        "rb" -> langCounts["ruby"] = (langCounts["ruby"] ?: 0) + 1
+                        "go" -> langCounts["go"] = (langCounts["go"] ?: 0) + 1
+                        "rs" -> langCounts["rust"] = (langCounts["rust"] ?: 0) + 1
+                        "swift" -> langCounts["swift"] = (langCounts["swift"] ?: 0) + 1
+                        "m", "mm" -> langCounts["objective-c"] = (langCounts["objective-c"] ?: 0) + 1
+                        "cs" -> langCounts["csharp"] = (langCounts["csharp"] ?: 0) + 1
+                        "cpp", "cc", "cxx", "c" -> langCounts["cpp/c"] = (langCounts["cpp/c"] ?: 0) + 1
+                        "gradle", "gradle.kts" -> frameworks.add("gradle")
+                        "xml" -> if (f.path.contains("src/main/AndroidManifest.xml")) frameworks.add("android")
+                        "json" -> if (f.name == "package.json") frameworks.add("node")
+                        "yaml", "yml" -> if (f.name == "pubspec.yaml") frameworks.add("flutter")
+                    }
+                    val name = f.name.lowercase()
+                    if (name == "build.gradle" || name == "build.gradle.kts") frameworks.add("gradle")
+                    if (name == "settings.gradle" || name == "settings.gradle.kts") frameworks.add("gradle")
+                    if (name == "pom.xml") frameworks.add("maven")
+                }
+            }
+        }
+        walk(root)
+        val langs = JSONArray()
+        langCounts.entries.sortedByDescending { it.value }.forEach { (k, v) -> langs.put(JSONObject().put("lang", k).put("files", v)) }
+        val fw = JSONArray(); frameworks.forEach { fw.put(it) }
+        return JSONObject().put("languages", langs).put("frameworks", fw)
+    }
+
+    private fun selectImportantFiles(root: File, limit: Int = 100): JSONArray {
+        val candidates = mutableListOf<File>()
+        fun score(f: File): Int {
+            val name = f.name.lowercase()
+            var s = 0
+            if (name.contains("readme") || name.contains("license")) s += 3
+            if (name.contains("main") || name.contains("app") || name.contains("orchestrator") || name.contains("manager")) s += 2
+            if (name.contains("build") || name.contains("gradle") || name.contains("manifest")) s += 2
+            if (name.endsWith(".kt") || name.endsWith(".java")) s += 1
+            if (f.length() > 0) s += 1
+            return s
+        }
+        fun walk(d: File) {
+            d.listFiles()?.forEach { f ->
+                if (f.isDirectory) walk(f) else candidates.add(f)
+            }
+        }
+        walk(root)
+        val arr = JSONArray()
+        candidates.asSequence().sortedByDescending { score(it) }.take(limit).forEach { f ->
+            arr.put(JSONObject().put("path", f.absolutePath).put("size", f.length()))
+        }
+        return arr
+    }
+
+    private suspend fun buildCodebaseCache(onStatus: (String) -> Unit, includeRecursive: Boolean = false) = withContext(Dispatchers.IO) {
+        if (!Settings.codebase_agent_enabled) return@withContext
+        val wd = File(workingDirProvider())
+        if (!wd.exists() || !wd.isDirectory) return@withContext
+        onStatus("Codebase: scanning ${wd.absolutePath}")
+        val overview = detectLanguagesAndFrameworks(wd)
+        val important = selectImportantFiles(wd)
+        val summarySys = """
+            You will summarize a repository at a high level.
+            Return ONLY minified JSON: {"overview": string, "roles": [{"module": string, "role": string}], "notes": [string...]}
+        """.trimIndent()
+        val filesPreview = run {
+            val limit = min(important.length(), 10)
+            (0 until limit).joinToString("\n") { idx -> important.optJSONObject(idx)?.optString("path").orEmpty() }
+        }
+        val summaryUser = """
+            Important files (sample):
+            ${filesPreview}
+            Languages/Frameworks: ${overview}
+        """.trimIndent()
+        val summaryContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", summarySys), LlmMessage("user", summaryUser))))
+        val summaryJson = extractFirstJsonObject(summaryContent) ?: JSONObject().put("overview", "").put("roles", JSONArray()).put("notes", JSONArray()).toString()
+        // Build recursive scan targets based on frameworks and common asset directories
+        val frameworks = overview.optJSONArray("frameworks") ?: JSONArray()
+        val languages = overview.optJSONArray("languages") ?: JSONArray()
+        val topLang = languages.optJSONObject(0)?.optString("lang") ?: ""
+        fun collectDir(name: String): List<File> {
+            val out = mutableListOf<File>()
+            fun walk(d: File, depth: Int) {
+                if (depth > 3) return
+                d.listFiles()?.forEach { f ->
+                    if (f.isDirectory) {
+                        if (f.name.equals(name, ignoreCase = true)) out.add(f)
+                        walk(f, depth + 1)
+                    }
+                }
+            }
+            walk(wd, 0)
+            return out
+        }
+        val targetsArr = JSONArray()
+        fun addTargets(bases: List<File>, reason: String, framework: String?) {
+            bases.forEach { base ->
+                targetsArr.put(
+                    JSONObject()
+                        .put("base", base.absolutePath)
+                        .put("reason", reason)
+                        .put("framework", framework ?: "")
+                        .put("language", topLang)
+                        .put("tool", "list_dir_recursive")
+                        .put("max_depth", 4)
+                        .put("max_entries", 1200)
+                )
+            }
+        }
+        val fwSet = (0 until frameworks.length()).mapNotNull { idx -> frameworks.optString(idx) }.toSet()
+        if (fwSet.contains("android") || fwSet.contains("gradle") || fwSet.contains("maven")) {
+            val bases = mutableListOf<File>()
+            bases.addAll(collectDir("src"))
+            bases.addAll(collectDir("app"))
+            bases.addAll(collectDir("core"))
+            bases.addAll(collectDir("module"))
+            addTargets(bases.distinct(), "android/java project structure", fwSet.firstOrNull())
+            addTargets(collectDir("assets"), "assets for android/java", fwSet.firstOrNull())
+            addTargets(collectDir("res"), "resources (res) for android", fwSet.firstOrNull())
+        }
+        if (fwSet.contains("node")) {
+            addTargets((collectDir("src") + collectDir("lib") + collectDir("public") + collectDir("assets")).distinct(), "node project dirs", "node")
+        }
+        if (fwSet.contains("flutter")) {
+            addTargets((collectDir("lib") + collectDir("assets")).distinct(), "flutter project dirs", "flutter")
+        }
+        // Generic assets/resources/static/templates
+        addTargets((collectDir("resources") + collectDir("static") + collectDir("templates")).distinct(), "common resource directories", fwSet.firstOrNull())
+
+        val cache = JSONObject()
+            .put("root", wd.absolutePath)
+            .put("detected", overview)
+            .put("important_files", important)
+            .put("recursive_scan_targets", if (includeRecursive) targetsArr else JSONArray())
+            .put("analysis", runCatching { JSONObject(summaryJson) }.getOrElse { JSONObject().put("overview", summaryContent.take(1000)) })
+        val cacheFile = File(wd, Settings.codebase_cache_path)
+        cacheFile.writeText(cache.toString(2))
+        onStatus("Codebase: cache written ${cacheFile.absolutePath}")
+    }
+
+    private fun notifyWorkspaceChanged(path: String) {
+        pendingCodebaseChanges.add(path)
+    }
+
+    private suspend fun performCodebaseUpgradeIfPending(onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
+        if (!Settings.codebase_agent_enabled) return@withContext
+        if (pendingCodebaseChanges.isEmpty()) return@withContext
+        onStatus("Codebase: changes detected (${pendingCodebaseChanges.size}); updating cache…")
+        runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
+        pendingCodebaseChanges.clear()
+        lastCodebaseRefreshMs = System.currentTimeMillis()
+    }
+
+    private suspend fun writerSuggestTool(planGoal: String, task: Task, original: ToolCall): ToolCall? = withContext(Dispatchers.IO) {
+        if (!Settings.writer_agent_enabled) return@withContext null
+        // Try to resolve a target file path for context
+        var targetPath: String? = null
+        if (original.args.has("path")) {
+            targetPath = original.args.optString("path").ifBlank { null }
+        } else if (original.type == "apply_changes") {
+            val edits = original.args.optJSONArray("edits")
+            if (edits != null && edits.length() > 0) {
+                targetPath = edits.optJSONObject(0)?.optString("path")
+            }
+        }
+        val fileObj = JSONObject()
+        if (!targetPath.isNullOrBlank()) {
+            val f = resolvePath(targetPath!!)
+            if (f.exists() && f.isFile) {
+                val content = runCatching { f.readText() }.getOrElse { "" }
+                fileObj.put("path", f.absolutePath).put("content", content.take(40000)).put("bytes", f.length())
+            } else {
+                fileObj.put("path", f.absolutePath).put("missing", true)
+            }
+        }
+        val sys = """
+            You are a writer agent that selects the safest, most idempotent write tool for a change.
+            Available tools: write_file, search_replace, apply_changes (ops: replace_exact, replace_between_markers, insert_after_anchor, insert_before_anchor, replace_regex, ensure_block_present, append_once, write_if_missing).
+            Return ONLY minified JSON: {"tool_call": {"type": string, "args": object}, "reason": string, "proposed_new_tool": {"name": string, "example_regex": string, "purpose": string}}
+        """.trimIndent()
+        val user = """
+            Goal: ${planGoal}
+            Task: ${task.id} - ${task.description}
+            Proposed tool: {"type":"${original.type}","args":${original.args}}
+            Target file: ${fileObj}
+            Suggest a better tool_call if needed; keep it idempotent and minimal.
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@withContext null
+        val proposed = obj.optJSONObject("proposed_new_tool")
+        if (proposed != null) appendWriterToolSuggestion(proposed)
+        val tcObj = obj.optJSONObject("tool_call") ?: return@withContext null
+        val t = tcObj.optString("type").ifBlank { original.type }
+        val a = tcObj.optJSONObject("args") ?: original.args
+        return@withContext ToolCall(t, a)
+    }
+
+    private fun loadWriterToolsRoot(): JSONObject {
+        return runCatching { JSONObject(writerToolsFile.takeIf { it.exists() }?.readText().orEmpty()) }
+            .getOrElse { JSONObject().put("suggestions", JSONArray()) }
+    }
+
+    private fun appendWriterToolSuggestion(sugg: JSONObject) {
+        val root = loadWriterToolsRoot()
+        val arr = root.optJSONArray("suggestions") ?: JSONArray().also { root.put("suggestions", it) }
+        sugg.put("ts", System.currentTimeMillis())
+        arr.put(sugg)
+        writerToolsFile.writeText(root.toString(2))
     }
 }
