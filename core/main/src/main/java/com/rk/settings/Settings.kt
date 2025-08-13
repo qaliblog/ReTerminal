@@ -146,6 +146,11 @@ object Settings {
     var researcher_agent_enabled
         get() = Preference.getBoolean(key = "researcher_agent_enabled", default = false)
         set(value) = Preference.setBoolean(key = "researcher_agent_enabled", value)
+
+    // Writer agent
+    var writer_agent_enabled
+        get() = Preference.getBoolean(key = "writer_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "writer_agent_enabled", value)
 }
 
 object Preference {

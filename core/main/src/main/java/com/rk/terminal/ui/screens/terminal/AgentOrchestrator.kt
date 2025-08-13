@@ -111,6 +111,7 @@ class AgentOrchestrator(
     private val miniPlanFile: File by lazy { File(agentDir, "miniPlan.json") }
     private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
     private val cliReportFile: File by lazy { File(agentDir, "cli_report.json") }
+    private val writerToolsFile: File by lazy { File(agentDir, "writer_tools.json") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
@@ -152,6 +153,12 @@ class AgentOrchestrator(
         runCatching {
             if (!blueprintFile.exists()) {
                 blueprintFile.writeText("{}")
+            }
+        }
+        // Ensure writer tools suggestions store exists
+        runCatching {
+            if (!writerToolsFile.exists()) {
+                writerToolsFile.writeText(JSONObject().put("suggestions", JSONArray()).toString(2))
             }
         }
     }
@@ -897,18 +904,18 @@ class AgentOrchestrator(
         var lastToolType: String? = null
         while (stepsTaken < maxSteps) {
             val toolCall = requestSingleToolCall(plan.goal, task)
-                         if (toolCall == null) {
-                 observations[task.id] = "could not determine action for this task"
-                 saveObservations()
-                 onStatus("Task ${task.id}: no action suggested; revising plan…")
-                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
-                 if (revised != null) {
-                     persistPlanWithStatuses(revised)
-                     endRunStatsAndReport(onStatus, verb = "thought")
-                     return true
-                 }
-                 onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                                 val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
+            if (toolCall == null) {
+                observations[task.id] = "could not determine action for this task"
+                saveObservations()
+                onStatus("Task ${task.id}: no action suggested; revising plan…")
+                val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
+                if (revised != null) {
+                    persistPlanWithStatuses(revised)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+                val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
                 when (decision) {
                     "mini_plan" -> {
                         val ok = executeMiniPlanForTask(plan, task, onStatus)
@@ -921,14 +928,16 @@ class AgentOrchestrator(
                     "retry" -> { stepsTaken++; continue }
                     else -> { return false }
                 }
-             }
-            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
+            }
+            // Writer agent may refine write tool selections for modifying actions
+            val effectiveToolCall = if (isModifyingTool(toolCall.type) && Settings.writer_agent_enabled) {
+                runCatching { writerSuggestTool(plan.goal, task, toolCall) }.getOrNull() ?: toolCall
+            } else toolCall
+            val result = runCatching { executeToolCall(effectiveToolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
                 onStatus("Task ${task.id} failed: ${err}; revising plan…")
-                // Researcher agent assist
-                runCatching { researcherAssistIfNeeded(err, observations[task.id]) }.onSuccess { r -> if (!r.isNullOrBlank()) onStatus(r.take(1000)) }
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, err)
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
@@ -954,7 +963,7 @@ class AgentOrchestrator(
                 }
 
                 // If the tool modified the workspace, consider the task complete.
-                if (isModifyingTool(toolCall.type)) {
+                if (isModifyingTool(effectiveToolCall.type)) {
                     markTaskDone(task.id)
                     val info = informativeForTask(plan.goal, task, observations[task.id])
                     if (info != null) {
@@ -970,7 +979,7 @@ class AgentOrchestrator(
                 }
 
                 // If this is a discovery tool and the task category is discovery, complete the task now.
-                if (isDiscoveryTool(toolCall.type) && isDiscoveryCategory(task.category)) {
+                if (isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
                     // Ensure UI sees latest statuses
@@ -981,7 +990,7 @@ class AgentOrchestrator(
 
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
-                if (lastToolType == toolCall.type && obs != null && lastObservation == obs) {
+                if (lastToolType == effectiveToolCall.type && obs != null && lastObservation == obs) {
                     markTaskFailed(task.id, "repeated_non_modifying_observation")
                     onStatus("Task ${task.id}: repeated observation; revising plan…")
                     val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
@@ -991,22 +1000,22 @@ class AgentOrchestrator(
                         return true
                     }
                     onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
-                when (decision) {
-                    "mini_plan" -> {
-                        val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
+                    when (decision) {
+                        "mini_plan" -> {
+                            val ok = executeMiniPlanForTask(plan, task, onStatus)
+                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                        }
+                        "revise_plan" -> {
+                            val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
+                            if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
+                        }
+                        "retry" -> { stepsTaken++; continue }
+                        else -> { return false }
                     }
-                    "revise_plan" -> {
-                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
-                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
-                    }
-                    "retry" -> { stepsTaken++; continue }
-                    else -> { return false }
-                }
                 }
                 lastObservation = result.observation ?: lastObservation
-                lastToolType = toolCall.type
+                lastToolType = effectiveToolCall.type
 
                 // Discovery-type call; iterate to request the next action using fresh observation
                 stepsTaken++
@@ -2285,5 +2294,63 @@ class AgentOrchestrator(
         runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
         pendingCodebaseChanges.clear()
         lastCodebaseRefreshMs = System.currentTimeMillis()
+    }
+
+    private suspend fun writerSuggestTool(planGoal: String, task: Task, original: ToolCall): ToolCall? = withContext(Dispatchers.IO) {
+        if (!Settings.writer_agent_enabled) return@withContext null
+        // Try to resolve a target file path for context
+        var targetPath: String? = null
+        if (original.args.has("path")) {
+            targetPath = original.args.optString("path").ifBlank { null }
+        } else if (original.type == "apply_changes") {
+            val edits = original.args.optJSONArray("edits")
+            if (edits != null && edits.length() > 0) {
+                targetPath = edits.optJSONObject(0)?.optString("path")
+            }
+        }
+        val fileObj = JSONObject()
+        if (!targetPath.isNullOrBlank()) {
+            val f = resolvePath(targetPath!!)
+            if (f.exists() && f.isFile) {
+                val content = runCatching { f.readText() }.getOrElse { "" }
+                fileObj.put("path", f.absolutePath).put("content", content.take(40000)).put("bytes", f.length())
+            } else {
+                fileObj.put("path", f.absolutePath).put("missing", true)
+            }
+        }
+        val sys = """
+            You are a writer agent that selects the safest, most idempotent write tool for a change.
+            Available tools: write_file, search_replace, apply_changes (ops: replace_exact, replace_between_markers, insert_after_anchor, insert_before_anchor, replace_regex, ensure_block_present, append_once, write_if_missing).
+            Return ONLY minified JSON: {"tool_call": {"type": string, "args": object}, "reason": string, "proposed_new_tool": {"name": string, "example_regex": string, "purpose": string}}
+        """.trimIndent()
+        val user = """
+            Goal: ${planGoal}
+            Task: ${task.id} - ${task.description}
+            Proposed tool: {"type":"${original.type}","args":${original.args}}
+            Target file: ${fileObj}
+            Suggest a better tool_call if needed; keep it idempotent and minimal.
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@withContext null
+        val proposed = obj.optJSONObject("proposed_new_tool")
+        if (proposed != null) appendWriterToolSuggestion(proposed)
+        val tcObj = obj.optJSONObject("tool_call") ?: return@withContext null
+        val t = tcObj.optString("type").ifBlank { original.type }
+        val a = tcObj.optJSONObject("args") ?: original.args
+        return@withContext ToolCall(t, a)
+    }
+
+    private fun loadWriterToolsRoot(): JSONObject {
+        return runCatching { JSONObject(writerToolsFile.takeIf { it.exists() }?.readText().orEmpty()) }
+            .getOrElse { JSONObject().put("suggestions", JSONArray()) }
+    }
+
+    private fun appendWriterToolSuggestion(sugg: JSONObject) {
+        val root = loadWriterToolsRoot()
+        val arr = root.optJSONArray("suggestions") ?: JSONArray().also { root.put("suggestions", it) }
+        sugg.put("ts", System.currentTimeMillis())
+        arr.put(sugg)
+        writerToolsFile.writeText(root.toString(2))
     }
 }

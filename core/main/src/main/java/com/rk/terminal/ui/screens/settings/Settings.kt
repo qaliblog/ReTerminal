@@ -244,6 +244,21 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             )
         }
 
+        // Writer agent configuration
+        PreferenceGroup(heading = "Writer Agent") {
+            var wEnabled by remember { mutableStateOf(Settings.writer_agent_enabled) }
+            SettingsToggle(
+                label = "Enable writer agent",
+                description = "Suggests safest write tools and regex patterns for edits",
+                showSwitch = true,
+                default = wEnabled,
+                sideEffect = { checked ->
+                    wEnabled = checked
+                    Settings.writer_agent_enabled = checked
+                }
+            )
+        }
+
         // Codebase agent configuration
         PreferenceGroup(heading = "Codebase Agent") {
             var cbEnabled by remember { mutableStateOf(Settings.codebase_agent_enabled) }
