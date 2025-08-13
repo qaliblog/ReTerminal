@@ -938,42 +938,42 @@ class AgentOrchestrator(
             } else toolCall
             val result = runCatching { executeToolCall(effectiveToolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
-                observations[task.id] = "error: ${err}"
+                observations[toolCall.id] = "error: ${err}"
                 saveObservations()
-                onStatus("Task ${task.id} failed: ${err}; revising plan…")
+                onStatus("Task ${toolCall.id} failed: ${err}; revising plan…")
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, err)
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
-                onStatus("Task ${task.id}: plan revision unavailable; proceeding with remediation…")
+                onStatus("Task ${toolCall.id}: plan revision unavailable; proceeding with remediation…")
                 ToolResult(false, null)
             }
 
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
-                    observations[task.id] = result.observation
+                    observations[toolCall.id] = result.observation
                     saveObservations()
                     val preview = result.observation.take(800)
                     val info = informativeForTask(plan.goal, task, result.observation)
                     if (info != null) {
                         val what = info.optString("what").ifBlank { null }
-                        if (what != null) onStatus(what) else onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                        if (what != null) onStatus(what) else onStatus("Observed (${toolCall.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                     } else {
-                        onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                        onStatus("Observed (${toolCall.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                     }
                 }
 
                 // If the tool modified the workspace, consider the task complete.
                 if (isModifyingTool(effectiveToolCall.type)) {
-                    markTaskDone(task.id)
-                    val info = informativeForTask(plan.goal, task, observations[task.id])
+                    markTaskDone(toolCall.id)
+                    val info = informativeForTask(plan.goal, task, observations[toolCall.id])
                     if (info != null) {
                         val success = info.optString("success").ifBlank { null }
-                        if (success != null) onStatus(success) else onStatus("Task ${task.id}: done")
+                        if (success != null) onStatus(success) else onStatus("Task ${toolCall.id}: done")
                     } else {
-                        onStatus("Task ${task.id}: done")
+                        onStatus("Task ${toolCall.id}: done")
                     }
                     // Ensure UI sees latest statuses
                     persistPlanWithStatuses(plan)
@@ -983,8 +983,8 @@ class AgentOrchestrator(
 
                 // If this is a discovery tool and the task category is discovery, complete the task now.
                 if (isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) {
-                    markTaskDone(task.id)
-                    onStatus("Task ${task.id}: done")
+                    markTaskDone(toolCall.id)
+                    onStatus("Task ${toolCall.id}: done")
                     // Ensure UI sees latest statuses
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
@@ -994,20 +994,20 @@ class AgentOrchestrator(
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
                 if (lastToolType == effectiveToolCall.type && obs != null && lastObservation == obs) {
-                    markTaskFailed(task.id, "repeated_non_modifying_observation")
-                    onStatus("Task ${task.id}: repeated observation; revising plan…")
+                    markTaskFailed(toolCall.id, "repeated_non_modifying_observation")
+                    onStatus("Task ${toolCall.id}: repeated observation; revising plan…")
                     val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
                     if (revised != null) {
                         persistPlanWithStatuses(revised)
                         endRunStatsAndReport(onStatus, verb = "thought")
                         return true
                     }
-                    onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+                    onStatus("Task ${toolCall.id}: plan revision unavailable; deciding remediation…")
                     val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
                     when (decision) {
                         "mini_plan" -> {
                             val ok = executeMiniPlanForTask(plan, task, onStatus)
-                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                            if (ok) { onStatus("Mini-plan completed; retrying task ${toolCall.id}"); stepsTaken++; continue } else return false
                         }
                         "revise_plan" -> {
                             val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
@@ -1024,23 +1024,23 @@ class AgentOrchestrator(
                 stepsTaken++
                 continue
             } else {
-                if (!observations.containsKey(task.id)) {
-                    observations[task.id] = "failed without exception"
+                if (!observations.containsKey(toolCall.id)) {
+                    observations[toolCall.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${task.id}: failed; revising plan…")
+                onStatus("Task ${toolCall.id}: failed; revising plan…")
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
-                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+                onStatus("Task ${toolCall.id}: plan revision unavailable; deciding remediation…")
                 val decision = decideRemediationAction(plan.goal, task, "unknown_failure")
                 when (decision) {
                     "mini_plan" -> {
                         val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${toolCall.id}"); stepsTaken++; continue } else return false
                     }
                     "revise_plan" -> {
                         val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
@@ -1052,14 +1052,14 @@ class AgentOrchestrator(
             }
         }
 
-        onStatus("Task ${task.id}: reached step limit without completion; revising plan…")
+        onStatus("Task ${toolCall.id}: reached step limit without completion; revising plan…")
         val revised = revisePlanBasedOnHistoryAndError(plan.goal, "step_limit")
         if (revised != null) {
             persistPlanWithStatuses(revised)
             endRunStatsAndReport(onStatus, verb = "thought")
             return true
         }
-        onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+        onStatus("Task ${toolCall.id}: plan revision unavailable; deciding remediation…")
         val decision = decideRemediationAction(plan.goal, task, "step_limit")
         val r = when (decision) {
             "mini_plan" -> executeMiniPlanForTask(plan, task, onStatus)
@@ -1221,9 +1221,21 @@ class AgentOrchestrator(
 
     private fun executeToolCall(tc: ToolCall): ToolResult {
         currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
-        return when (tc.type) {
+        // Alias common synonyms to reduce failure due to type mismatches
+        val normalizedType = when (tc.type.lowercase()) {
+            "ls", "dir" -> "list_dir"
+            "tree", "find" -> "list_dir_recursive"
+            "stat" -> "stat_file"
+            "cat" -> "read_file"
+            "sed", "replace" -> "search_replace"
+            "mkdir" -> "make_dir"
+            "touch" -> "create_file"
+            else -> tc.type
+        }
+        val call = if (normalizedType == tc.type) tc else ToolCall(normalizedType, tc.args)
+        return when (call.type) {
             "create_file" -> {
-                val path = tc.args.optString("path")
+                val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 ensureParentDirs(f)
@@ -1232,11 +1244,11 @@ class AgentOrchestrator(
                 ToolResult(f.exists(), null)
             }
             "write_file" -> {
-                val path = tc.args.optString("path")
-                val contentRaw = tc.args.optString("content")
-                val encoding = tc.args.optString("encoding", "utf-8").lowercase()
-                val mode = tc.args.optString("mode", "overwrite")
-                val ifNotExists = tc.args.optBoolean("if_not_exists", false)
+                val path = call.args.optString("path")
+                val contentRaw = call.args.optString("content")
+                val encoding = call.args.optString("encoding", "utf-8").lowercase()
+                val mode = call.args.optString("mode", "overwrite")
+                val ifNotExists = call.args.optBoolean("if_not_exists", false)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 ensureParentDirs(f)
@@ -1256,7 +1268,7 @@ class AgentOrchestrator(
                 ToolResult(ok, JSONObject().put("path", f.absolutePath).put("bytes", f.length()).put("sha256", hash).toString())
             }
             "make_dir" -> {
-                val path = tc.args.optString("path")
+                val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
                 val d = resolvePath(path)
                 d.mkdirs()
@@ -1264,9 +1276,9 @@ class AgentOrchestrator(
                 ToolResult(d.exists() && d.isDirectory, null)
             }
             "run_shell" -> {
-                val command = tc.args.optString("command")
-                val timeoutMs = tc.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L)
-                val envObj = tc.args.optJSONObject("env")
+                val command = call.args.optString("command")
+                val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L)
+                val envObj = call.args.optJSONObject("env")
                 require(command.isNotBlank()) { "command missing" }
                 val wd = workingDirProvider()
                 val cacheKey = commandCacheKey(command, wd)
@@ -1304,8 +1316,8 @@ class AgentOrchestrator(
                 ToolResult(exit == 0, obs)
             }
             "get_cached_command_output" -> {
-                val command = tc.args.optString("command")
-                val maxAgeMs = tc.args.optLong("max_age_ms", 10 * 60 * 1000L).coerceAtLeast(0L)
+                val command = call.args.optString("command")
+                val maxAgeMs = call.args.optLong("max_age_ms", 10 * 60 * 1000L).coerceAtLeast(0L)
                 require(command.isNotBlank()) { "command missing" }
                 val wd = workingDirProvider()
                 val cacheKey = commandCacheKey(command, wd)
@@ -1326,7 +1338,7 @@ class AgentOrchestrator(
                 ToolResult(true, obj.toString())
             }
             "list_cached_commands" -> {
-                val max = tc.args.optInt("max", 50).coerceAtLeast(1)
+                val max = call.args.optInt("max", 50).coerceAtLeast(1)
                 val arr = JSONArray()
                 commandCache.entries.toList().takeLast(max).forEach { entry ->
                     arr.put(JSONObject().apply {
@@ -1342,12 +1354,10 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "list_dir" -> {
-                val path = tc.args.optString("path")
-                val includeHidden = tc.args.optBoolean("include_hidden", false)
-                val maxEntries = tc.args.optInt("max_entries", 500).coerceAtLeast(1)
-                require(path.isNotBlank()) { "path missing" }
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
                 val d = resolvePath(path)
-                val items = if (d.exists() && d.isDirectory) d.listFiles()?.filter { includeHidden || !it.name.startsWith('.') }?.take(maxEntries).orEmpty() else emptyList()
+                val items = if (d.exists() && d.isDirectory) d.listFiles()?.filter { true }?.take(200).orEmpty() else emptyList()
                 val arr = JSONArray()
                 items.forEach { f ->
                     arr.put(JSONObject().put("name", f.name).put("type", if (f.isDirectory) "dir" else "file"))
@@ -1357,11 +1367,10 @@ class AgentOrchestrator(
                 ToolResult(true, listing)
             }
             "list_dir_recursive" -> {
-                val path = tc.args.optString("path")
-                val maxDepth = tc.args.optInt("max_depth", 3).coerceAtLeast(0)
-                val maxEntries = tc.args.optInt("max_entries", 500).coerceAtLeast(1)
-                val includeHidden = tc.args.optBoolean("include_hidden", false)
-                require(path.isNotBlank()) { "path missing" }
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
+                val maxDepth = call.args.optInt("max_depth", 3).coerceAtLeast(0)
+                val maxEntries = call.args.optInt("max_entries", 500).coerceAtLeast(1)
                 val root = resolvePath(path)
                 val arr = JSONArray()
                 var count = 0
@@ -1370,7 +1379,6 @@ class AgentOrchestrator(
                     val files = dir.listFiles() ?: return
                     for (f in files) {
                         if (count >= maxEntries) break
-                        if (!includeHidden && f.name.startsWith('.')) continue
                         arr.put(JSONObject().put("path", f.absolutePath).put("type", if (f.isDirectory) "dir" else "file"))
                         count++
                         if (f.isDirectory) walk(f, depth + 1)
@@ -1382,9 +1390,8 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "read_file" -> {
-                val path = tc.args.optString("path")
-                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
-                val encoding = tc.args.optString("encoding", "utf-8").lowercase()
+                val path = call.args.optString("path")
+                val maxBytes = call.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 val content = if (f.exists() && f.isFile) {
@@ -1399,8 +1406,8 @@ class AgentOrchestrator(
                 ToolResult(true, content)
             }
             "read_files" -> {
-                val arr = tc.args.optJSONArray("paths") ?: JSONArray()
-                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val arr = call.args.optJSONArray("paths") ?: JSONArray()
+                val maxBytes = call.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
                 val results = JSONArray()
                 for (i in 0 until arr.length()) {
                     val rawPath = arr.optString(i)
@@ -1419,11 +1426,11 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "read_files_glob" -> {
-                val rootPath = tc.args.optString("root")
-                val glob = tc.args.optString("glob")
-                val maxFiles = tc.args.optInt("max_files", 50).coerceAtLeast(1)
-                val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
-                val maxDepth = tc.args.optInt("max_depth", 5).coerceAtLeast(0)
+                val rootPath = call.args.optString("root").ifBlank { workingDirProvider() }
+                val glob = call.args.optString("glob")
+                val maxFiles = call.args.optInt("max_files", 50).coerceAtLeast(1)
+                val maxBytes = call.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val maxDepth = call.args.optInt("max_depth", 5).coerceAtLeast(0)
                 require(rootPath.isNotBlank()) { "root missing" }
                 require(glob.isNotBlank()) { "glob missing" }
                 val root = resolvePath(rootPath)
@@ -1462,10 +1469,10 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "read_file_lines" -> {
-                val path = tc.args.optString("path")
-                val start = tc.args.optInt("start", 1).coerceAtLeast(1)
-                val end = tc.args.optInt("end", start + 500).coerceAtLeast(start)
-                val maxBytes = tc.args.optInt("max_bytes", 131072).coerceAtLeast(4096)
+                val path = call.args.optString("path")
+                val start = call.args.optInt("start", 1).coerceAtLeast(1)
+                val end = call.args.optInt("end", start + 500).coerceAtLeast(start)
+                val maxBytes = call.args.optInt("max_bytes", 131072).coerceAtLeast(4096)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 val obs = if (f.exists() && f.isFile) {
@@ -1481,10 +1488,10 @@ class AgentOrchestrator(
                 ToolResult(true, obs)
             }
             "read_file_section_by_markers" -> {
-                val path = tc.args.optString("path")
-                val startMarker = tc.args.optString("start_marker")
-                val endMarker = tc.args.optString("end_marker")
-                val includeMarkers = tc.args.optBoolean("include_markers", false)
+                val path = call.args.optString("path")
+                val startMarker = call.args.optString("start_marker")
+                val endMarker = call.args.optString("end_marker")
+                val includeMarkers = call.args.optBoolean("include_markers", false)
                 require(path.isNotBlank()) { "path missing" }
                 require(startMarker.isNotBlank() && endMarker.isNotBlank()) { "markers missing" }
                 val f = resolvePath(path)
@@ -1508,8 +1515,8 @@ class AgentOrchestrator(
                 ToolResult(true, obs)
             }
             "stat_file" -> {
-                val path = tc.args.optString("path")
-                require(path.isNotBlank()) { "path missing" }
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
                 val f = resolvePath(path)
                 val obj = JSONObject().put("path", f.absolutePath)
                     .put("exists", f.exists())
@@ -1520,10 +1527,10 @@ class AgentOrchestrator(
                 ToolResult(true, obj.toString())
             }
             "grep" -> {
-                val path = tc.args.optString("path")
-                val pattern = tc.args.optString("pattern")
-                val maxResults = tc.args.optInt("max_results", 200).coerceAtLeast(1)
-                val includeBinary = tc.args.optBoolean("include_binary", false)
+                val raw = call.args.optString("path")
+                val path = if (raw.isBlank()) workingDirProvider() else raw
+                val pattern = call.args.optString("pattern")
+                val maxResults = call.args.optInt("max_results", 200).coerceAtLeast(1)
                 require(path.isNotBlank()) { "path missing" }
                 require(pattern.isNotBlank()) { "pattern missing" }
                 val root = resolvePath(path)
@@ -1565,7 +1572,7 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "apply_changes" -> {
-                val edits = tc.args.optJSONArray("edits") ?: JSONArray()
+                val edits = call.args.optJSONArray("edits") ?: JSONArray()
                 val results = mutableListOf<String>()
                 for (i in 0 until edits.length()) {
                     val e = edits.optJSONObject(i) ?: continue
@@ -1695,10 +1702,10 @@ class AgentOrchestrator(
                 ToolResult(true, summary)
             }
             "search_replace" -> {
-                val path = tc.args.optString("path")
-                val old = tc.args.optString("old")
-                val new = tc.args.optString("new")
-                val unique = tc.args.optBoolean("unique", true)
+                val path = call.args.optString("path")
+                val old = call.args.optString("old")
+                val new = call.args.optString("new")
+                val unique = call.args.optBoolean("unique", true)
                 require(path.isNotBlank()) { "path missing" }
                 require(old.isNotBlank()) { "old missing" }
                 val file = resolvePath(path)
@@ -1711,8 +1718,8 @@ class AgentOrchestrator(
                 ToolResult(true, "replaced ${if (unique) 1 else occurrences} occurrence(s) in ${file.absolutePath}")
             }
             "delete_file" -> {
-                val path = tc.args.optString("path")
-                val missingOk = tc.args.optBoolean("missing_ok", true)
+                val path = call.args.optString("path")
+                val missingOk = call.args.optBoolean("missing_ok", true)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 val existed = f.exists()
@@ -1721,9 +1728,9 @@ class AgentOrchestrator(
                 ToolResult(ok, JSONObject().put("path", f.absolutePath).put("existed", existed).put("deleted", existed && ok).toString())
             }
             "copy_file" -> {
-                val src = tc.args.optString("src")
-                val dest = tc.args.optString("dest")
-                val overwrite = tc.args.optBoolean("overwrite", false)
+                val src = call.args.optString("src")
+                val dest = call.args.optString("dest")
+                val overwrite = call.args.optBoolean("overwrite", false)
                 require(src.isNotBlank() && dest.isNotBlank()) { "src/dest missing" }
                 val s = resolvePath(src)
                 val d = resolvePath(dest)
@@ -1735,9 +1742,9 @@ class AgentOrchestrator(
                 ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).put("bytes", d.length()).toString())
             }
             "move_file" -> {
-                val src = tc.args.optString("src")
-                val dest = tc.args.optString("dest")
-                val overwrite = tc.args.optBoolean("overwrite", false)
+                val src = call.args.optString("src")
+                val dest = call.args.optString("dest")
+                val overwrite = call.args.optBoolean("overwrite", false)
                 require(src.isNotBlank() && dest.isNotBlank()) { "src/dest missing" }
                 val s = resolvePath(src)
                 val d = resolvePath(dest)
@@ -1755,8 +1762,8 @@ class AgentOrchestrator(
                 ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).toString())
             }
             "json_get" -> {
-                val path = tc.args.optString("path")
-                val pointer = tc.args.optString("json_pointer")
+                val path = call.args.optString("path")
+                val pointer = call.args.optString("json_pointer")
                 require(path.isNotBlank()) { "path missing" }
                 require(pointer.isNotBlank()) { "json_pointer missing" }
                 val f = resolvePath(path)
@@ -1772,10 +1779,10 @@ class AgentOrchestrator(
                 ToolResult(true, out)
             }
             "json_set" -> {
-                val path = tc.args.optString("path")
-                val pointer = tc.args.optString("json_pointer")
-                val valueStr = tc.args.optString("value")
-                val valueIsJson = tc.args.optBoolean("value_is_json", true)
+                val path = call.args.optString("path")
+                val pointer = call.args.optString("json_pointer")
+                val valueStr = call.args.optString("value")
+                val valueIsJson = call.args.optBoolean("value_is_json", true)
                 require(path.isNotBlank()) { "path missing" }
                 require(pointer.isNotBlank()) { "json_pointer missing" }
                 val f = resolvePath(path)
@@ -1796,7 +1803,7 @@ class AgentOrchestrator(
                 f.writeText(root.toString(2))
                 ToolResult(true, JSONObject().put("path", f.absolutePath).put("updated", true).toString())
             }
-            else -> ToolResult(false, null)
+            else -> ToolResult(false, "unknown_tool_type:${call.type}")
         }
     }
 
@@ -1932,28 +1939,28 @@ class AgentOrchestrator(
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
-                observations[task.id] = "error: ${err}"
+                observations[toolCall.id] = "error: ${err}"
                 saveObservations()
-                onStatus("Task ${task.id} failed: ${err}")
+                onStatus("Task ${toolCall.id} failed: ${err}")
                 ToolResult(false, null)
             }
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
-                    observations[task.id] = result.observation
+                    observations[toolCall.id] = result.observation
                     saveObservations()
                     val preview = result.observation.take(800)
-                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    onStatus("Observed (${toolCall.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                 }
-                markTaskDone(task.id)
-                onStatus("Task ${task.id}: done")
+                markTaskDone(toolCall.id)
+                onStatus("Task ${toolCall.id}: done")
                 // Refresh persisted plan statuses after each task
                 persistPlanWithStatuses(plan)
             } else {
-                if (!observations.containsKey(task.id)) {
-                    observations[task.id] = "failed without exception"
+                if (!observations.containsKey(toolCall.id)) {
+                    observations[toolCall.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${task.id}: failed")
+                onStatus("Task ${toolCall.id}: failed")
                 return
             }
         }
