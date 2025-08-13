@@ -938,42 +938,42 @@ class AgentOrchestrator(
             } else toolCall
             val result = runCatching { executeToolCall(effectiveToolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
-                observations[toolCall.id] = "error: ${err}"
+                observations[task.id] = "error: ${err}"
                 saveObservations()
-                onStatus("Task ${toolCall.id} failed: ${err}; revising plan…")
+                onStatus("Task ${task.id} failed: ${err}; revising plan…")
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, err)
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
-                onStatus("Task ${toolCall.id}: plan revision unavailable; proceeding with remediation…")
+                onStatus("Task ${task.id}: plan revision unavailable; proceeding with remediation…")
                 ToolResult(false, null)
             }
 
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
-                    observations[toolCall.id] = result.observation
+                    observations[task.id] = result.observation
                     saveObservations()
                     val preview = result.observation.take(800)
                     val info = informativeForTask(plan.goal, task, result.observation)
                     if (info != null) {
                         val what = info.optString("what").ifBlank { null }
-                        if (what != null) onStatus(what) else onStatus("Observed (${toolCall.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                        if (what != null) onStatus(what) else onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                     } else {
-                        onStatus("Observed (${toolCall.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                        onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                     }
                 }
 
                 // If the tool modified the workspace, consider the task complete.
                 if (isModifyingTool(effectiveToolCall.type)) {
-                    markTaskDone(toolCall.id)
-                    val info = informativeForTask(plan.goal, task, observations[toolCall.id])
+                    markTaskDone(task.id)
+                    val info = informativeForTask(plan.goal, task, observations[task.id])
                     if (info != null) {
                         val success = info.optString("success").ifBlank { null }
-                        if (success != null) onStatus(success) else onStatus("Task ${toolCall.id}: done")
+                        if (success != null) onStatus(success) else onStatus("Task ${task.id}: done")
                     } else {
-                        onStatus("Task ${toolCall.id}: done")
+                        onStatus("Task ${task.id}: done")
                     }
                     // Ensure UI sees latest statuses
                     persistPlanWithStatuses(plan)
@@ -983,8 +983,8 @@ class AgentOrchestrator(
 
                 // If this is a discovery tool and the task category is discovery, complete the task now.
                 if (isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) {
-                    markTaskDone(toolCall.id)
-                    onStatus("Task ${toolCall.id}: done")
+                    markTaskDone(task.id)
+                    onStatus("Task ${task.id}: done")
                     // Ensure UI sees latest statuses
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
@@ -994,20 +994,20 @@ class AgentOrchestrator(
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
                 if (lastToolType == effectiveToolCall.type && obs != null && lastObservation == obs) {
-                    markTaskFailed(toolCall.id, "repeated_non_modifying_observation")
-                    onStatus("Task ${toolCall.id}: repeated observation; revising plan…")
+                    markTaskFailed(task.id, "repeated_non_modifying_observation")
+                    onStatus("Task ${task.id}: repeated observation; revising plan…")
                     val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
                     if (revised != null) {
                         persistPlanWithStatuses(revised)
                         endRunStatsAndReport(onStatus, verb = "thought")
                         return true
                     }
-                    onStatus("Task ${toolCall.id}: plan revision unavailable; deciding remediation…")
+                    onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
                     val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
                     when (decision) {
                         "mini_plan" -> {
                             val ok = executeMiniPlanForTask(plan, task, onStatus)
-                            if (ok) { onStatus("Mini-plan completed; retrying task ${toolCall.id}"); stepsTaken++; continue } else return false
+                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
                         }
                         "revise_plan" -> {
                             val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
@@ -1024,23 +1024,23 @@ class AgentOrchestrator(
                 stepsTaken++
                 continue
             } else {
-                if (!observations.containsKey(toolCall.id)) {
-                    observations[toolCall.id] = "failed without exception"
+                if (!observations.containsKey(task.id)) {
+                    observations[task.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${toolCall.id}: failed; revising plan…")
+                onStatus("Task ${task.id}: failed; revising plan…")
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
-                onStatus("Task ${toolCall.id}: plan revision unavailable; deciding remediation…")
+                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
                 val decision = decideRemediationAction(plan.goal, task, "unknown_failure")
                 when (decision) {
                     "mini_plan" -> {
                         val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${toolCall.id}"); stepsTaken++; continue } else return false
+                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
                     }
                     "revise_plan" -> {
                         val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
@@ -1052,14 +1052,14 @@ class AgentOrchestrator(
             }
         }
 
-        onStatus("Task ${toolCall.id}: reached step limit without completion; revising plan…")
+        onStatus("Task ${task.id}: reached step limit without completion; revising plan…")
         val revised = revisePlanBasedOnHistoryAndError(plan.goal, "step_limit")
         if (revised != null) {
             persistPlanWithStatuses(revised)
             endRunStatsAndReport(onStatus, verb = "thought")
             return true
         }
-        onStatus("Task ${toolCall.id}: plan revision unavailable; deciding remediation…")
+        onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
         val decision = decideRemediationAction(plan.goal, task, "step_limit")
         val r = when (decision) {
             "mini_plan" -> executeMiniPlanForTask(plan, task, onStatus)
@@ -1392,6 +1392,7 @@ class AgentOrchestrator(
             "read_file" -> {
                 val path = call.args.optString("path")
                 val maxBytes = call.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val encoding = call.args.optString("encoding", "utf-8").lowercase()
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 val content = if (f.exists() && f.isFile) {
@@ -1547,7 +1548,7 @@ class AgentOrchestrator(
                     if (count >= maxResults) return
                     val sz = runCatching { file.length() }.getOrElse { 0L }
                     if (sz > 5_000_000L) return // skip files > 5MB
-                    if (!includeBinary && isBinary(file)) return
+                    if (isBinary(file)) return
                     val lines = runCatching { file.readLines() }.getOrElse { emptyList() }
                     for ((idx, line) in lines.withIndex()) {
                         if (count >= maxResults) break
@@ -1939,28 +1940,28 @@ class AgentOrchestrator(
             }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
-                observations[toolCall.id] = "error: ${err}"
+                observations[task.id] = "error: ${err}"
                 saveObservations()
-                onStatus("Task ${toolCall.id} failed: ${err}")
+                onStatus("Task ${task.id} failed: ${err}")
                 ToolResult(false, null)
             }
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
-                    observations[toolCall.id] = result.observation
+                    observations[task.id] = result.observation
                     saveObservations()
                     val preview = result.observation.take(800)
-                    onStatus("Observed (${toolCall.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
                 }
-                markTaskDone(toolCall.id)
-                onStatus("Task ${toolCall.id}: done")
+                markTaskDone(task.id)
+                onStatus("Task ${task.id}: done")
                 // Refresh persisted plan statuses after each task
                 persistPlanWithStatuses(plan)
             } else {
-                if (!observations.containsKey(toolCall.id)) {
-                    observations[toolCall.id] = "failed without exception"
+                if (!observations.containsKey(task.id)) {
+                    observations[task.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${toolCall.id}: failed")
+                onStatus("Task ${task.id}: failed")
                 return
             }
         }
