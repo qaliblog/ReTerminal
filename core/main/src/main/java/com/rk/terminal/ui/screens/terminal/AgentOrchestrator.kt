@@ -20,6 +20,7 @@ import java.util.regex.Pattern
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
 import com.rk.settings.Settings
+import java.util.ArrayDeque
 
 /**
  * Minimal agent orchestrator that:
@@ -562,6 +563,12 @@ class AgentOrchestrator(
         val intentObj = classifyUserIntent(prompt, workspaceInfo)
         val intent = intentObj.optString("intent", "plan_and_execute")
         onStatus("Intent: ${intent}")
+        // Search suggestion
+        if (Settings.helper_agent_enabled && promptSuggestsSearch(prompt)) {
+            onStatus("Search hint: query seems to need external info. Running search…")
+            val info = runSearchAgent(prompt, onStatus)
+            onStatus(info.take(1200))
+        }
         when (intent) {
             "error_diagnosis" -> {
                 onStatus("Diagnosing error via discovery loop…")
@@ -637,6 +644,86 @@ class AgentOrchestrator(
                 return ThinkResult(producedPlan = plan)
             }
         }
+    }
+
+    private suspend fun runSearchAgent(query: String, onStatus: (String) -> Unit): String = withContext(Dispatchers.IO) {
+        val suggestSys = """
+            You suggest 1-3 websites to consult for the given query. Return ONLY minified JSON:
+            {"sites": [{"url": string, "why": string}...]}
+        """.trimIndent()
+        val suggestUser = """
+            Query: ${query}
+            Prefer official docs, MDN, language/framework docs, reputable blogs.
+        """.trimIndent()
+        val suggestContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", suggestSys), LlmMessage("user", suggestUser))))
+        val suggestJson = extractFirstJsonObject(suggestContent)
+        val sites = runCatching { JSONObject(suggestJson).optJSONArray("sites") }.getOrNull() ?: JSONArray()
+        val fetched = JSONArray()
+        fun curl(url: String): String {
+            val cmd = "curl -L --max-time 15 --silent --show-error --compressed --user-agent 'Mozilla/5.0' '" + url.replace("'", "%27") + "'"
+            val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd)))
+            return res.observation ?: ""
+        }
+        val linkRegex = Regex("href=\"(https?://[^\"]+)\"", RegexOption.IGNORE_CASE)
+        val toVisit = ArrayDeque<String>()
+        for (i in 0 until sites.length()) {
+            val u = sites.optJSONObject(i)?.optString("url").orEmpty()
+            if (u.isNotBlank()) toVisit.add(u)
+        }
+        val visited = mutableSetOf<String>()
+        var pages = 0
+        while (toVisit.isNotEmpty() && pages < 3) {
+            val u = toVisit.removeFirst()
+            if (visited.contains(u)) continue
+            visited.add(u)
+            onStatus("Search: fetching ${u}")
+            val html = curl(u)
+            if (html.isNotBlank()) {
+                fetched.put(JSONObject().put("url", u).put("html", html.take(20000)))
+                // enqueue a couple more links from this page
+                linkRegex.findAll(html).take(2).forEach { m ->
+                    val link = m.groupValues[1]
+                    if (!visited.contains(link)) toVisit.add(link)
+                }
+                pages++
+            }
+        }
+        val synthSys = """
+            You synthesize concise, accurate information from fetched pages. Return ONLY text. Cite URLs inline.
+        """.trimIndent()
+        val bundle = (0 until fetched.length()).joinToString("\n\n") { idx ->
+            val o = fetched.getJSONObject(idx)
+            "URL: ${o.optString("url")}\nHTML:\n" + o.optString("html")
+        }
+        val synthUser = """
+            Query: ${query}
+            Fetched pages:
+            ${bundle}
+        """.trimIndent()
+        val final = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", synthSys), LlmMessage("user", synthUser))))
+        return@withContext final
+    }
+
+    private fun promptSuggestsSearch(prompt: String): Boolean {
+        val p = prompt.lowercase()
+        return listOf("what is", "how to", "error ", "exception ", "docs", "documentation", "api", "install", "tutorial").any { p.contains(it) }
+    }
+
+    private suspend fun researcherAssistIfNeeded(errorNote: String, latestObs: String?): String? = withContext(Dispatchers.IO) {
+        if (!Settings.researcher_agent_enabled) return@withContext null
+        val sys = """
+            You decide what to research to resolve an error.
+            Return ONLY minified JSON: {"query": string}
+        """.trimIndent()
+        val user = """
+            Error: ${errorNote}
+            Context: ${latestObs?.take(800) ?: "(none)"}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@withContext null
+        val q = obj.optString("query").ifBlank { null } ?: return@withContext null
+        return@withContext runSearchAgent(q) { }
     }
 
     private fun loadProgress(): JSONObject {
@@ -833,6 +920,8 @@ class AgentOrchestrator(
                 observations[task.id] = "error: ${err}"
                 saveObservations()
                 onStatus("Task ${task.id} failed: ${err}; revising plan…")
+                // Researcher agent assist
+                runCatching { researcherAssistIfNeeded(err, observations[task.id]) }.onSuccess { r -> if (!r.isNullOrBlank()) onStatus(r.take(1000)) }
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, err)
                 if (revised != null) {
                     persistPlanWithStatuses(revised)

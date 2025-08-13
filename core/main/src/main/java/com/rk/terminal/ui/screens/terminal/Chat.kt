@@ -92,6 +92,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
     // Tab state: 0 = Chat, 1 = Git
     var selectedTab by remember { mutableStateOf(0) }
 
+    // Search agent toggle per chat UI
+    var searchAgentEnabled by remember { mutableStateOf(false) }
+
     // Chat history persistence under chat/<chatId>/history.json
     val chatDir = remember(currentChatId.value) { File(application!!.filesDir, "chat/${currentChatId.value}").apply { mkdirs() } }
     val historyFile = remember(currentChatId.value) { File(chatDir, "history.json") }
@@ -410,6 +413,11 @@ fun ChatView(mainActivityActivity: MainActivity) {
             reverseLayout = false,
             state = listState
         ) {
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    AssistChip(onClick = { searchAgentEnabled = !searchAgentEnabled }, label = { Text(if (searchAgentEnabled) "Search ON" else "Search OFF") })
+                }
+            }
             items(messages) { msg ->
                 val isUser = msg.role == "user"
                 Card(

@@ -141,6 +141,11 @@ object Settings {
     var informative_agent_enabled
         get() = Preference.getBoolean(key = "informative_agent_enabled", default = false)
         set(value) = Preference.setBoolean(key = "informative_agent_enabled", value)
+
+    // Researcher agent
+    var researcher_agent_enabled
+        get() = Preference.getBoolean(key = "researcher_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "researcher_agent_enabled", value)
 }
 
 object Preference {

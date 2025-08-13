@@ -229,6 +229,21 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             )
         }
 
+        // Researcher agent configuration
+        PreferenceGroup(heading = "Researcher Agent") {
+            var resEnabled by remember { mutableStateOf(Settings.researcher_agent_enabled) }
+            SettingsToggle(
+                label = "Enable researcher agent",
+                description = "Search docs/errors when debugging or investigating APIs",
+                showSwitch = true,
+                default = resEnabled,
+                sideEffect = { checked ->
+                    resEnabled = checked
+                    Settings.researcher_agent_enabled = checked
+                }
+            )
+        }
+
         // Codebase agent configuration
         PreferenceGroup(heading = "Codebase Agent") {
             var cbEnabled by remember { mutableStateOf(Settings.codebase_agent_enabled) }
