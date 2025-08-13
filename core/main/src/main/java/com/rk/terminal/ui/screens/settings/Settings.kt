@@ -214,6 +214,21 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             }
         }
 
+        // Informative agent configuration
+        PreferenceGroup(heading = "Informative Agent") {
+            var infoEnabled by remember { mutableStateOf(Settings.informative_agent_enabled) }
+            SettingsToggle(
+                label = "Enable informative agent",
+                description = "Adds richer task progress blurbs in chat",
+                showSwitch = true,
+                default = infoEnabled,
+                sideEffect = { checked ->
+                    infoEnabled = checked
+                    Settings.informative_agent_enabled = checked
+                }
+            )
+        }
+
         // Codebase agent configuration
         PreferenceGroup(heading = "Codebase Agent") {
             var cbEnabled by remember { mutableStateOf(Settings.codebase_agent_enabled) }

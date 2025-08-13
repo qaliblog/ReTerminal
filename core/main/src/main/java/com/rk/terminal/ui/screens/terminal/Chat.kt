@@ -430,7 +430,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         if (hasPlan) {
             val plan = activePlan.value!!
             Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(max = 300.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(max = 360.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
@@ -443,11 +443,14 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     }
                     Spacer(Modifier.height(8.dp))
                     val statuses = agent.getPlanStatuses()
-                    plan.tasks.take(12).forEach { t ->
+                    plan.tasks.forEach { t ->
                         val st = statuses[t.id] ?: "pending"
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("${t.id}: ${t.description}")
+                                val obsFile = File(application!!.filesDir, "chat/${currentChatId.value}/observations.json")
+                                val obsText = runCatching { if (obsFile.exists()) JSONObject(obsFile.readText()).optString(t.id) else null }.getOrNull()
+                                val displayDesc = if (!obsText.isNullOrBlank() && st == "done") obsText.take(200) else t.description
+                                Text("${t.id}: ${displayDesc}")
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     AssistChip(onClick = {}, label = { Text(st) }, colors = AssistChipDefaults.assistChipColors())
                                     if (!t.category.isNullOrBlank()) AssistChip(onClick = {}, label = { Text(t.category!!) })
@@ -480,11 +483,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                         scope.launch(Dispatchers.Main) { postStatus("Agent error: ${e.message}"); saveHistory() }
                                     }
                                 }
-                            }) { Text("Run") }
+                            }) { Text(if (st == "pending") "Run" else "Re-run") }
                         }
-                    }
-                    if (plan.tasks.size > 12) {
-                        Text("… and ${plan.tasks.size - 12} more", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }

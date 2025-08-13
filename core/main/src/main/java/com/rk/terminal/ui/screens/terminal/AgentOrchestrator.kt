@@ -848,13 +848,25 @@ class AgentOrchestrator(
                     observations[task.id] = result.observation
                     saveObservations()
                     val preview = result.observation.take(800)
-                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    val info = informativeForTask(plan.goal, task, result.observation)
+                    if (info != null) {
+                        val what = info.optString("what").ifBlank { null }
+                        if (what != null) onStatus(what) else onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    } else {
+                        onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
+                    }
                 }
 
                 // If the tool modified the workspace, consider the task complete.
                 if (isModifyingTool(toolCall.type)) {
                     markTaskDone(task.id)
-                    onStatus("Task ${task.id}: done")
+                    val info = informativeForTask(plan.goal, task, observations[task.id])
+                    if (info != null) {
+                        val success = info.optString("success").ifBlank { null }
+                        if (success != null) onStatus(success) else onStatus("Task ${task.id}: done")
+                    } else {
+                        onStatus("Task ${task.id}: done")
+                    }
                     // Ensure UI sees latest statuses
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
@@ -955,6 +967,22 @@ class AgentOrchestrator(
         }
         endRunStatsAndReport(onStatus, verb = "thought")
         return r
+    }
+
+    private suspend fun informativeForTask(planGoal: String, task: Task, lastObservation: String?): JSONObject? = withContext(Dispatchers.IO) {
+        if (!Settings.informative_agent_enabled) return@withContext null
+        val sys = """
+            You generate brief, friendly progress updates.
+            Return ONLY minified JSON: {"what": string, "success": string}
+        """.trimIndent()
+        val user = """
+            Goal: ${planGoal}
+            Task: ${task.id} - ${task.description}
+            Context: ${lastObservation?.take(600) ?: "(none)"}
+        """.trimIndent()
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        return@withContext runCatching { JSONObject(json) }.getOrNull()
     }
 
     private data class ToolCall(

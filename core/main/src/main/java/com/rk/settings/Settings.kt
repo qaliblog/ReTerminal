@@ -136,6 +136,11 @@ object Settings {
     var codebase_cache_path
         get() = Preference.getString(key = "codebase_cache_path", default = "codebase_cache.json")
         set(value) = Preference.setString(key = "codebase_cache_path", value)
+
+    // Informative agent
+    var informative_agent_enabled
+        get() = Preference.getBoolean(key = "informative_agent_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "informative_agent_enabled", value)
 }
 
 object Preference {
