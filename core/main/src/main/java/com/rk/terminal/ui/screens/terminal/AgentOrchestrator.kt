@@ -1223,8 +1223,8 @@ class AgentOrchestrator(
         currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
         // Alias common synonyms to reduce failure due to type mismatches
         val normalizedType = when (tc.type.lowercase().trim()) {
-            "ls", "dir" -> "list_dir"
-            "tree", "find" -> "list_dir_recursive"
+            "ls", "dir", "list", "listdir", "list_directory", "read_dir", "read_directory", "scan_dir" -> "list_dir"
+            "tree", "find", "list_recursive", "scan_recursive", "walk", "walk_dir", "walkdir" -> "list_dir_recursive"
             "stat" -> "stat_file"
             "cat" -> "read_file"
             "sed", "replace" -> "search_replace"
