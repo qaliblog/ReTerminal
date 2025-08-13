@@ -116,6 +116,9 @@ class AgentOrchestrator(
     private val observations: MutableMap<String, String> = linkedMapOf()
     // Command output cache: key -> {command, wd, output, exit, ts}
     private val commandCache: MutableMap<String, JSONObject> = LinkedHashMap()
+    // Track workspace changes to refresh codebase cache
+    private val pendingCodebaseChanges: MutableSet<String> = linkedSetOf()
+    private var lastCodebaseRefreshMs: Long = 0L
 
     init {
         // Load persisted observations if available to make the agent resilient to restarts
@@ -559,6 +562,10 @@ class AgentOrchestrator(
         if (Settings.codebase_agent_enabled) {
             runCatching { buildCodebaseCache(onStatus) }
         }
+        // After executing a modifying tool, we already schedule cache upgrade via notifyWorkspaceChanged
+
+        // Apply any pending codebase cache upgrades due to file changes
+        performCodebaseUpgradeIfPending(onStatus)
         onStatus("Thinking about intent…")
         val intentObj = classifyUserIntent(prompt, workspaceInfo)
         val intent = intentObj.optString("intent", "plan_and_execute")
@@ -1209,6 +1216,7 @@ class AgentOrchestrator(
                 val f = resolvePath(path)
                 ensureParentDirs(f)
                 if (!f.exists()) f.createNewFile()
+                if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
                 ToolResult(f.exists(), null)
             }
             "write_file" -> {
@@ -1232,6 +1240,7 @@ class AgentOrchestrator(
                 val ok = f.exists() && f.length() >= 0
                 val md = MessageDigest.getInstance("SHA-256").digest(f.readBytes())
                 val hash = md.joinToString("") { String.format("%02x", it) }
+                if (ok) notifyWorkspaceChanged(f.absolutePath)
                 ToolResult(ok, JSONObject().put("path", f.absolutePath).put("bytes", f.length()).put("sha256", hash).toString())
             }
             "make_dir" -> {
@@ -1239,6 +1248,7 @@ class AgentOrchestrator(
                 require(path.isNotBlank()) { "path missing" }
                 val d = resolvePath(path)
                 d.mkdirs()
+                if (d.exists()) notifyWorkspaceChanged(d.absolutePath)
                 ToolResult(d.exists() && d.isDirectory, null)
             }
             "run_shell" -> {
@@ -1663,6 +1673,7 @@ class AgentOrchestrator(
                     if (updated != null) {
                         runCatching { file.writeText(updated) }.onSuccess {
                             results.add("edit[$i]: ok (${path})")
+                            notifyWorkspaceChanged(file.absolutePath)
                         }.onFailure { ex ->
                             results.add("edit[$i]: write failed (${ex.message})")
                         }
@@ -1694,6 +1705,7 @@ class AgentOrchestrator(
                 val f = resolvePath(path)
                 val existed = f.exists()
                 val ok = if (existed) f.delete() else missingOk
+                if (ok) notifyWorkspaceChanged(f.absolutePath)
                 ToolResult(ok, JSONObject().put("path", f.absolutePath).put("existed", existed).put("deleted", existed && ok).toString())
             }
             "copy_file" -> {
@@ -1707,6 +1719,7 @@ class AgentOrchestrator(
                 if (d.exists() && !overwrite) return ToolResult(false, "dest exists")
                 ensureParentDirs(d)
                 d.writeBytes(s.readBytes())
+                notifyWorkspaceChanged(d.absolutePath)
                 ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).put("bytes", d.length()).toString())
             }
             "move_file" -> {
@@ -1726,6 +1739,7 @@ class AgentOrchestrator(
                     d.writeBytes(s.readBytes())
                     s.delete()
                 }
+                notifyWorkspaceChanged(d.absolutePath)
                 ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).toString())
             }
             "json_get" -> {
@@ -2174,7 +2188,7 @@ class AgentOrchestrator(
         return arr
     }
 
-    private suspend fun buildCodebaseCache(onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
+    private suspend fun buildCodebaseCache(onStatus: (String) -> Unit, includeRecursive: Boolean = false) = withContext(Dispatchers.IO) {
         if (!Settings.codebase_agent_enabled) return@withContext
         val wd = File(workingDirProvider())
         if (!wd.exists() || !wd.isDirectory) return@withContext
@@ -2253,10 +2267,23 @@ class AgentOrchestrator(
             .put("root", wd.absolutePath)
             .put("detected", overview)
             .put("important_files", important)
-            .put("recursive_scan_targets", targetsArr)
+            .put("recursive_scan_targets", if (includeRecursive) targetsArr else JSONArray())
             .put("analysis", runCatching { JSONObject(summaryJson) }.getOrElse { JSONObject().put("overview", summaryContent.take(1000)) })
         val cacheFile = File(wd, Settings.codebase_cache_path)
         cacheFile.writeText(cache.toString(2))
         onStatus("Codebase: cache written ${cacheFile.absolutePath}")
+    }
+
+    private fun notifyWorkspaceChanged(path: String) {
+        pendingCodebaseChanges.add(path)
+    }
+
+    private suspend fun performCodebaseUpgradeIfPending(onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
+        if (!Settings.codebase_agent_enabled) return@withContext
+        if (pendingCodebaseChanges.isEmpty()) return@withContext
+        onStatus("Codebase: changes detected (${pendingCodebaseChanges.size}); updating cache…")
+        runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
+        pendingCodebaseChanges.clear()
+        lastCodebaseRefreshMs = System.currentTimeMillis()
     }
 }
