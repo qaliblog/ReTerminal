@@ -2196,10 +2196,64 @@ class AgentOrchestrator(
         """.trimIndent()
         val summaryContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", summarySys), LlmMessage("user", summaryUser))))
         val summaryJson = extractFirstJsonObject(summaryContent) ?: JSONObject().put("overview", "").put("roles", JSONArray()).put("notes", JSONArray()).toString()
+        // Build recursive scan targets based on frameworks and common asset directories
+        val frameworks = overview.optJSONArray("frameworks") ?: JSONArray()
+        val languages = overview.optJSONArray("languages") ?: JSONArray()
+        val topLang = languages.optJSONObject(0)?.optString("lang") ?: ""
+        fun collectDir(name: String): List<File> {
+            val out = mutableListOf<File>()
+            fun walk(d: File, depth: Int) {
+                if (depth > 3) return
+                d.listFiles()?.forEach { f ->
+                    if (f.isDirectory) {
+                        if (f.name.equals(name, ignoreCase = true)) out.add(f)
+                        walk(f, depth + 1)
+                    }
+                }
+            }
+            walk(wd, 0)
+            return out
+        }
+        val targetsArr = JSONArray()
+        fun addTargets(bases: List<File>, reason: String, framework: String?) {
+            bases.forEach { base ->
+                targetsArr.put(
+                    JSONObject()
+                        .put("base", base.absolutePath)
+                        .put("reason", reason)
+                        .put("framework", framework ?: "")
+                        .put("language", topLang)
+                        .put("tool", "list_dir_recursive")
+                        .put("max_depth", 4)
+                        .put("max_entries", 1200)
+                )
+            }
+        }
+        val fwSet = (0 until frameworks.length()).mapNotNull { idx -> frameworks.optString(idx) }.toSet()
+        if (fwSet.contains("android") || fwSet.contains("gradle") || fwSet.contains("maven")) {
+            val bases = mutableListOf<File>()
+            bases.addAll(collectDir("src"))
+            bases.addAll(collectDir("app"))
+            bases.addAll(collectDir("core"))
+            bases.addAll(collectDir("module"))
+            addTargets(bases.distinct(), "android/java project structure", fwSet.firstOrNull())
+            addTargets(collectDir("assets"), "assets for android/java", fwSet.firstOrNull())
+            addTargets(collectDir("res"), "resources (res) for android", fwSet.firstOrNull())
+        }
+        if (fwSet.contains("node")) {
+            addTargets((collectDir("src") + collectDir("lib") + collectDir("public") + collectDir("assets")).distinct(), "node project dirs", "node")
+        }
+        if (fwSet.contains("flutter")) {
+            addTargets((collectDir("lib") + collectDir("assets")).distinct(), "flutter project dirs", "flutter")
+        }
+        // Generic assets/resources/static/templates
+        addTargets((collectDir("resources") + collectDir("static") + collectDir("templates")).distinct(), "common resource directories", fwSet.firstOrNull())
+
         val cache = JSONObject()
             .put("root", wd.absolutePath)
             .put("detected", overview)
             .put("important_files", important)
+            .put("recursive_scan_targets", targetsArr)
             .put("analysis", runCatching { JSONObject(summaryJson) }.getOrElse { JSONObject().put("overview", summaryContent.take(1000)) })
         val cacheFile = File(wd, Settings.codebase_cache_path)
         cacheFile.writeText(cache.toString(2))
