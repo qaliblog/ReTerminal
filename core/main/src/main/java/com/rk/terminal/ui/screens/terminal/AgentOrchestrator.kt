@@ -555,6 +555,9 @@ class AgentOrchestrator(
         val wdPath = workingDirProvider()
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        if (Settings.codebase_agent_enabled) {
+            runCatching { buildCodebaseCache(onStatus) }
+        }
         onStatus("Thinking about intent…")
         val intentObj = classifyUserIntent(prompt, workspaceInfo)
         val intent = intentObj.optString("intent", "plan_and_execute")
@@ -1984,5 +1987,104 @@ class AgentOrchestrator(
         if (!temp.isNaN()) Settings.ai_temperature_str = temp.toString()
         val model = reco.optString("model").ifBlank { null }
         if (model != null) Settings.api_model = model
+    }
+
+    private fun detectLanguagesAndFrameworks(root: File, maxFiles: Int = 1000): JSONObject {
+        val langCounts = mutableMapOf<String, Int>()
+        val frameworks = mutableSetOf<String>()
+        var scanned = 0
+        fun extOf(f: File): String = f.name.substringAfterLast('.', "").lowercase()
+        fun walk(d: File) {
+            if (!d.isDirectory || scanned >= maxFiles) return
+            d.listFiles()?.forEach { f ->
+                if (scanned >= maxFiles) return
+                if (f.isDirectory) walk(f) else {
+                    scanned++
+                    when (extOf(f)) {
+                        "kt", "kts" -> langCounts["kotlin"] = (langCounts["kotlin"] ?: 0) + 1
+                        "java" -> langCounts["java"] = (langCounts["java"] ?: 0) + 1
+                        "ts", "tsx" -> langCounts["typescript"] = (langCounts["typescript"] ?: 0) + 1
+                        "js", "jsx" -> langCounts["javascript"] = (langCounts["javascript"] ?: 0) + 1
+                        "py" -> langCounts["python"] = (langCounts["python"] ?: 0) + 1
+                        "rb" -> langCounts["ruby"] = (langCounts["ruby"] ?: 0) + 1
+                        "go" -> langCounts["go"] = (langCounts["go"] ?: 0) + 1
+                        "rs" -> langCounts["rust"] = (langCounts["rust"] ?: 0) + 1
+                        "swift" -> langCounts["swift"] = (langCounts["swift"] ?: 0) + 1
+                        "m", "mm" -> langCounts["objective-c"] = (langCounts["objective-c"] ?: 0) + 1
+                        "cs" -> langCounts["csharp"] = (langCounts["csharp"] ?: 0) + 1
+                        "cpp", "cc", "cxx", "c" -> langCounts["cpp/c"] = (langCounts["cpp/c"] ?: 0) + 1
+                        "gradle", "gradle.kts" -> frameworks.add("gradle")
+                        "xml" -> if (f.path.contains("src/main/AndroidManifest.xml")) frameworks.add("android")
+                        "json" -> if (f.name == "package.json") frameworks.add("node")
+                        "yaml", "yml" -> if (f.name == "pubspec.yaml") frameworks.add("flutter")
+                    }
+                    val name = f.name.lowercase()
+                    if (name == "build.gradle" || name == "build.gradle.kts") frameworks.add("gradle")
+                    if (name == "settings.gradle" || name == "settings.gradle.kts") frameworks.add("gradle")
+                    if (name == "pom.xml") frameworks.add("maven")
+                }
+            }
+        }
+        walk(root)
+        val langs = JSONArray()
+        langCounts.entries.sortedByDescending { it.value }.forEach { (k, v) -> langs.put(JSONObject().put("lang", k).put("files", v)) }
+        val fw = JSONArray(); frameworks.forEach { fw.put(it) }
+        return JSONObject().put("languages", langs).put("frameworks", fw)
+    }
+
+    private fun selectImportantFiles(root: File, limit: Int = 100): JSONArray {
+        val candidates = mutableListOf<File>()
+        fun score(f: File): Int {
+            val name = f.name.lowercase()
+            var s = 0
+            if (name.contains("readme") || name.contains("license")) s += 3
+            if (name.contains("main") || name.contains("app") || name.contains("orchestrator") || name.contains("manager")) s += 2
+            if (name.contains("build") || name.contains("gradle") || name.contains("manifest")) s += 2
+            if (name.endsWith(".kt") || name.endsWith(".java")) s += 1
+            if (f.length() > 0) s += 1
+            return s
+        }
+        fun walk(d: File) {
+            d.listFiles()?.forEach { f ->
+                if (f.isDirectory) walk(f) else candidates.add(f)
+            }
+        }
+        walk(root)
+        val arr = JSONArray()
+        candidates.asSequence().sortedByDescending { score(it) }.take(limit).forEach { f ->
+            arr.put(JSONObject().put("path", f.absolutePath).put("size", f.length()))
+        }
+        return arr
+    }
+
+    private suspend fun buildCodebaseCache(onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
+        if (!Settings.codebase_agent_enabled) return@withContext
+        val wd = File(workingDirProvider())
+        if (!wd.exists() || !wd.isDirectory) return@withContext
+        onStatus("Codebase: scanning ${wd.absolutePath}")
+        val overview = detectLanguagesAndFrameworks(wd)
+        val important = selectImportantFiles(wd)
+        val summarySys = """
+            You will summarize a repository at a high level.
+            Return ONLY minified JSON: {"overview": string, "roles": [{"module": string, "role": string}], "notes": [string...]}
+        """.trimIndent()
+        val filesPreview = important.take(10).let { arr ->
+            (0 until arr.length()).joinToString("\n") { idx -> arr.getJSONObject(idx).optString("path") }
+        }
+        val summaryUser = """
+            Important files (sample):
+            ${filesPreview}
+            Languages/Frameworks: ${overview}
+        """.trimIndent()
+        val summaryContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", summarySys), LlmMessage("user", summaryUser))))
+        val summaryJson = extractFirstJsonObject(summaryContent) ?: JSONObject().put("overview", "").put("roles", JSONArray()).put("notes", JSONArray()).toString()
+        val cache = JSONObject()
+            .put("root", wd.absolutePath)
+            .put("detected", overview)
+            .put("important_files", important)
+            .put("analysis", runCatching { JSONObject(summaryJson) }.getOrElse { JSONObject().put("overview", summaryContent.take(1000)) })
+        val cacheFile = File(wd, Settings.codebase_cache_path)
+        cacheFile.writeText(cache.toString(2))
+        onStatus("Codebase: cache written ${cacheFile.absolutePath}")
     }
 }

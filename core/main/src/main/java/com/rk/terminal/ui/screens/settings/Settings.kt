@@ -214,6 +214,33 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             }
         }
 
+        // Codebase agent configuration
+        PreferenceGroup(heading = "Codebase Agent") {
+            var cbEnabled by remember { mutableStateOf(Settings.codebase_agent_enabled) }
+            var cachePath by remember { mutableStateOf(Settings.codebase_cache_path) }
+
+            SettingsToggle(
+                label = "Enable codebase agent",
+                description = "Scan and analyze repo to build an overview and important files cache",
+                showSwitch = true,
+                default = cbEnabled,
+                sideEffect = { checked ->
+                    cbEnabled = checked
+                    Settings.codebase_agent_enabled = checked
+                }
+            )
+
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                OutlinedTextField(
+                    value = cachePath,
+                    onValueChange = { v -> cachePath = v; Settings.codebase_cache_path = v },
+                    label = { Text("Cache path (relative to workspace)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+            }
+        }
+
         PreferenceGroup {
             SettingsToggle(
                 label = "Customizations",
