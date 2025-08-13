@@ -11,8 +11,14 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import android.util.Base64
 import java.util.regex.Pattern
 import java.util.concurrent.TimeUnit
+import kotlin.math.min
 
 /**
  * Minimal agent orchestrator that:
@@ -308,7 +314,7 @@ class AgentOrchestrator(
             {"parent_task_id": string, "reason": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             Rules:
             - 2 to 6 concise steps max
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - Favor discovery-first then precise, idempotent edits
             - ids must be stable and short (m1, m2, ...)
             - No explanations beyond the 'reason' field
@@ -424,7 +430,7 @@ class AgentOrchestrator(
 
     private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, read_file_section_by_markers, read_files_glob, stat_file, get_cached_command_output, list_cached_commands, run_shell.
+            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, head_file, tail_file, read_file_chunk, read_file_section_by_markers, read_files_glob, stat_file, json_get, get_cached_command_output, list_cached_commands, run_shell.
             Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release; command -v apt dnf yum pacman apk; command -v python3 python node npm; which gcc g++; echo ${'$'}SHELL; echo ${'$'}PATH.
             Schema examples same as earlier. Output must be one minified JSON object.
         """.trimIndent()
@@ -485,7 +491,7 @@ class AgentOrchestrator(
             Return ONLY a minified JSON object with the following shape and nothing else:
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             - ids unique short strings (e.g., t1, t2)
-            - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - front-load discovery; prefer precise scopes; idempotent modifications
             - If tasks involve running commands or installing dependencies, include an initial environment discovery step (OS flavor, package manager, runtime versions) using run_shell.
             - Do not include code in the plan
@@ -936,14 +942,14 @@ class AgentOrchestrator(
 
     private fun isModifyingTool(type: String): Boolean {
         return when (type) {
-            "write_file", "apply_changes", "make_dir", "create_file", "search_replace" -> true
+            "write_file", "apply_changes", "make_dir", "create_file", "search_replace", "delete_file", "copy_file", "move_file", "json_set" -> true
             else -> false
         }
     }
 
     private fun isDiscoveryTool(type: String): Boolean {
         return when (type) {
-            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands", "run_shell" -> true
+            "read_file", "list_dir", "grep", "read_file_lines", "stat_file", "read_file_section_by_markers", "read_files", "read_files_glob", "list_dir_recursive", "get_cached_command_output", "list_cached_commands", "run_shell", "head_file", "tail_file", "read_file_chunk", "json_get" -> true
             else -> false
         }
     }
@@ -960,45 +966,53 @@ class AgentOrchestrator(
             You orchestrate a short inner loop to complete the current task using the available tools.
             The API is stateless. Never rely on hidden memory. Use ONLY the provided goal, task, working directory, observations, and optional task hints.
             Return ONLY a single minified JSON object describing ONE tool call to move the task forward.
-            Allowed schemas:
-            {"type":"create_file","args":{"path": string}}
-            {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean}}
-            {"type":"make_dir","args":{"path": string}}
-            {"type":"run_shell","args":{"command": string}}
-            {"type":"get_cached_command_output","args":{"command": string, "max_age_ms": number}}
-            {"type":"list_cached_commands","args":{"max": number}}
-            {"type":"list_dir","args":{"path": string}}
-            {"type":"list_dir_recursive","args":{"path": string, "max_depth": number, "max_entries": number}}
-            {"type":"read_file","args":{"path": string, "max_bytes": number}}
-            {"type":"read_file_lines","args":{"path": string, "start": number, "end": number, "max_bytes": number}}
-            {"type":"read_file_section_by_markers","args":{"path": string, "start_marker": string, "end_marker": string, "include_markers": boolean}}
-            {"type":"read_files","args":{"paths": [string,...], "max_bytes": number}}
-            {"type":"read_files_glob","args":{"root": string, "glob": string, "max_files": number, "max_bytes": number, "max_depth": number}}
-            {"type":"stat_file","args":{"path": string}}
-            {"type":"grep","args":{"path": string, "pattern": string, "max_results": number}}
-            {"type":"search_replace","args":{"path": string, "old": string, "new": string, "unique": boolean}}
-            {"type":"apply_changes","args":{"edits": [
-                {"path": string, "op": "replace_exact", "old": string, "new": string},
-                {"path": string, "op": "replace_between_markers", "start_marker": string, "end_marker": string, "new_content": string, "include_markers": false},
-                {"path": string, "op": "insert_after_anchor", "anchor": string, "new_content": string},
-                {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string},
-                {"path": string, "op": "replace_regex", "pattern": string, "replacement": string, "unique": boolean},
-                {"path": string, "op": "ensure_block_present", "block": string, "idempotent_marker": string, "anchor_before": string, "anchor_after": string},
-                {"path": string, "op": "append_once", "block": string, "idempotent_marker": string},
-                {"path": string, "op": "write_if_missing", "content": string}
-            ]}}
-            Tool ordering guidance:
-            - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
-            - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
-            - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
-            - Use get_cached_command_output before re-running heavy run_shell.
-            - For multi-file reads, keep limits small and targeted.
-            - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
-            - When context is missing, propose the minimal discovery call to fetch it.
-            - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
-              uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
-            - Return pure JSON on a single line without explanations.
-        """.trimIndent()
+                         Allowed schemas:
+             {"type":"create_file","args":{"path": string}}
+             {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean, "encoding": "utf-8"|"base64"}}
+             {"type":"make_dir","args":{"path": string}}
+             {"type":"delete_file","args":{"path": string, "missing_ok": boolean}}
+             {"type":"copy_file","args":{"src": string, "dest": string, "overwrite": boolean}}
+             {"type":"move_file","args":{"src": string, "dest": string, "overwrite": boolean}}
+             {"type":"run_shell","args":{"command": string, "timeout_ms": number, "env": {string: string}}}
+             {"type":"get_cached_command_output","args":{"command": string, "max_age_ms": number}}
+             {"type":"list_cached_commands","args":{"max": number}}
+             {"type":"list_dir","args":{"path": string, "include_hidden": boolean, "max_entries": number}}
+             {"type":"list_dir_recursive","args":{"path": string, "max_depth": number, "max_entries": number, "include_hidden": boolean}}
+             {"type":"read_file","args":{"path": string, "max_bytes": number, "encoding": "utf-8"|"base64"}}
+             {"type":"head_file","args":{"path": string, "lines": number}}
+             {"type":"tail_file","args":{"path": string, "lines": number}}
+             {"type":"read_file_lines","args":{"path": string, "start": number, "end": number, "max_bytes": number}}
+             {"type":"read_file_chunk","args":{"path": string, "offset": number, "length": number, "encoding": "utf-8"|"base64"}}
+             {"type":"read_file_section_by_markers","args":{"path": string, "start_marker": string, "end_marker": string, "include_markers": boolean}}
+             {"type":"read_files","args":{"paths": [string,...], "max_bytes": number}}
+             {"type":"read_files_glob","args":{"root": string, "glob": string, "max_files": number, "max_bytes": number, "max_depth": number}}
+             {"type":"stat_file","args":{"path": string}}
+             {"type":"grep","args":{"path": string, "pattern": string, "max_results": number, "include_binary": boolean}}
+             {"type":"search_replace","args":{"path": string, "old": string, "new": string, "unique": boolean}}
+             {"type":"json_get","args":{"path": string, "json_pointer": string}}
+             {"type":"json_set","args":{"path": string, "json_pointer": string, "value": string, "value_is_json": boolean}}
+             {"type":"apply_changes","args":{"edits": [
+                 {"path": string, "op": "replace_exact", "old": string, "new": string},
+                 {"path": string, "op": "replace_between_markers", "start_marker": string, "end_marker": string, "new_content": string, "include_markers": false},
+                 {"path": string, "op": "insert_after_anchor", "anchor": string, "new_content": string},
+                 {"path": string, "op": "insert_before_anchor", "anchor": string, "new_content": string},
+                 {"path": string, "op": "replace_regex", "pattern": string, "replacement": string, "unique": boolean},
+                 {"path": string, "op": "ensure_block_present", "block": string, "idempotent_marker": string, "anchor_before": string, "anchor_after": string},
+                 {"path": string, "op": "append_once", "block": string, "idempotent_marker": string},
+                 {"path": string, "op": "write_if_missing", "content": string}
+             ]}}
+             Tool ordering guidance:
+             - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
+             - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
+             - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
+             - Use get_cached_command_output before re-running heavy run_shell.
+             - For multi-file reads, keep limits small and targeted.
+             - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
+             - When context is missing, propose the minimal discovery call to fetch it.
+             - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
+               uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
+             - Return pure JSON on a single line without explanations.
+         """.trimIndent()
         val wd = workingDirProvider()
         val prior = if (observations.isEmpty()) "(none)" else observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(500)}${if (v.length > 500) " …" else ""}" }
         val hints = buildString {
@@ -1054,22 +1068,26 @@ class AgentOrchestrator(
             }
             "write_file" -> {
                 val path = tc.args.optString("path")
-                val content = tc.args.optString("content")
+                val contentRaw = tc.args.optString("content")
+                val encoding = tc.args.optString("encoding", "utf-8").lowercase()
                 val mode = tc.args.optString("mode", "overwrite")
                 val ifNotExists = tc.args.optBoolean("if_not_exists", false)
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 ensureParentDirs(f)
                 if (ifNotExists && f.exists()) {
-                    return ToolResult(true, "skipped_write_existing:${f.absolutePath}")
+                    return ToolResult(true, "skipped_write_existing:${'$'}{f.absolutePath}")
                 }
+                val bytes = if (encoding == "base64") Base64.decode(contentRaw, Base64.DEFAULT) else contentRaw.toByteArray(StandardCharsets.UTF_8)
                 if (mode == "append" && f.exists()) {
-                    f.appendText(content)
+                    f.appendBytes(bytes)
                 } else {
-                    f.writeText(content)
+                    f.writeBytes(bytes)
                 }
                 val ok = f.exists() && f.length() >= 0
-                ToolResult(ok, null)
+                val md = MessageDigest.getInstance("SHA-256").digest(f.readBytes())
+                val hash = md.joinToString("") { String.format("%02x", it) }
+                ToolResult(ok, JSONObject().put("path", f.absolutePath).put("bytes", f.length()).put("sha256", hash).toString())
             }
             "make_dir" -> {
                 val path = tc.args.optString("path")
@@ -1080,17 +1098,31 @@ class AgentOrchestrator(
             }
             "run_shell" -> {
                 val command = tc.args.optString("command")
+                val timeoutMs = tc.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L)
+                val envObj = tc.args.optJSONObject("env")
                 require(command.isNotBlank()) { "command missing" }
                 val wd = workingDirProvider()
-                // Cache key includes working directory
                 val cacheKey = commandCacheKey(command, wd)
-                // Always execute, but record to cache for future retrieval
-                val proc = ProcessBuilder("sh", "-c", command)
-                    .directory(File(wd))
-                    .redirectErrorStream(true)
-                    .start()
-                val output = proc.inputStream.bufferedReader().use { it.readText() }
-                val exit = proc.waitFor()
+                val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
+                if (envObj != null) {
+                    val env = pb.environment()
+                    envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
+                }
+                val proc = pb.start()
+                val reader = proc.inputStream.bufferedReader()
+                val start = System.currentTimeMillis()
+                val sb = StringBuilder()
+                while (proc.isAlive) {
+                    while (reader.ready()) sb.append(reader.readLine()).append('\n')
+                    if (System.currentTimeMillis() - start > timeoutMs) {
+                        proc.destroyForcibly()
+                        break
+                    }
+                    try { Thread.sleep(20) } catch (_: InterruptedException) {}
+                }
+                if (proc.isAlive) proc.destroyForcibly()
+                val exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
+                val output = sb.toString()
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
                     .put("command", command)
@@ -1144,9 +1176,16 @@ class AgentOrchestrator(
             }
             "list_dir" -> {
                 val path = tc.args.optString("path")
+                val includeHidden = tc.args.optBoolean("include_hidden", false)
+                val maxEntries = tc.args.optInt("max_entries", 500).coerceAtLeast(1)
                 require(path.isNotBlank()) { "path missing" }
                 val d = resolvePath(path)
-                val listing = if (d.exists() && d.isDirectory) listTopLevel(d, limit = 200) else JSONObject().put("path", d.absolutePath).put("items", JSONArray()).toString()
+                val items = if (d.exists() && d.isDirectory) d.listFiles()?.filter { includeHidden || !it.name.startsWith('.') }?.take(maxEntries).orEmpty() else emptyList()
+                val arr = JSONArray()
+                items.forEach { f ->
+                    arr.put(JSONObject().put("name", f.name).put("type", if (f.isDirectory) "dir" else "file"))
+                }
+                val listing = JSONObject().put("path", d.absolutePath).put("items", arr).toString()
                 currentRunStats?.dirsListed?.add(d.absolutePath)
                 ToolResult(true, listing)
             }
@@ -1154,6 +1193,7 @@ class AgentOrchestrator(
                 val path = tc.args.optString("path")
                 val maxDepth = tc.args.optInt("max_depth", 3).coerceAtLeast(0)
                 val maxEntries = tc.args.optInt("max_entries", 500).coerceAtLeast(1)
+                val includeHidden = tc.args.optBoolean("include_hidden", false)
                 require(path.isNotBlank()) { "path missing" }
                 val root = resolvePath(path)
                 val arr = JSONArray()
@@ -1163,6 +1203,7 @@ class AgentOrchestrator(
                     val files = dir.listFiles() ?: return
                     for (f in files) {
                         if (count >= maxEntries) break
+                        if (!includeHidden && f.name.startsWith('.')) continue
                         arr.put(JSONObject().put("path", f.absolutePath).put("type", if (f.isDirectory) "dir" else "file"))
                         count++
                         if (f.isDirectory) walk(f, depth + 1)
@@ -1176,14 +1217,15 @@ class AgentOrchestrator(
             "read_file" -> {
                 val path = tc.args.optString("path")
                 val maxBytes = tc.args.optInt("max_bytes", 65536).coerceAtLeast(1024)
+                val encoding = tc.args.optString("encoding", "utf-8").lowercase()
                 require(path.isNotBlank()) { "path missing" }
                 val f = resolvePath(path)
                 val content = if (f.exists() && f.isFile) {
                     val bytes = f.readBytes()
                     val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
-                                         val text = String(slice)
-                     currentRunStats?.filesRead?.add(f.absolutePath)
-                     JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", text).put("truncated", bytes.size > maxBytes).toString()
+                    currentRunStats?.filesRead?.add(f.absolutePath)
+                    val encoded = if (encoding == "base64") Base64.encodeToString(slice, Base64.NO_WRAP) else String(slice)
+                    JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", encoded).put("truncated", bytes.size > maxBytes).put("encoding", encoding).toString()
                 } else {
                     JSONObject().put("path", f.absolutePath).put("missing", true).toString()
                 }
@@ -1314,23 +1356,31 @@ class AgentOrchestrator(
                 val path = tc.args.optString("path")
                 val pattern = tc.args.optString("pattern")
                 val maxResults = tc.args.optInt("max_results", 200).coerceAtLeast(1)
+                val includeBinary = tc.args.optBoolean("include_binary", false)
                 require(path.isNotBlank()) { "path missing" }
                 require(pattern.isNotBlank()) { "pattern missing" }
                 val root = resolvePath(path)
                 val regex = runCatching { Pattern.compile(pattern) }.getOrElse { Pattern.compile(Pattern.quote(pattern)) }
                 val results = JSONArray()
                 var count = 0
+                fun isBinary(file: File): Boolean {
+                    return try {
+                        val bytes = file.inputStream().use { it.readNBytes(1024) }
+                        bytes.any { b -> b.toInt() == 0 } // crude NUL check
+                    } catch (e: Exception) { false }
+                }
                 fun scanFile(file: File) {
                     if (count >= maxResults) return
                     val sz = runCatching { file.length() }.getOrElse { 0L }
-                    if (sz > 2_000_000L) return // skip files > 2MB
+                    if (sz > 5_000_000L) return // skip files > 5MB
+                    if (!includeBinary && isBinary(file)) return
                     val lines = runCatching { file.readLines() }.getOrElse { emptyList() }
                     for ((idx, line) in lines.withIndex()) {
                         if (count >= maxResults) break
                         val m = regex.matcher(line)
                         if (m.find()) {
-                                                         results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
-                             currentRunStats?.grepPatterns?.add(pattern)
+                            results.put(JSONObject().put("file", file.absolutePath).put("line", idx + 1).put("text", line.take(500)))
+                            currentRunStats?.grepPatterns?.add(pattern)
                             count++
                         }
                     }
@@ -1492,6 +1542,89 @@ class AgentOrchestrator(
                 file.writeText(updated)
                 ToolResult(true, "replaced ${if (unique) 1 else occurrences} occurrence(s) in ${file.absolutePath}")
             }
+            "delete_file" -> {
+                val path = tc.args.optString("path")
+                val missingOk = tc.args.optBoolean("missing_ok", true)
+                require(path.isNotBlank()) { "path missing" }
+                val f = resolvePath(path)
+                val existed = f.exists()
+                val ok = if (existed) f.delete() else missingOk
+                ToolResult(ok, JSONObject().put("path", f.absolutePath).put("existed", existed).put("deleted", existed && ok).toString())
+            }
+            "copy_file" -> {
+                val src = tc.args.optString("src")
+                val dest = tc.args.optString("dest")
+                val overwrite = tc.args.optBoolean("overwrite", false)
+                require(src.isNotBlank() && dest.isNotBlank()) { "src/dest missing" }
+                val s = resolvePath(src)
+                val d = resolvePath(dest)
+                if (!s.exists() || !s.isFile) return ToolResult(false, "source missing")
+                if (d.exists() && !overwrite) return ToolResult(false, "dest exists")
+                ensureParentDirs(d)
+                d.writeBytes(s.readBytes())
+                ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).put("bytes", d.length()).toString())
+            }
+            "move_file" -> {
+                val src = tc.args.optString("src")
+                val dest = tc.args.optString("dest")
+                val overwrite = tc.args.optBoolean("overwrite", false)
+                require(src.isNotBlank() && dest.isNotBlank()) { "src/dest missing" }
+                val s = resolvePath(src)
+                val d = resolvePath(dest)
+                if (!s.exists() || !s.isFile) return ToolResult(false, "source missing")
+                if (d.exists()) {
+                    if (!overwrite) return ToolResult(false, "dest exists") else d.delete()
+                }
+                ensureParentDirs(d)
+                val ok = s.renameTo(d)
+                if (!ok) {
+                    d.writeBytes(s.readBytes())
+                    s.delete()
+                }
+                ToolResult(true, JSONObject().put("src", s.absolutePath).put("dest", d.absolutePath).toString())
+            }
+            "json_get" -> {
+                val path = tc.args.optString("path")
+                val pointer = tc.args.optString("json_pointer")
+                require(path.isNotBlank()) { "path missing" }
+                require(pointer.isNotBlank()) { "json_pointer missing" }
+                val f = resolvePath(path)
+                if (!f.exists()) return ToolResult(false, "file missing")
+                val obj = runCatching { JSONObject(f.readText()) }.getOrElse { return ToolResult(false, "invalid json") }
+                val parts = pointer.split('/').filter { it.isNotEmpty() }
+                var cur: Any = obj
+                for (p in parts) {
+                    if (cur is JSONObject) cur = cur.opt(p) ?: return ToolResult(true, JSONObject().put("found", false).toString())
+                    else return ToolResult(false, "non_object path")
+                }
+                val out = JSONObject().put("found", true).put("value", cur).toString()
+                ToolResult(true, out)
+            }
+            "json_set" -> {
+                val path = tc.args.optString("path")
+                val pointer = tc.args.optString("json_pointer")
+                val valueStr = tc.args.optString("value")
+                val valueIsJson = tc.args.optBoolean("value_is_json", true)
+                require(path.isNotBlank()) { "path missing" }
+                require(pointer.isNotBlank()) { "json_pointer missing" }
+                val f = resolvePath(path)
+                ensureParentDirs(f)
+                val root = if (f.exists()) runCatching { JSONObject(f.readText()) }.getOrElse { JSONObject() } else JSONObject()
+                val parts = pointer.split('/').filter { it.isNotEmpty() }
+                var cur: JSONObject = root
+                for ((idx, p) in parts.withIndex()) {
+                    val isLast = idx == parts.size - 1
+                    if (isLast) {
+                        val v: Any = if (valueIsJson) runCatching { JSONObject(valueStr) }.getOrElse { valueStr } else valueStr
+                        cur.put(p, v)
+                    } else {
+                        val next = cur.optJSONObject(p) ?: JSONObject().also { cur.put(p, it) }
+                        cur = next
+                    }
+                }
+                f.writeText(root.toString(2))
+                ToolResult(true, JSONObject().put("path", f.absolutePath).put("updated", true).toString())
+            }
             else -> ToolResult(false, null)
         }
     }
@@ -1558,7 +1691,7 @@ class AgentOrchestrator(
             Return ONLY a minified JSON object with the following shape and nothing else:
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
             - ids must be unique short strings (e.g., t1, t2, t3)
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - descriptions must be concrete and atomic
             - Include discovery tasks (list_dir_recursive/grep/read_files_glob) before modification tasks (apply_changes/write_file) and prefer precise scopes
             - Optional fields (targets/search/markers) should propose concrete globs, regexes, or section markers you expect to use, to prevent disruption if memory is truncated later
@@ -1672,7 +1805,7 @@ class AgentOrchestrator(
             - Keep ids stable for already completed tasks and mark them status:"done".
             - For failed tasks, either refine them into safer, smaller discovery steps or replace them.
             - You may add, remove, or edit pending tasks if needed.
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
             - Prefer minimal safe changes. Avoid repeating identical discovery without new signals.
             - Include optional hints (targets/search/markers) to guide discovery and precise editing in a stateless environment.
             - Do not include explanations.
