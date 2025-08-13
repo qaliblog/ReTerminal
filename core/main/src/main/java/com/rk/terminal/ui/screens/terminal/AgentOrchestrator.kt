@@ -1222,7 +1222,7 @@ class AgentOrchestrator(
     private fun executeToolCall(tc: ToolCall): ToolResult {
         currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
         // Alias common synonyms to reduce failure due to type mismatches
-        val normalizedType = when (tc.type.lowercase()) {
+        val normalizedType = when (tc.type.lowercase().trim()) {
             "ls", "dir" -> "list_dir"
             "tree", "find" -> "list_dir_recursive"
             "stat" -> "stat_file"
