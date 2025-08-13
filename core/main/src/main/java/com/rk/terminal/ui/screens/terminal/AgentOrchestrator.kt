@@ -2185,8 +2185,9 @@ class AgentOrchestrator(
             You will summarize a repository at a high level.
             Return ONLY minified JSON: {"overview": string, "roles": [{"module": string, "role": string}], "notes": [string...]}
         """.trimIndent()
-        val filesPreview = important.take(10).let { arr ->
-            (0 until arr.length()).joinToString("\n") { idx -> arr.getJSONObject(idx).optString("path") }
+        val filesPreview = run {
+            val limit = min(important.length(), 10)
+            (0 until limit).joinToString("\n") { idx -> important.optJSONObject(idx)?.optString("path").orEmpty() }
         }
         val summaryUser = """
             Important files (sample):
