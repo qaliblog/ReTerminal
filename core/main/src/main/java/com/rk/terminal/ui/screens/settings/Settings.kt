@@ -179,6 +179,41 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             }
         }
 
+        // Helper agent configuration
+        PreferenceGroup(heading = "Helper Agent") {
+            var enabled by remember { mutableStateOf(Settings.helper_agent_enabled) }
+            var maxTokens by remember { mutableIntStateOf(Settings.ai_max_tokens) }
+            var tempStr by remember { mutableStateOf(Settings.ai_temperature_str) }
+
+            SettingsToggle(
+                label = "Enable helper agent",
+                description = "Use a side helper to optimize prompts, tools, and AI settings",
+                showSwitch = true,
+                default = enabled,
+                sideEffect = { checked ->
+                    enabled = checked
+                    Settings.helper_agent_enabled = checked
+                }
+            )
+
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                OutlinedTextField(
+                    value = maxTokens.toString(),
+                    onValueChange = { v -> v.toIntOrNull()?.let { maxTokens = it; Settings.ai_max_tokens = it } },
+                    label = { Text("Max tokens override (optional)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = tempStr,
+                    onValueChange = { v -> tempStr = v; Settings.ai_temperature_str = v },
+                    label = { Text("Temperature override (e.g., 0, 0.2, 0.7)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+            }
+        }
+
         PreferenceGroup {
             SettingsToggle(
                 label = "Customizations",

@@ -19,6 +19,7 @@ import android.util.Base64
 import java.util.regex.Pattern
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
+import com.rk.settings.Settings
 
 /**
  * Minimal agent orchestrator that:
@@ -295,7 +296,10 @@ class AgentOrchestrator(
             Failure note: ${failureNote}
             Prior observations: ${(observations[task.id] ?: "(none)").take(800)}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("remediation_decision", mapOf("task" to task.description.take(300)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext "mini_plan"
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext "mini_plan"
         val action = obj.optString("action").ifBlank { "mini_plan" }
@@ -328,7 +332,10 @@ class AgentOrchestrator(
             Workspace snapshot: ${workspaceInfo}
             Prior observations: ${obsJson}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("mini_plan", mapOf("parent_task" to task.description.take(300)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val parent = obj.optString("parent_task_id").ifBlank { task.id }
@@ -423,7 +430,10 @@ class AgentOrchestrator(
             Prompt: ${prompt}
             Workspace snapshot: ${workspaceInfo}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("classify_intent", mapOf("prompt" to prompt.take(500)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: "{\"intent\":\"plan_and_execute\"}"
         return@withContext runCatching { JSONObject(jsonText) }.getOrElse { JSONObject().put("intent", "plan_and_execute") }
     }
@@ -440,7 +450,10 @@ class AgentOrchestrator(
             Context: ${contextNote}
             Prior signals: ${(observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(200)}" }).ifBlank { "(none)" }}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val msgs = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("discovery", mapOf("wd" to wd, "context" to contextNote))
+        applyHelperToMessages(reco, msgs)
+        val content = collectAll(LlmProvider.current().generate(msgs))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val type = obj.optString("type")
@@ -458,7 +471,10 @@ class AgentOrchestrator(
             Goal: ${prompt}
             Workspace snapshot: ${workspaceInfo}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("blueprint", mapOf("goal" to prompt.take(500)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         blueprintFile.writeText(jsonText)
         return@withContext blueprintFile.absolutePath
@@ -475,7 +491,10 @@ class AgentOrchestrator(
             Observations:
             ${obs.ifBlank { "(none)" }}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("qa_answer", mapOf("obs_preview" to obs.take(800)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         return@withContext content
     }
 
@@ -502,7 +521,12 @@ class AgentOrchestrator(
             Workspace snapshot (top-level): ${workspaceInfo}
             Extra context: ${extraContext ?: "(none)"}
         """.trimIndent()
-        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+        val flow = LlmProvider.current().generate(
+            listOf(
+                LlmMessage("system", sys),
+                LlmMessage("user", user)
+            )
+        )
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
@@ -1031,12 +1055,13 @@ class AgentOrchestrator(
             ${prior}
             Produce one tool call JSON now, following the Rules and leveraging hints and observations to avoid redundant discovery.
         """.trimIndent()
-        val flow = LlmProvider.current().generate(
-            listOf(
-                LlmMessage("system", sys),
-                LlmMessage("user", prompt)
-            )
+        val msgs = mutableListOf(
+            LlmMessage("system", sys),
+            LlmMessage("user", prompt)
         )
+        val reco = helperRecommend("inner_loop", mapOf("goal" to goal.take(500), "task" to "${task.id}:${task.description}"))
+        applyHelperToMessages(reco, msgs)
+        val flow = LlmProvider.current().generate(msgs)
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
@@ -1703,10 +1728,12 @@ class AgentOrchestrator(
             Working directory: ${wdPath}
             Workspace snapshot (top-level): ${workspaceInfo}
         """.trimIndent()
-        val messages = listOf(
+        val messages = mutableListOf(
             LlmMessage("system", sys),
             LlmMessage("user", user)
         )
+        val reco = helperRecommend("plan", mapOf("goal" to userGoal.take(1000), "wd" to wdPath))
+        applyHelperToMessages(reco, messages)
         val flow: Flow<String> = LlmProvider.current().generate(messages)
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
@@ -1819,7 +1846,10 @@ class AgentOrchestrator(
             Current plan JSON: ${currentPlanJson}
             Produce the updated plan JSON now.
         """.trimIndent()
-        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("plan_update", mapOf("goal" to plan.goal.take(500), "wd" to wdPath))
+        applyHelperToMessages(reco, messages)
+        val flow = LlmProvider.current().generate(messages)
         val content = collectAll(flow)
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
@@ -1896,7 +1926,10 @@ class AgentOrchestrator(
             Observations: ${obsJson}
             Command-line report (recent): ${cliJson}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
+        val reco = helperRecommend("revise_plan", mapOf("goal" to goal.take(500), "error" to errorNote.take(200)))
+        applyHelperToMessages(reco, messages)
+        val content = collectAll(LlmProvider.current().generate(messages))
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val goalOut = obj.optString("goal").ifBlank { goal }
@@ -1915,5 +1948,41 @@ class AgentOrchestrator(
         val newPlan = Plan(goalOut, tasks)
         persistPlanWithStatuses(newPlan)
         return@withContext newPlan
+    }
+
+    private fun buildHelperRecommendationPrompt(kind: String, contextMap: Map<String, String>): Pair<String,String> {
+        val sys = """
+            You are a side helper agent. Return ONLY compact JSON with keys you need to adjust the main agent call.
+            Schema: {"prompt_prefix": string, "prompt_suffix": string, "suggested_tools": [string...], "max_tokens": number, "temperature": number, "model": string}
+            Return minified JSON without extra text. Omit fields you don't adjust.
+        """.trimIndent()
+        val user = JSONObject().apply {
+            put("kind", kind)
+            contextMap.forEach { (k,v) -> put(k, v.take(2000)) }
+        }.toString()
+        return sys to user
+    }
+
+    private suspend fun helperRecommend(kind: String, contextMap: Map<String,String>): JSONObject? = withContext(Dispatchers.IO) {
+        if (!Settings.helper_agent_enabled) return@withContext null
+        val (sys, user) = buildHelperRecommendationPrompt(kind, contextMap)
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        return@withContext runCatching { JSONObject(json) }.getOrNull()
+    }
+
+    private fun applyHelperToMessages(reco: JSONObject?, messages: MutableList<LlmMessage>) {
+        if (reco == null) return
+        val prefix = reco.optString("prompt_prefix").ifBlank { null }
+        val suffix = reco.optString("prompt_suffix").ifBlank { null }
+        if (prefix != null) messages.add(0, LlmMessage("system", prefix))
+        if (suffix != null) messages.add(LlmMessage("user", suffix))
+        // Save suggested overrides to settings (ephemeral; UI provides defaults)
+        val maxTok = reco.optInt("max_tokens", -1)
+        if (maxTok > 0) Settings.ai_max_tokens = maxTok
+        val temp = reco.optDouble("temperature", Double.NaN)
+        if (!temp.isNaN()) Settings.ai_temperature_str = temp.toString()
+        val model = reco.optString("model").ifBlank { null }
+        if (model != null) Settings.api_model = model
     }
 }

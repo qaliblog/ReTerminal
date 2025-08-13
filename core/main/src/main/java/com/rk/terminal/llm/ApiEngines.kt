@@ -42,10 +42,14 @@ object OpenAIEngine : LlmEngine {
             val url = "$base/v1/chat/completions"
             val model = Settings.api_model.ifBlank { "gpt-4o-mini" }
             val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+            val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
+            val maxTokens = Settings.ai_max_tokens.coerceAtLeast(64)
             val bodyJson = JSONObject().apply {
                 put("model", model)
                 put("stream", true)
                 put("messages", buildChatHistoryArray(messages))
+                put("max_tokens", maxTokens)
+                if (tempOverride != null) put("temperature", tempOverride)
                 if (forceJson) {
                     put("response_format", JSONObject().put("type", "json_object"))
                     put("temperature", 0)
@@ -116,11 +120,14 @@ object AnthropicEngine : LlmEngine {
                 conv.put(item)
             }
             val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+            val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
+            val maxTokens = Settings.ai_max_tokens.coerceAtLeast(64)
             val body = JSONObject().apply {
                 put("model", model)
-                put("max_tokens", 1024)
+                put("max_tokens", maxTokens)
                 put("messages", conv)
                 if (!sys.isNullOrBlank()) put("system", sys)
+                if (tempOverride != null) put("temperature", tempOverride)
                 if (forceJson) put("temperature", 0)
             }
             val req = Request.Builder()
@@ -166,9 +173,11 @@ object GeminiEngine : LlmEngine {
             val userText = messages.filter { it.role == "user" }.joinToString("\n\n") { it.content }
             val sys = messages.firstOrNull { it.role == "system" }?.content
             val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+            val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
             val contents = JSONObject().apply {
                 put("generationConfig", JSONObject().apply {
                     if (forceJson) put("temperature", 0)
+                    else if (tempOverride != null) put("temperature", tempOverride)
                 })
                 put("contents", JSONArray().put(
                     JSONObject().put("parts", JSONArray().apply {
