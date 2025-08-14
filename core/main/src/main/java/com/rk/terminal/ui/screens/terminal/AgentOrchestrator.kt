@@ -98,12 +98,12 @@ class AgentOrchestrator(
         stats.endedMs = System.currentTimeMillis()
         val secs = ((stats.endedMs - stats.startedMs).coerceAtLeast(0L) / 100L).toDouble() / 10.0
         val parts = mutableListOf<String>()
-        if (stats.toolCounts.isNotEmpty()) parts.add(stats.toolCounts.entries.joinToString(", ") { (k: String, v: Int) -> "${'$'}{k}×${'$'}{v}" })
-        if (stats.filesRead.isNotEmpty()) parts.add("read ${'$'}{stats.filesRead.size} file(s): ${'$'}{stats.filesRead.take(3).joinToString(", ")}" + if (stats.filesRead.size > 3) " …" else "")
-        if (stats.filesModified.isNotEmpty()) parts.add("modified ${'$'}{stats.filesModified.size} file(s): ${'$'}{stats.filesModified.take(3).joinToString(", ")}" + if (stats.filesModified.size > 3) " …" else "")
-        if (stats.commandsRun.isNotEmpty()) parts.add("ran ${'$'}{stats.commandsRun.size} command(s): ${'$'}{stats.commandsRun.take(1).joinToString()}" + if (stats.commandsRun.size > 1) " …" else "")
-        if (stats.grepPatterns.isNotEmpty()) parts.add("grep ${'$'}{stats.grepPatterns.size} pattern(s)")
-        val summary = "${'$'}verb for ${'$'}secs s" + if (parts.isNotEmpty()) "; " + parts.joinToString("; ") else ""
+        if (stats.toolCounts.isNotEmpty()) parts.add(stats.toolCounts.entries.joinToString(", ") { (k: String, v: Int) -> "$k×$v" })
+        if (stats.filesRead.isNotEmpty()) parts.add("read ${stats.filesRead.size} file(s): ${stats.filesRead.take(3).joinToString(", ")}" + if (stats.filesRead.size > 3) " …" else "")
+        if (stats.filesModified.isNotEmpty()) parts.add("modified ${stats.filesModified.size} file(s): ${stats.filesModified.take(3).joinToString(", ")}" + if (stats.filesModified.size > 3) " …" else "")
+        if (stats.commandsRun.isNotEmpty()) parts.add("ran ${stats.commandsRun.size} command(s): ${stats.commandsRun.take(1).joinToString()}" + if (stats.commandsRun.size > 1) " …" else "")
+        if (stats.grepPatterns.isNotEmpty()) parts.add("grep ${stats.grepPatterns.size} pattern(s)")
+        val summary = "$verb for ${secs}s" + if (parts.isNotEmpty()) "; " + parts.joinToString("; ") else ""
         onStatus(summary)
         runCatching {
             val j = JSONObject()
@@ -2332,6 +2332,21 @@ if (exit != 0) {
 			}
 		}
 		return sb.toString()
+	}
+
+	private suspend fun writerSuggestTool(planGoal: String, task: Task, original: ToolCall): ToolCall? = withContext(Dispatchers.IO) { null }
+
+	private fun buildHelperRecommendationPrompt(kind: String, contextMap: Map<String, String>): Pair<String,String> {
+		val sys = """
+			You are a side helper agent. Return ONLY compact JSON with keys you need to adjust the main agent call.
+			Schema: {"prompt_prefix": string, "prompt_suffix": string, "suggested_tools": [string...], "max_tokens": number, "temperature": number, "model": string}
+			Return minified JSON without extra text. Omit fields you don't adjust.
+		""".trimIndent()
+		val user = JSONObject().apply {
+			put("kind", kind)
+			contextMap.forEach { (k, v) -> put(k, v.take(2000)) }
+		}.toString()
+		return sys to user
 	}
 }
 
