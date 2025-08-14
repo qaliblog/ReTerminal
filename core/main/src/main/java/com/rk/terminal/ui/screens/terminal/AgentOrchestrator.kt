@@ -2589,7 +2589,7 @@ object HiddenShell {
         val createLatch = java.util.concurrent.CountDownLatch(1)
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             try {
-                val session = binder.createSession(sessionId, client, activity, workingMode)
+                val session = binder.getService().createHiddenSession(sessionId, client, activity, workingMode)
                 // Ensure world-readable out file when on shared storage and set XPWD for Alpine init
                 val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
                 session.write(cmdLine)
@@ -2612,7 +2612,7 @@ object HiddenShell {
 
         // Terminate session on main thread (best-effort)
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-            runCatching { binder.terminateSession(sessionId) }
+            runCatching { binder.getService().terminateHiddenSession(sessionId) }
         }
 
         // Clean and return
