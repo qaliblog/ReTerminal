@@ -355,7 +355,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     }
                 }
                 Card(modifier = Modifier.fillMaxWidth().weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                    Column(Modifier.padding(12dp)) {
+                    Column(Modifier.padding(12.dp)) {
                         Text("Git Log", style = MaterialTheme.typography.titleSmall)
                         Spacer(Modifier.height(8.dp))
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -418,11 +418,6 @@ fun ChatView(mainActivityActivity: MainActivity) {
             reverseLayout = false,
             state = listState
         ) {
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AssistChip(onClick = { searchAgentEnabled = !searchAgentEnabled }, label = { Text(if (searchAgentEnabled) "Search ON" else "Search OFF") })
-                }
-            }
             items(messages) { msg ->
                 val isUser = msg.role == "user"
                 Card(

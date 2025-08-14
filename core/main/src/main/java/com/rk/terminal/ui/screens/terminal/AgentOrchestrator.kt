@@ -2538,15 +2538,33 @@ object HiddenShell {
                 override fun onBell(session: TerminalSession) {}
                 override fun onColorsChanged(session: TerminalSession) {}
                 override fun onTerminalCursorStateChange(state: Boolean) {}
-                override fun onSessionStarted(session: TerminalSession) {}
-                override fun onNewSession(session: TerminalSession) {}
-                override fun onTerminalOutput(session: TerminalSession, data: String) { sb.append(data) }
-                override fun onTerminalStopped(session: TerminalSession) {}
+                override fun getTerminalCursorStyle(): Int = com.termux.terminal.TerminalEmulator.DEFAULT_TERMINAL_CURSOR_STYLE
+                override fun logError(tag: String?, message: String?) {}
+                override fun logWarn(tag: String?, message: String?) {}
+                override fun logInfo(tag: String?, message: String?) {}
+                override fun logDebug(tag: String?, message: String?) {}
+                override fun logVerbose(tag: String?, message: String?) {}
+                override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
+                override fun logStackTrace(tag: String?, e: Exception?) {}
+                override fun onScale(scale: Float): Float = scale
+                override fun onSingleTapUp(e: android.view.MotionEvent) {}
+                override fun shouldBackButtonBeMappedToEscape(): Boolean = false
+                override fun shouldEnforceCharBasedInput(): Boolean = true
+                override fun shouldUseCtrlSpaceWorkaround(): Boolean = true
+                override fun isTerminalViewSelected(): Boolean = true
+                override fun copyModeChanged(copyMode: Boolean) {}
+                override fun onKeyDown(keyCode: Int, e: android.view.KeyEvent, session: TerminalSession): Boolean = false
+                override fun onKeyUp(keyCode: Int, e: android.view.KeyEvent): Boolean = false
+                override fun onLongPress(event: android.view.MotionEvent): Boolean = false
+                override fun readControlKey(): Boolean = false
+                override fun readAltKey(): Boolean = false
+                override fun readShiftKey(): Boolean = false
+                override fun readFnKey(): Boolean = false
+                override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean = false
+                override fun onEmulatorSet() {}
             }
             val session = binder.createSession(sessionId, client, ctx, workingMode)
-            // Change directory
             session.write("cd \"$wd\"\n")
-            // Run command and echo a sentinel to know when done
             val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
             session.write(command + "; echo $sentinel\n")
             val start = System.currentTimeMillis()
