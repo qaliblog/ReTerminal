@@ -634,6 +634,15 @@ fun ChatView(mainActivityActivity: MainActivity) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            AssistChip(
+                onClick = {
+                    searchAssist = !searchAssist
+                    Settings.helper_agent_enabled = searchAssist
+                    Settings.researcher_agent_enabled = searchAssist
+                    postStatus("Search assist ${if (searchAssist) "enabled" else "disabled"}.")
+                },
+                label = { Text(if (searchAssist) "Search: ON" else "Search: OFF") }
+            )
             Button(
                 onClick = {
                     val prompt = input.trim()
