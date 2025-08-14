@@ -1310,9 +1310,9 @@ class AgentOrchestrator(
                 if (Settings.agent_use_terminal_session) {
                     // Use hidden terminal session via SessionService when available
                     val outHidden = runCatching { HiddenShell.execInHiddenSession(context as? MainActivity, wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
-                    if (!outHidden.contains("Hidden session not available") && outHidden.isNotBlank()) {
+                    if (!outHidden.contains("Hidden session not available")) {
                         output = outHidden
-                        exit = 0
+                        exit = 0 // best-effort; hidden session does not provide exit code
                     } else {
                         // Fallback to ProcessBuilder
                         val fallback = runCatching {
@@ -2591,7 +2591,7 @@ object HiddenShell {
             try {
                 val session = binder.createSession(sessionId, client, activity, workingMode)
                 // Ensure world-readable out file when on shared storage and set XPWD for Alpine init
-                val cmdLine = "export XPWD=\"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
+                val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
                 session.write(cmdLine)
             } finally {
                 createLatch.countDown()
