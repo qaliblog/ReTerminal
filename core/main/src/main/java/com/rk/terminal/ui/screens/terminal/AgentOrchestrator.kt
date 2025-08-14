@@ -90,6 +90,7 @@ class AgentOrchestrator(
     )
     private var currentRunStats: RunStats? = null
     private var currentTaskContext: Task? = null
+    private var lastInstallSuccess: Boolean = false
     private fun beginRunStats() { currentRunStats = RunStats() }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
@@ -995,6 +996,16 @@ class AgentOrchestrator(
                     return true
                 }
 
+                // Installation via run_shell succeeded; treat as completion
+                if (lastInstallSuccess) {
+                    lastInstallSuccess = false
+                    markTaskDone(task.id)
+                    onStatus("Task ${task.id}: installation complete")
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+
                 // If this is a discovery tool and the task category is discovery, or env preflight shell, complete the task now.
                 val envPreflight = effectiveToolCall.type == "run_shell" && isEnvPreflightCommand(effectiveToolCall.args.optString("command"))
                 if ((isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) || envPreflight) {
@@ -1336,7 +1347,13 @@ class AgentOrchestrator(
                         combined.append(retry.first)
                         output = combined.toString()
                         exit = retry.second
+                        if (exit == 0 && isInstallCommand(upgraded)) {
+                            lastInstallSuccess = true
+                        }
                     }
+                }
+                if (exit == 0 && isInstallCommand(command)) {
+                    lastInstallSuccess = true
                 }
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
@@ -2522,6 +2539,14 @@ class AgentOrchestrator(
         val g = ((task?.description ?: "") + " " + (task?.search?.joinToString(" ") ?: "")).lowercase()
         val hints = listOf("android", "kotlin", "java", "src", "main", "androidmanifest")
         return hints.any { g.contains(it) }
+    }
+
+    private fun isInstallCommand(cmd: String): Boolean {
+        val c = cmd.lowercase()
+        return c.contains("apk add") || c.contains("apt-get install") || c.contains("apt install") ||
+                c.contains("dnf install") || c.contains("yum install") ||
+                Regex("\\bpacman\\s+-S(\n|\r| |$)").containsMatchIn(c) ||
+                c.contains("pip install") || c.contains("pip3 install")
     }
 }
 
