@@ -146,6 +146,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val activePlan = remember(currentChatId.value) { mutableStateOf<AgentOrchestrator.Plan?>(null) }
     val isPlanning = remember { mutableStateOf(false) }
     var autoRun by remember { mutableStateOf(false) }
+    var searchAssist by remember { mutableStateOf(Settings.helper_agent_enabled || Settings.researcher_agent_enabled) }
 
     // Single agent instance per chat session id
     val agent = remember(currentChatId.value) {
@@ -632,6 +633,12 @@ fun ChatView(mainActivityActivity: MainActivity) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            AssistChip(onClick = {
+                searchAssist = !searchAssist
+                Settings.helper_agent_enabled = searchAssist
+                Settings.researcher_agent_enabled = searchAssist
+                postStatus("Search assist ${if (searchAssist) "enabled" else "disabled"}.")
+            }, label = { Text(if (searchAssist) "Search: ON" else "Search: OFF") })
             Button(
                 onClick = {
                     val prompt = input.trim()

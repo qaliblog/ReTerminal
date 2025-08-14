@@ -1378,8 +1378,10 @@ class AgentOrchestrator(
             "list_dir_recursive" -> {
                 val raw = call.args.optString("path")
                 val path = if (raw.isBlank()) workingDirProvider() else raw
-                val maxDepth = call.args.optInt("max_depth", 3).coerceAtLeast(0)
-                val maxEntries = call.args.optInt("max_entries", 500).coerceAtLeast(1)
+                // Guard: only allow when preflight says ok
+                val allow = shouldAllowRecursiveListing(Task("tmp", call.type, task.category, task.targets, task.search, task.markers))
+                val maxDepth = if (allow) call.args.optInt("max_depth", 3).coerceIn(1, 3) else 0
+                val maxEntries = if (allow) call.args.optInt("max_entries", 300).coerceIn(1, 300) else 1
                 val root = resolvePath(path)
                 val arr = JSONArray()
                 var count = 0
@@ -1393,7 +1395,7 @@ class AgentOrchestrator(
                         if (f.isDirectory) walk(f, depth + 1)
                     }
                 }
-                if (root.exists() && root.isDirectory) walk(root, 0)
+                if (allow && root.exists() && root.isDirectory) walk(root, 0)
                 val out = JSONObject().put("root", root.absolutePath).put("max_depth", maxDepth).put("items", arr).toString()
                 currentRunStats?.dirsListed?.add(root.absolutePath)
                 ToolResult(true, out)
@@ -2484,6 +2486,14 @@ class AgentOrchestrator(
         val osRelease = File(root, "etc/os-release")
         val ok = runCatching { osRelease.readText().lowercase().contains("id=alpine") }.getOrElse { false }
         return if (ok) root else null
+    }
+
+    private fun shouldAllowRecursiveListing(task: Task): Boolean {
+        val cat = task.category?.lowercase()?.trim()
+        if (cat != "list_dir_recursive") return false
+        val g = (task.description + " " + (task.search?.joinToString(" ") ?: "")).lowercase()
+        val hints = listOf("android", "kotlin", "java", "src", "main", "androidmanifest")
+        return hints.any { g.contains(it) }
     }
 }
 
