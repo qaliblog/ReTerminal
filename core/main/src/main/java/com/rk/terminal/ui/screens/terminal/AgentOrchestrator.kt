@@ -2554,8 +2554,8 @@ object HiddenShell {
         if (activity == null || activity.sessionBinder == null) return "Hidden session not available"
         val binder: SessionService.SessionBinder = activity.sessionBinder!!
         val service = binder.getService()
-        val current = service.currentSession.value
-        val workingMode = service.sessionList[current.first] ?: 0
+        // Force Alpine working mode to ensure apk/git and PATH from Alpine are available
+        val workingMode = com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE
         val sessionId = "agent-bg-" + System.currentTimeMillis()
 
         // Prefer writing output next to the working directory for proot visibility; fallback to cache
@@ -2590,8 +2590,8 @@ object HiddenShell {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             try {
                 val session = binder.createSession(sessionId, client, activity, workingMode)
-                // Ensure world-readable out file when on shared storage
-                val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
+                // Ensure world-readable out file when on shared storage and set XPWD for Alpine init
+                val cmdLine = "export XPWD=\"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
                 session.write(cmdLine)
             } finally {
                 createLatch.countDown()
