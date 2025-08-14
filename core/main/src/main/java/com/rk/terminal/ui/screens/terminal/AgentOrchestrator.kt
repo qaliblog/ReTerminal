@@ -2273,8 +2273,31 @@ if (exit != 0) {
 			"list_dir" -> ToolCall("list_dir", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
 			"read_file" -> ToolCall("read_file", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
 			"grep" -> ToolCall("grep", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()).put("pattern", task.search?.firstOrNull() ?: ".").put("max_results", 200))
-			"create_file" -> if (proposed.type.isNotBlank()) proposed else ToolCall("create_file", JSONObject().put("path", task.targets?.firstOrNull() ?: File(workingDirProvider(), "NEW_FILE").absolutePath))
-			"write_file" -> if (proposed.type.isNotBlank()) proposed else ToolCall("read_file", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
+			"create_file" -> {
+				if (proposed.type.isNotBlank()) proposed else {
+					val target = proposed.args.optString("path").ifBlank { task.targets?.firstOrNull() ?: File(workingDirProvider(), "NEW_FILE").absolutePath }
+					ToolCall("create_file", JSONObject().put("path", target))
+				}
+			}
+			"write_file" -> {
+				val desc = (task.description ?: "").lowercase()
+				val suggested = proposed.args.optString("path")
+				val derived = when {
+					suggested.isNotBlank() -> suggested
+					!task.targets.isNullOrEmpty() -> task.targets!!.first()
+					desc.contains("requirements") -> File(workingDirProvider(), "requirements.txt").absolutePath
+					desc.contains("html") -> File(workingDirProvider(), "index.html").absolutePath
+					desc.contains("css") -> File(workingDirProvider(), "style.css").absolutePath
+					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "app.js").absolutePath
+					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
+				}
+				val f = resolvePath(derived)
+				return if (f.exists() && f.isFile) {
+					ToolCall("read_file", JSONObject().put("path", derived).put("max_bytes", 200_000))
+				} else {
+					ToolCall("create_file", JSONObject().put("path", derived))
+				}
+			}
 			"run_shell" -> if (proposed.type.isNotBlank()) proposed else ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
 			else -> if (proposed.type.isNotBlank()) proposed else ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
 		}
