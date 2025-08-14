@@ -1309,7 +1309,7 @@ class AgentOrchestrator(
                 val exit: Int
                 if (Settings.agent_use_terminal_session) {
                     // Use hidden terminal session via SessionService when available
-                    val outHidden = runCatching { HiddenShell.execInHiddenSession(wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
+                    val outHidden = runCatching { HiddenShell.execInHiddenSession(context as? MainActivity, wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
                     if (!outHidden.contains("Hidden session not available") && outHidden.isNotBlank()) {
                         output = outHidden
                         exit = 0
@@ -2550,46 +2550,43 @@ class AgentOrchestrator(
 }
 
 object HiddenShell {
-    fun execInHiddenSession(wd: String, command: String, timeoutMs: Long): String {
-        val ctx = application ?: return "No application context"
-        if (ctx is MainActivity && ctx.sessionBinder != null) {
-            val binder: SessionService.SessionBinder = ctx.sessionBinder!!
-            val service = binder.getService()
-            val current = service.currentSession.value
-            val workingMode = service.sessionList[current.first] ?: 0
-            val sessionId = "agent-bg-" + System.currentTimeMillis()
-            val sb = StringBuilder()
-            val client = object : TerminalSessionClient {
-                override fun onTextChanged(changedSession: TerminalSession) {}
-                override fun onTitleChanged(changedSession: TerminalSession) {}
-                override fun onSessionFinished(finishedSession: TerminalSession) {}
-                override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
-                override fun onPasteTextFromClipboard(session: TerminalSession) {}
-                override fun onBell(session: TerminalSession) {}
-                override fun onColorsChanged(session: TerminalSession) {}
-                override fun onTerminalCursorStateChange(state: Boolean) {}
-                override fun getTerminalCursorStyle(): Int = com.termux.terminal.TerminalEmulator.DEFAULT_TERMINAL_CURSOR_STYLE
-                override fun logError(tag: String?, message: String?) {}
-                override fun logWarn(tag: String?, message: String?) {}
-                override fun logInfo(tag: String?, message: String?) {}
-                override fun logDebug(tag: String?, message: String?) {}
-                override fun logVerbose(tag: String?, message: String?) {}
-                override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
-                override fun logStackTrace(tag: String?, e: Exception?) {}
-            }
-            val session = binder.createSession(sessionId, client, ctx, workingMode)
-            session.write("cd \"$wd\"\n")
-            val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
-            session.write(command + "; echo $sentinel\n")
-            val start = System.currentTimeMillis()
-            while (System.currentTimeMillis() - start < timeoutMs) {
-                Thread.sleep(50)
-                if (sb.contains(sentinel)) break
-            }
-            binder.terminateSession(sessionId)
-            val out = sb.toString()
-            return out.replace(sentinel, "").trim()
+    fun execInHiddenSession(activity: MainActivity?, wd: String, command: String, timeoutMs: Long): String {
+        if (activity == null || activity.sessionBinder == null) return "Hidden session not available"
+        val binder: SessionService.SessionBinder = activity.sessionBinder!!
+        val service = binder.getService()
+        val current = service.currentSession.value
+        val workingMode = service.sessionList[current.first] ?: 0
+        val sessionId = "agent-bg-" + System.currentTimeMillis()
+        val sb = StringBuilder()
+        val client = object : TerminalSessionClient {
+            override fun onTextChanged(changedSession: TerminalSession) {}
+            override fun onTitleChanged(changedSession: TerminalSession) {}
+            override fun onSessionFinished(finishedSession: TerminalSession) {}
+            override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
+            override fun onPasteTextFromClipboard(session: TerminalSession) {}
+            override fun onBell(session: TerminalSession) {}
+            override fun onColorsChanged(session: TerminalSession) {}
+            override fun onTerminalCursorStateChange(state: Boolean) {}
+            override fun getTerminalCursorStyle(): Int = com.termux.terminal.TerminalEmulator.DEFAULT_TERMINAL_CURSOR_STYLE
+            override fun logError(tag: String?, message: String?) {}
+            override fun logWarn(tag: String?, message: String?) {}
+            override fun logInfo(tag: String?, message: String?) {}
+            override fun logDebug(tag: String?, message: String?) {}
+            override fun logVerbose(tag: String?, message: String?) {}
+            override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
+            override fun logStackTrace(tag: String?, e: Exception?) {}
         }
-        return "Hidden session not available"
+        val session = binder.createSession(sessionId, client, activity, workingMode)
+        session.write("cd \"$wd\"\n")
+        val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
+        session.write(command + "; echo $sentinel\n")
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            Thread.sleep(50)
+            if (sb.contains(sentinel)) break
+        }
+        binder.terminateSession(sessionId)
+        val out = sb.toString()
+        return out.replace(sentinel, "").trim()
     }
 }
