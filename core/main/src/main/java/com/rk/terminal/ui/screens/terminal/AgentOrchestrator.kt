@@ -1329,6 +1329,14 @@ class AgentOrchestrator(
 
     private fun executeToolCall(tc: ToolCall): ToolResult {
         currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
+        // Fallback: if tool type is blank, attempt to coerce from current task category
+        if (tc.type.isBlank()) {
+            val task = currentTaskContext
+            if (task != null) {
+                val coerced = coerceToolCallForTaskCategory(task, ToolCall("unknown", tc.args))
+                return executeToolCall(coerced)
+            }
+        }
         // Alias common synonyms to reduce failure due to type mismatches
         val normalizedType = when (tc.type.lowercase().trim()) {
             "ls", "dir", "list", "listdir", "list_directory", "read_dir", "read_directory", "scan_dir" -> "list_dir"
@@ -1892,6 +1900,11 @@ class AgentOrchestrator(
                             val idMarker = e.optString("idempotent_marker")
                             val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
                             if (contains) { results.add("edit[$i]: already present"); null } else original + block
+                        }
+                        "write_if_missing" -> {
+                            // If file exists, skip without error
+                            results.add("edit[$i]: exists (skipped)")
+                            null
                         }
                         else -> { results.add("edit[$i]: unknown op ${op}"); null }
                     }
@@ -2606,6 +2619,7 @@ class AgentOrchestrator(
         fun deriveTitleFromGoal(goal: String?): String {
             val g = goal?.lowercase().orEmpty()
             if (g.contains("snake")) return "Snake Game"
+            if (g.contains("piano")) return "Piano Tiles"
             if (g.contains("tic")) return "Game"
             if (g.contains("flask")) return "Flask App"
             if (g.contains("python")) return "Python App"
