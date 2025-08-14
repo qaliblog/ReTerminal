@@ -1231,6 +1231,7 @@ class AgentOrchestrator(
             "sed", "replace" -> "search_replace"
             "mkdir" -> "make_dir"
             "touch" -> "create_file"
+            "shell", "bash", "sh" -> "run_shell"
             else -> tc.type
         }
         val call = if (normalizedType == tc.type) tc else ToolCall(normalizedType, tc.args)
@@ -1314,7 +1315,8 @@ class AgentOrchestrator(
                 saveCommandCache()
                 persistCliReport()
                 currentRunStats?.commandsRun?.add(command)
-                ToolResult(exit == 0, obs)
+                val isEnvCheck = listOf("uname", "os-release", "command -v", "echo $SHELL", "echo $PATH").any { command.contains(it) }
+                ToolResult(exit == 0 || isEnvCheck, obs)
             }
             "get_cached_command_output" -> {
                 val command = call.args.optString("command")
