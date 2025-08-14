@@ -1309,8 +1309,41 @@ class AgentOrchestrator(
                 val exit: Int
                 if (Settings.agent_use_terminal_session) {
                     // Use hidden terminal session via SessionService when available
-                    output = runCatching { HiddenShell.execInHiddenSession(wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
-                    exit = 0 // best-effort; hidden session provides output not exit code
+                    val outHidden = runCatching { HiddenShell.execInHiddenSession(wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
+                    if (!outHidden.contains("Hidden session not available") && outHidden.isNotBlank()) {
+                        output = outHidden
+                        exit = 0
+                    } else {
+                        // Fallback to ProcessBuilder
+                        val fallback = runCatching {
+                            val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
+                            if (envObj != null) {
+                                val env = pb.environment()
+                                envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
+                            }
+                            runCatching {
+                                val alpineRoot = deriveAlpineRootFromWorkspace(wd)
+                                if (alpineRoot != null) {
+                                    val env = pb.environment()
+                                    val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
+                                    env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
+                                }
+                            }
+                            val proc = pb.start()
+                            val reader = proc.inputStream.bufferedReader()
+                            val start = System.currentTimeMillis()
+                            val sb = StringBuilder()
+                            while (proc.isAlive) {
+                                while (reader.ready()) sb.append(reader.readLine()).append('\n')
+                                if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
+                                try { Thread.sleep(20) } catch (_: InterruptedException) {}
+                            }
+                            if (proc.isAlive) proc.destroyForcibly()
+                            Pair(sb.toString(), runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 })
+                        }.getOrElse { Pair(it.message ?: it.toString(), -1) }
+                        output = fallback.first
+                        exit = fallback.second
+                    }
                 } else {
                     val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
                     if (envObj != null) {
@@ -1332,10 +1365,7 @@ class AgentOrchestrator(
                     val sb = StringBuilder()
                     while (proc.isAlive) {
                         while (reader.ready()) sb.append(reader.readLine()).append('\n')
-                        if (System.currentTimeMillis() - start > timeoutMs) {
-                            proc.destroyForcibly()
-                            break
-                        }
+                        if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
                         try { Thread.sleep(20) } catch (_: InterruptedException) {}
                     }
                     if (proc.isAlive) proc.destroyForcibly()
@@ -2546,22 +2576,6 @@ object HiddenShell {
                 override fun logVerbose(tag: String?, message: String?) {}
                 override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
                 override fun logStackTrace(tag: String?, e: Exception?) {}
-                override fun onScale(scale: Float): Float = scale
-                override fun onSingleTapUp(e: android.view.MotionEvent) {}
-                override fun shouldBackButtonBeMappedToEscape(): Boolean = false
-                override fun shouldEnforceCharBasedInput(): Boolean = true
-                override fun shouldUseCtrlSpaceWorkaround(): Boolean = true
-                override fun isTerminalViewSelected(): Boolean = true
-                override fun copyModeChanged(copyMode: Boolean) {}
-                override fun onKeyDown(keyCode: Int, e: android.view.KeyEvent, session: TerminalSession): Boolean = false
-                override fun onKeyUp(keyCode: Int, e: android.view.KeyEvent): Boolean = false
-                override fun onLongPress(event: android.view.MotionEvent): Boolean = false
-                override fun readControlKey(): Boolean = false
-                override fun readAltKey(): Boolean = false
-                override fun readShiftKey(): Boolean = false
-                override fun readFnKey(): Boolean = false
-                override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean = false
-                override fun onEmulatorSet() {}
             }
             val session = binder.createSession(sessionId, client, ctx, workingMode)
             session.write("cd \"$wd\"\n")
