@@ -1306,40 +1306,10 @@ class AgentOrchestrator(
                     return if (parts.isNotEmpty()) parts.joinToString(" && ") + " || true" else cmd
                 }
                 command = robustifyPythonPip(command)
-                val output: String
-                val exit: Int
-                if (Settings.agent_use_terminal_session) {
-                    // Use hidden terminal session via SessionService when available, only if rootfs is ready
-                    val rootfsReady = try { com.rk.terminal.ui.screens.terminal.Rootfs.isFilesDownloaded() } catch (_: Throwable) { false }
-                    if (rootfsReady) {
-                        val outHidden = runCatching { HiddenShell.execInHiddenSession(context as? MainActivity, wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
-                        if (!outHidden.contains("Hidden session not available")) {
-                            output = outHidden
-                            val exitMatch = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(outHidden)
-                            exit = exitMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-                        } else {
-                            // Hidden not available; fallback to ProcessBuilder
-                            val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
-                            output = fb.first
-                            exit = fb.second
-                        }
-                    } else {
-                        val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
-                        output = fb.first
-                        exit = fb.second
-                    }
-                } else {
-                    // Prefer running inside the visible main terminal session if available
-                    val mainOut = runCatching { MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs) }.getOrNull()
-                    if (mainOut != null && !mainOut.first.contains("Main session not available")) {
-                        output = mainOut.first
-                        exit = mainOut.second
-                    } else {
-                        val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
-                        output = fb.first
-                        exit = fb.second
-                    }
-                }
+                // Always run inside the visible main terminal session
+                val mainOut = MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs)
+                val output = mainOut.first
+                val exit = mainOut.second
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
                     .put("command", command)
@@ -2515,146 +2485,6 @@ class AgentOrchestrator(
         val ok = runCatching { osRelease.readText().lowercase().contains("id=alpine") }.getOrElse { false }
         return if (ok) root else null
     }
-
-    private fun runCommandWithProcessBuilder(command: String, wd: String, envObj: JSONObject?, timeoutMs: Long): Pair<String, Int> {
-        val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
-        if (envObj != null) {
-            val env = pb.environment()
-            envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
-        }
-        // Prepend Alpine bin dirs if workspace looks like a mounted Alpine tree
-        runCatching {
-            val alpineRoot = deriveAlpineRootFromWorkspace(wd)
-            if (alpineRoot != null) {
-                val env = pb.environment()
-                val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
-                env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
-            }
-        }
-        val proc = pb.start()
-        val reader = proc.inputStream.bufferedReader()
-        val start = System.currentTimeMillis()
-        val sb = StringBuilder()
-        while (proc.isAlive) {
-            while (reader.ready()) sb.append(reader.readLine()).append('\n')
-            if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
-            try { Thread.sleep(20) } catch (_: InterruptedException) {}
-        }
-        if (proc.isAlive) proc.destroyForcibly()
-        val exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
-        return Pair(sb.toString(), exit)
-    }
-}
-
-object HiddenShell {
-    fun execInHiddenSession(activity: MainActivity?, wd: String, command: String, timeoutMs: Long): String {
-        if (activity == null || activity.sessionBinder == null) return "Hidden session not available"
-        val binder: SessionService.SessionBinder = activity.sessionBinder!!
-        val service = binder.getService()
-        // Use Alpine working mode to ensure apk/git and Alpine PATH are available for hidden session
-        val workingMode = com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE
-        val sessionId = "agent-bg-" + System.currentTimeMillis()
-
-        // Prepare output file and sentinel
-        val preferredOut = runCatching { File(wd).takeIf { it.exists() && it.isDirectory && it.canWrite() } }.getOrNull()
-        val outFile = runCatching { File(preferredOut ?: activity.cacheDir, ".${sessionId}.out") }.getOrNull() ?: File(activity.cacheDir, ".${sessionId}.out")
-        runCatching { if (outFile.exists()) outFile.delete() }
-        val outPath = outFile.absolutePath
-        val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
-        Log.d("HiddenShell", "creating hidden session id=$sessionId wd=$wd out=$outPath")
-
-        // Build environment for init-host/init
-        val inheritedPath = (System.getenv("PATH") ?: "")
-        val extraEnv = arrayOf(
-            "XPWD=$wd",
-            "PATH=${inheritedPath}",
-            "XCMD=$command",
-            "XOUT=$outPath",
-            "XSENTINEL=$sentinel"
-        )
-
-        // Minimal client
-        val client = object : TerminalSessionClient {
-            override fun onTextChanged(changedSession: TerminalSession) {}
-            override fun onTitleChanged(changedSession: TerminalSession) {}
-            override fun onSessionFinished(finishedSession: TerminalSession) {}
-            override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
-            override fun onPasteTextFromClipboard(session: TerminalSession) {}
-            override fun onBell(session: TerminalSession) {}
-            override fun onColorsChanged(session: TerminalSession) {}
-            override fun onTerminalCursorStateChange(state: Boolean) {}
-            override fun getTerminalCursorStyle(): Int = com.termux.terminal.TerminalEmulator.DEFAULT_TERMINAL_CURSOR_STYLE
-            override fun logError(tag: String?, message: String?) {}
-            override fun logWarn(tag: String?, message: String?) {}
-            override fun logInfo(tag: String?, message: String?) {}
-            override fun logDebug(tag: String?, message: String?) {}
-            override fun logVerbose(tag: String?, message: String?) {}
-            override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
-            override fun logStackTrace(tag: String?, e: Exception?) {}
-        }
-
-        // Create hidden session on main thread
-        val createLatch = java.util.concurrent.CountDownLatch(1)
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        var scheduledOk = false
-        mainHandler.post {
-            try {
-                val session = try {
-                    binder.createHiddenSession(sessionId, client, activity, workingMode, extraEnv)
-                } catch (_: Throwable) {
-                    binder.createHiddenSession(sessionId, client, activity, workingMode)
-                }
-                // Kick the shell so init runs; XCMD causes init to execute and exit
-                mainHandler.postDelayed({
-                    runCatching { session.write("\n") }
-                }, 400)
-                scheduledOk = true
-                Log.d("HiddenShell", "session scheduled ok id=$sessionId")
-            } catch (e: Exception) {
-                runCatching {
-                    outFile.parentFile?.mkdirs()
-                    outFile.writeText("Hidden session error: ${e.message ?: e.toString()}\n")
-                    outFile.appendText(sentinel)
-                }
-                Log.e("HiddenShell", "create failed: ${e.message}")
-            } finally {
-                createLatch.countDown()
-            }
-        }
-        createLatch.await(3, java.util.concurrent.TimeUnit.SECONDS)
-
-        // Poll the output file until sentinel appears or timeout
-        val start = System.currentTimeMillis()
-        var content: String = ""
-        var sawSentinel = false
-        while (System.currentTimeMillis() - start < timeoutMs) {
-            if (outFile.exists()) {
-                content = runCatching { outFile.readText() }.getOrElse { "" }
-                if (content.contains(sentinel)) { sawSentinel = true; break }
-            }
-            try { Thread.sleep(100) } catch (_: InterruptedException) {}
-        }
-
-        // Terminate session (best-effort)
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            try { binder.terminateHiddenSession(sessionId) } catch (_: Exception) {}
-        }
-
-        if (content.isBlank() && outFile.exists()) {
-            content = runCatching { outFile.readText() }.getOrElse { "" }
-        }
-        content = content.replace(sentinel, "").trim()
-        if (!sawSentinel && scheduledOk) {
-            content = (if (content.isBlank()) "" else content + "\n") + "[hidden session timeout before sentinel]"
-            if (!outFile.exists()) {
-                content += "\n[out file missing: $outPath]"
-            }
-            Log.w("HiddenShell", "timeout waiting for sentinel id=$sessionId")
-        }
-        runCatching { outFile.delete() }
-        Log.d("HiddenShell", "done id=$sessionId bytes=${content.length}")
-        return content
-    }
 }
 
 object MainShell {
@@ -2671,16 +2501,13 @@ object MainShell {
         runCatching { if (outFile.exists()) outFile.delete() }
         val outPath = outFile.absolutePath.replace("'", "'\\''")
         val sentinel = "__MAIN_DONE_${System.currentTimeMillis()}__"
-        // Build command line to execute in the visible terminal session
         val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; code=${'$'}?; printf '%s\\n' '$sentinel' >> '$outPath'; printf 'EXIT_CODE=%s\\n' ${'$'}code >> '$outPath'\n"
-        // Write to the session PTY
         try {
             session.write(cmdLine)
         } catch (e: Exception) {
             return Pair("write failed: ${e.message}", -1)
         }
         Log.d("MainShell", "wrote to main session id=${currentId} out=$outPath")
-        // Poll
         val start = System.currentTimeMillis()
         var content = ""
         var saw = false

@@ -229,8 +229,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
             try {
                 val pathExport = if (!gitPath.isNullOrBlank()) "export PATH=\"$gitPath:\$PATH\"; " else ""
                 val cmd = pathExport + command
-                val out = HiddenShell.execInHiddenSession(mainActivityActivity, path, cmd, 60_000L)
-                val exit = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(out)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                val (out, exit) = MainShell.execInMainSession(mainActivityActivity, path, cmd, 60_000L)
                 val body = out.lineSequence().filter { !it.startsWith("EXIT_CODE=") }.joinToString("\n").trim()
                 val finalOut = if (body.isBlank()) "(no output)" else body
                 launch(Dispatchers.Main) { onDone(exit, finalOut.ifBlank { "exit=$exit" }) }

@@ -261,17 +261,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
 
         // Agent shell configuration
         PreferenceGroup(heading = "Agent Shell") {
-            var useTerm by remember { mutableStateOf(Settings.agent_use_terminal_session) }
-            SettingsToggle(
-                label = "Use hidden terminal session",
-                description = "Run agent commands in a background terminal (full PATH/env)",
-                showSwitch = true,
-                default = useTerm,
-                sideEffect = { checked ->
-                    useTerm = checked
-                    Settings.agent_use_terminal_session = checked
-                }
-            )
+            // Removed hidden terminal toggle; always use main terminal
         }
 
         // Codebase agent configuration
