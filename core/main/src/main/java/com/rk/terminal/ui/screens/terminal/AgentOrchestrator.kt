@@ -91,6 +91,7 @@ class AgentOrchestrator(
     private var currentRunStats: RunStats? = null
     private var currentTaskContext: Task? = null
     private var lastInstallSuccess: Boolean = false
+    private var lastPlanGoal: String? = null
     private fun beginRunStats() { currentRunStats = RunStats(); appendTaskLog("run_start") { } }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
@@ -958,6 +959,7 @@ class AgentOrchestrator(
         onStatus: (String) -> Unit
     ): Boolean {
         beginRunStats()
+        lastPlanGoal = plan.goal
         // Detect plan change and reset attempts if needed
         val progress = loadProgress()
         val currentSig = computePlanSignature(plan)
@@ -1337,6 +1339,7 @@ class AgentOrchestrator(
             "mkdir" -> "make_dir"
             "touch" -> "create_file"
             "shell", "bash", "sh" -> "run_shell"
+            "json_edit" -> "apply_changes"
             else -> tc.type
         }
         val call = if (normalizedType == tc.type) tc else ToolCall(normalizedType, tc.args)
@@ -2134,6 +2137,7 @@ class AgentOrchestrator(
         plan: Plan,
         onStatus: (String) -> Unit
     ) {
+        lastPlanGoal = plan.goal
         for (task in plan.tasks) {
             if (isTaskDone(task.id)) {
                 onStatus("Skip ${task.id}: already done")
@@ -2599,6 +2603,14 @@ class AgentOrchestrator(
     private fun coerceToolCallForTaskCategory(task: Task, proposed: ToolCall): ToolCall {
         val wd = workingDirProvider()
         val cat = (task.category ?: "").lowercase()
+        fun deriveTitleFromGoal(goal: String?): String {
+            val g = goal?.lowercase().orEmpty()
+            if (g.contains("snake")) return "Snake Game"
+            if (g.contains("tic")) return "Game"
+            if (g.contains("flask")) return "Flask App"
+            if (g.contains("python")) return "Python App"
+            return "Web App"
+        }
         fun loadCodebaseCache(): JSONObject? {
             return runCatching { File(wd, Settings.codebase_cache_path).takeIf { it.exists() }?.readText() }
                 .mapCatching { JSONObject(it!!) }.getOrNull()
@@ -2709,18 +2721,19 @@ class AgentOrchestrator(
                     else -> wd
                 }
                 val lowerTarget = target.lowercase()
+                val htmlTitle = deriveTitleFromGoal(lastPlanGoal)
                 fun htmlTemplate(): String = """
-                    <!-- idempotent:tic-tac-toe-html -->
+                    <!-- idempotent:web-template-html -->
                     <!DOCTYPE html>
                     <html lang=\"en\">
                     <head>
                       <meta charset=\"UTF-8\" />
                       <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
-                      <title>Tic Tac Toe</title>
+                      <title>${htmlTitle}</title>
                       <link rel=\"stylesheet\" href=\"/static/style.css\" />
                     </head>
                     <body>
-                      <h1>Tic Tac Toe</h1>
+                      <h1>${htmlTitle}</h1>
                       <div id=\"message\"></div>
                       <div id=\"board\" class=\"board\">
                         <div class=\"cell\" data-row=\"0\" data-col=\"0\"></div>
@@ -2738,13 +2751,13 @@ class AgentOrchestrator(
                     </html>
                 """.trimIndent()
                 fun cssTemplate(): String = """
-                    /* idempotent:tic-tac-toe-css */
+                    /* idempotent:web-template-css */
                     body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
                     .board { display: grid; grid-template-columns: repeat(3, 80px); grid-gap: 6px; margin-top: 12px; }
                     .cell { width: 80px; height: 80px; border: 1px solid #333; display: flex; align-items: center; justify-content: center; font-size: 32px; cursor: pointer; }
                 """.trimIndent()
                 fun jsTemplate(): String = """
-                    // idempotent:tic-tac-toe-js
+                    // idempotent:web-template-js
                     const boardEl = document.getElementById('board');
                     const messageEl = document.getElementById('message');
                     boardEl.addEventListener('click', async (ev) => {
@@ -2773,9 +2786,9 @@ class AgentOrchestrator(
                         return None
                 """.trimIndent()
                 val (content, marker) = when {
-                    lowerTarget.endsWith(".html") || desc.contains("html") -> htmlTemplate() to "idempotent:tic-tac-toe-html"
-                    lowerTarget.endsWith(".css") || desc.contains("css") -> cssTemplate() to "idempotent:tic-tac-toe-css"
-                    lowerTarget.endsWith(".js") || desc.contains("javascript") || desc.contains("js") -> jsTemplate() to "idempotent:tic-tac-toe-js"
+                    lowerTarget.endsWith(".html") || desc.contains("html") -> htmlTemplate() to "idempotent:web-template-html"
+                    lowerTarget.endsWith(".css") || desc.contains("css") -> cssTemplate() to "idempotent:web-template-css"
+                    lowerTarget.endsWith(".js") || desc.contains("javascript") || desc.contains("js") -> jsTemplate() to "idempotent:web-template-js"
                     lowerTarget.endsWith(".py") && (desc.contains("logic") || desc.contains("game")) -> pyLogicTemplate() to "idempotent:tic_tac_toe_logic"
                     else -> ("// idempotent:placeholder\n" to "idempotent:placeholder")
                 }
@@ -2788,6 +2801,19 @@ class AgentOrchestrator(
                     "apply_changes",
                     JSONObject().put("edits", edits)
                 )
+            }
+            "json_edit" -> {
+                // Coerce to multi-file phrase replacement if description suggests removal/replacement
+                val desc = (task.description ?: "").lowercase()
+                val wantSnake = (lastPlanGoal ?: "").lowercase().contains("snake")
+                val replacement = if (wantSnake) "Snake" else "Game"
+                val pattern = "(?i)tic[\\s-]?tac[\\s-]?toe"
+                val edits = JSONArray().apply {
+                    listOf("app.py", "templates/index.html", "static/script.js", "static/style.css").forEach { p ->
+                        put(JSONObject().put("path", p).put("op", "replace_regex").put("pattern", pattern).put("replacement", replacement).put("unique", false))
+                    }
+                }
+                ToolCall("apply_changes", JSONObject().put("edits", edits))
             }
             else -> coerceInstallPythonIfNeeded() ?: proposed
         }
