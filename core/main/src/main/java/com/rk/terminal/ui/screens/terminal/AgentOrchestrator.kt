@@ -2558,8 +2558,9 @@ object HiddenShell {
         val workingMode = service.sessionList[current.first] ?: 0
         val sessionId = "agent-bg-" + System.currentTimeMillis()
 
-        // Prepare output capture file
-        val outFile = File(activity.cacheDir, "$sessionId.out")
+        // Prefer writing output next to the working directory for proot visibility; fallback to cache
+        val preferredOut = runCatching { File(wd).takeIf { it.exists() && it.isDirectory && it.canWrite() } }.getOrNull()
+        val outFile = runCatching { File(preferredOut ?: activity.cacheDir, ".${sessionId}.out") }.getOrNull() ?: File(activity.cacheDir, ".${sessionId}.out")
         runCatching { if (outFile.exists()) outFile.delete() }.getOrElse { }
         val outPath = outFile.absolutePath.replace("'", "'\\''")
         val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
@@ -2586,19 +2587,16 @@ object HiddenShell {
 
         // Create session on main thread
         val createLatch = java.util.concurrent.CountDownLatch(1)
-        val sessionHolder = arrayOfNulls<TerminalSession>(1)
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             try {
                 val session = binder.createSession(sessionId, client, activity, workingMode)
-                sessionHolder[0] = session
-                // Send combined command on main thread
-                val cmdLine = "cd \"$wd\"; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
+                // Ensure world-readable out file when on shared storage
+                val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
                 session.write(cmdLine)
             } finally {
                 createLatch.countDown()
             }
         }
-        // Wait for session creation/command dispatch
         createLatch.await(2, java.util.concurrent.TimeUnit.SECONDS)
         val start = System.currentTimeMillis()
 
@@ -2609,7 +2607,7 @@ object HiddenShell {
                 content = runCatching { outFile.readText() }.getOrElse { "" }
                 if (content.contains(sentinel)) break
             }
-            try { Thread.sleep(50) } catch (_: InterruptedException) {}
+            try { Thread.sleep(80) } catch (_: InterruptedException) {}
         }
 
         // Terminate session on main thread (best-effort)
