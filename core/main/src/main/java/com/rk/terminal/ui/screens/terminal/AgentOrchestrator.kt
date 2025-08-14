@@ -1772,6 +1772,8 @@ class AgentOrchestrator(
             "apply_changes" -> {
                 val edits = call.args.optJSONArray("edits") ?: JSONArray()
                 val results = mutableListOf<String>()
+                var createdAny = false
+                var modifiedAny = false
                 for (i in 0 until edits.length()) {
                     val e = edits.optJSONObject(i) ?: continue
                     val op = e.optString("op")
@@ -1785,6 +1787,7 @@ class AgentOrchestrator(
                             ensureParentDirs(file)
                             file.writeText(content)
                             results.add("edit[$i]: created (${path})")
+                            createdAny = true
                             continue
                         }
                         results.add("edit[$i]: file missing: ${file.path}"); continue
@@ -1840,8 +1843,10 @@ class AgentOrchestrator(
                             }
                         }
                         "replace_regex" -> {
-                            val pattern = e.optString("pattern")
-                            val replacement = e.optString("replacement")
+                            // Support both flat keys and nested {regex:{pattern,replace}}
+                            val regexObj = e.optJSONObject("regex")
+                            val pattern = e.optString("pattern").ifBlank { regexObj?.optString("pattern").orEmpty() }
+                            val replacement = e.optString("replacement").ifBlank { regexObj?.optString("replace").orEmpty() }
                             val unique = e.optBoolean("unique", true)
                             if (pattern.isBlank()) { results.add("edit[$i]: pattern empty"); null } else {
                                 val regex = runCatching { Regex(pattern) }.getOrElse { Regex(Pattern.quote(pattern)) }
@@ -1891,13 +1896,15 @@ class AgentOrchestrator(
                         runCatching { file.writeText(updated) }.onSuccess {
                             results.add("edit[$i]: ok (${path})")
                             notifyWorkspaceChanged(file.absolutePath)
+                            modifiedAny = true
                         }.onFailure { ex ->
                             results.add("edit[$i]: write failed (${ex.message})")
                         }
                     }
                 }
                 val summary = (if (results.isEmpty()) "no edits" else results.joinToString("; "))
-                ToolResult(true, summary)
+                val ok = createdAny || modifiedAny
+                ToolResult(ok, summary)
             }
             "search_replace" -> {
                 val path = call.args.optString("path")
