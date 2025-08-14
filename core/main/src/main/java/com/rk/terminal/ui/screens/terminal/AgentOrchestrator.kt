@@ -2694,6 +2694,7 @@ class AgentOrchestrator(
                 }
                 val lowerTarget = target.lowercase()
                 fun htmlTemplate(): String = """
+                    <!-- idempotent:tic-tac-toe-html -->
                     <!DOCTYPE html>
                     <html lang=\"en\">
                     <head>
@@ -2755,20 +2756,21 @@ class AgentOrchestrator(
                             return 'Tie'
                         return None
                 """.trimIndent()
-                val content = when {
-                    lowerTarget.endsWith(".html") || desc.contains("html") -> htmlTemplate()
-                    lowerTarget.endsWith(".css") || desc.contains("css") -> cssTemplate()
-                    lowerTarget.endsWith(".js") || desc.contains("javascript") || desc.contains("js") -> jsTemplate()
-                    lowerTarget.endsWith(".py") && (desc.contains("logic") || desc.contains("game")) -> pyLogicTemplate()
-                    else -> "// idempotent:placeholder\n"
+                val (content, marker) = when {
+                    lowerTarget.endsWith(".html") || desc.contains("html") -> htmlTemplate() to "idempotent:tic-tac-toe-html"
+                    lowerTarget.endsWith(".css") || desc.contains("css") -> cssTemplate() to "idempotent:tic-tac-toe-css"
+                    lowerTarget.endsWith(".js") || desc.contains("javascript") || desc.contains("js") -> jsTemplate() to "idempotent:tic-tac-toe-js"
+                    lowerTarget.endsWith(".py") && (desc.contains("logic") || desc.contains("game")) -> pyLogicTemplate() to "idempotent:tic_tac_toe_logic"
+                    else -> ("// idempotent:placeholder\n" to "idempotent:placeholder")
+                }
+                val edits = JSONArray().apply {
+                    // Ensure file exists, then append once
+                    put(JSONObject().put("path", target).put("op", "write_if_missing").put("content", content))
+                    put(JSONObject().put("path", target).put("op", "append_once").put("block", content).put("idempotent_marker", marker))
                 }
                 return ToolCall(
-                    "write_file",
-                    JSONObject()
-                        .put("path", target)
-                        .put("content", content)
-                        .put("mode", "overwrite")
-                        .put("encoding", "utf-8")
+                    "apply_changes",
+                    JSONObject().put("edits", edits)
                 )
             }
             else -> coerceInstallPythonIfNeeded() ?: proposed
