@@ -2558,19 +2558,21 @@ object HiddenShell {
         val workingMode = com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE
         val sessionId = "agent-bg-" + System.currentTimeMillis()
 
-        // Prefer writing output next to the working directory for proot visibility; fallback to cache
+        // Prepare output file and sentinel
         val preferredOut = runCatching { File(wd).takeIf { it.exists() && it.isDirectory && it.canWrite() } }.getOrNull()
         val outFile = runCatching { File(preferredOut ?: activity.cacheDir, ".${sessionId}.out") }.getOrNull() ?: File(activity.cacheDir, ".${sessionId}.out")
-        runCatching { if (outFile.exists()) outFile.delete() }.getOrElse { }
-        val outPath = outFile.absolutePath.replace("'", "'\\''")
+        runCatching { if (outFile.exists()) outFile.delete() }
+        val outPath = outFile.absolutePath
         val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
-        // Ensure XPWD and PATH are propagated; also pass XCMD for non-interactive exec inside init
+
+        // Build environment for init-host/init
         val inheritedPath = (System.getenv("PATH") ?: "")
         val extraEnv = arrayOf(
             "XPWD=$wd",
             "PATH=${inheritedPath}",
-            // run command in init via XCMD, ensure it writes sentinel at the end
-            "XCMD=${command} ; printf '%s\\n' ${sentinel}"
+            "XCMD=$command",
+            "XOUT=$outPath",
+            "XSENTINEL=$sentinel"
         )
 
         // Minimal client
@@ -2593,7 +2595,7 @@ object HiddenShell {
             override fun logStackTrace(tag: String?, e: Exception?) {}
         }
 
-        // Create session on main thread
+        // Create hidden session on main thread
         val createLatch = java.util.concurrent.CountDownLatch(1)
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         var scheduledOk = false
@@ -2604,18 +2606,10 @@ object HiddenShell {
                 } catch (_: Throwable) {
                     binder.createHiddenSession(sessionId, client, activity, workingMode)
                 }
-                val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; printf '%s\\n' ${sentinel} >> '$outPath'\n"
-                // Delay writes so proot + login shell can initialize and attach to the pty
+                // Kick the shell so init runs; XCMD causes init to execute and exit
                 mainHandler.postDelayed({
-                    runCatching { session.write(cmdLine) }
-                }, 600)
-                mainHandler.postDelayed({
-                    runCatching {
-                        if (!outFile.exists() || runCatching { outFile.readText() }.getOrElse { "" }.contains(sentinel).not()) {
-                            session.write(cmdLine)
-                        }
-                    }
-                }, 1200)
+                    runCatching { session.write("\n") }
+                }, 400)
                 scheduledOk = true
             } catch (e: Exception) {
                 runCatching {
@@ -2628,9 +2622,9 @@ object HiddenShell {
             }
         }
         createLatch.await(3, java.util.concurrent.TimeUnit.SECONDS)
-        val start = System.currentTimeMillis()
 
         // Poll the output file until sentinel appears or timeout
+        val start = System.currentTimeMillis()
         var content: String = ""
         var sawSentinel = false
         while (System.currentTimeMillis() - start < timeoutMs) {
@@ -2641,12 +2635,11 @@ object HiddenShell {
             try { Thread.sleep(100) } catch (_: InterruptedException) {}
         }
 
-        // Terminate session on main thread (best-effort)
+        // Terminate session (best-effort)
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             try { binder.terminateHiddenSession(sessionId) } catch (_: Exception) {}
         }
 
-        // Clean and return
         if (content.isBlank() && outFile.exists()) {
             content = runCatching { outFile.readText() }.getOrElse { "" }
         }

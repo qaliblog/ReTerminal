@@ -11,9 +11,16 @@ fi
 cd "$XPWD"
 if [ -n "$XCMD" ]; then
     set +e
-    eval "$XCMD"
-    code=$?
-    exit $code
+    if [ -n "$XOUT" ]; then
+        sh -c "$XCMD" > "$XOUT" 2>&1
+        if [ -n "$XSENTINEL" ]; then
+            printf '%s\n' "$XSENTINEL" >> "$XOUT"
+        fi
+    else
+        # Fallback to stdout if no XOUT provided
+        sh -c "$XCMD"
+    fi
+    exit $?
 fi
 export PS1="\[\e[38;5;46m\]\u\[\033[39m\]@karbon \[\033[39m\]\w \[\033[0m\]\\$ "
 # shellcheck disable=SC2034
