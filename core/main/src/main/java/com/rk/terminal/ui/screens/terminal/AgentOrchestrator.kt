@@ -2668,13 +2668,22 @@ class AgentOrchestrator(
                 if (t == "create_file") return proposed
                 // Heuristics for target path when missing
                 val desc = (task.description ?: "").lowercase()
-                val target = when {
+                var target = when {
                     !task.targets.isNullOrEmpty() -> task.targets!!.first()
                     desc.contains("html") -> "templates/index.html"
                     desc.contains("css") -> "static/style.css"
                     desc.contains("javascript") || desc.contains("js") -> "static/app.js"
                     desc.contains("flask") || desc.contains("app.py") -> "app.py"
+                    desc.contains("dir") || desc.contains("directory") || desc.contains("folder") -> "NEW_DIR"
                     else -> "NEW_FILE"
+                }
+                // Directory intent: coerce to make_dir when description or path indicate a folder
+                val looksLikeDirFromDesc = desc.contains("dir") || desc.contains("directory") || desc.contains("folder")
+                val normalized = target.trimEnd('/')
+                val looksLikeDirFromPath = target.endsWith("/") || (!normalized.contains('.') && !normalized.contains('/'))
+                if (looksLikeDirFromDesc || looksLikeDirFromPath) {
+                    val dirPath = if (normalized == "NEW_FILE" || normalized == "NEW_DIR") "templates" else normalized
+                    return ToolCall("make_dir", JSONObject().put("path", dirPath))
                 }
                 ToolCall("create_file", JSONObject().put("path", target))
             }
