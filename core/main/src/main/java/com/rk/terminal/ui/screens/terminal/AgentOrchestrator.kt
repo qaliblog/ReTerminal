@@ -21,6 +21,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.min
 import com.rk.settings.Settings
 import java.util.ArrayDeque
+import com.rk.terminal.ui.activities.terminal.MainActivity
+import com.rk.terminal.service.SessionService
+import com.termux.terminal.TerminalSession
+import com.termux.terminal.TerminalSessionClient
 
 /**
  * Minimal agent orchestrator that:
@@ -1301,35 +1305,43 @@ class AgentOrchestrator(
                     return if (parts.isNotEmpty()) parts.joinToString(" && ") + " || true" else cmd
                 }
                 command = robustifyPythonPip(command)
-                val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
-                if (envObj != null) {
-                    val env = pb.environment()
-                    envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
-                }
-                // If workspace indicates an Alpine root, prepend its bin dirs to PATH
-                runCatching {
-                    val alpineRoot = deriveAlpineRootFromWorkspace(wd)
-                    if (alpineRoot != null) {
+                val output: String
+                val exit: Int
+                if (Settings.agent_use_terminal_session) {
+                    // Use hidden terminal session via SessionService when available
+                    output = runCatching { HiddenShell.execInHiddenSession(wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
+                    exit = 0 // best-effort; hidden session provides output not exit code
+                } else {
+                    val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
+                    if (envObj != null) {
                         val env = pb.environment()
-                        val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
-                        env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
+                        envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
                     }
-                }
-                val proc = pb.start()
-                val reader = proc.inputStream.bufferedReader()
-                val start = System.currentTimeMillis()
-                val sb = StringBuilder()
-                while (proc.isAlive) {
-                    while (reader.ready()) sb.append(reader.readLine()).append('\n')
-                    if (System.currentTimeMillis() - start > timeoutMs) {
-                        proc.destroyForcibly()
-                        break
+                    // If workspace indicates an Alpine root, prepend its bin dirs to PATH
+                    runCatching {
+                        val alpineRoot = deriveAlpineRootFromWorkspace(wd)
+                        if (alpineRoot != null) {
+                            val env = pb.environment()
+                            val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
+                            env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
+                        }
                     }
-                    try { Thread.sleep(20) } catch (_: InterruptedException) {}
+                    val proc = pb.start()
+                    val reader = proc.inputStream.bufferedReader()
+                    val start = System.currentTimeMillis()
+                    val sb = StringBuilder()
+                    while (proc.isAlive) {
+                        while (reader.ready()) sb.append(reader.readLine()).append('\n')
+                        if (System.currentTimeMillis() - start > timeoutMs) {
+                            proc.destroyForcibly()
+                            break
+                        }
+                        try { Thread.sleep(20) } catch (_: InterruptedException) {}
+                    }
+                    if (proc.isAlive) proc.destroyForcibly()
+                    exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
+                    output = sb.toString()
                 }
-                if (proc.isAlive) proc.destroyForcibly()
-                val exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
-                val output = sb.toString()
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
                     .put("command", command)
@@ -2504,5 +2516,48 @@ class AgentOrchestrator(
         val osRelease = File(root, "etc/os-release")
         val ok = runCatching { osRelease.readText().lowercase().contains("id=alpine") }.getOrElse { false }
         return if (ok) root else null
+    }
+}
+
+object HiddenShell {
+    fun execInHiddenSession(wd: String, command: String, timeoutMs: Long): String {
+        val ctx = application ?: return "No application context"
+        if (ctx is MainActivity && ctx.sessionBinder != null) {
+            val binder: SessionService.SessionBinder = ctx.sessionBinder!!
+            val service = binder.getService()
+            val current = service.currentSession.value
+            val workingMode = service.sessionList[current.first] ?: 0
+            val sessionId = "agent-bg-" + System.currentTimeMillis()
+            val sb = StringBuilder()
+            val client = object : TerminalSessionClient {
+                override fun onTextChanged(changedSession: TerminalSession) {}
+                override fun onTitleChanged(changedSession: TerminalSession) {}
+                override fun onSessionFinished(finishedSession: TerminalSession) {}
+                override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
+                override fun onPasteTextFromClipboard(session: TerminalSession) {}
+                override fun onBell(session: TerminalSession) {}
+                override fun onColorsChanged(session: TerminalSession) {}
+                override fun onTerminalCursorStateChange(state: Boolean) {}
+                override fun onSessionStarted(session: TerminalSession) {}
+                override fun onNewSession(session: TerminalSession) {}
+                override fun onTerminalOutput(session: TerminalSession, data: String) { sb.append(data) }
+                override fun onTerminalStopped(session: TerminalSession) {}
+            }
+            val session = binder.createSession(sessionId, client, ctx, workingMode)
+            // Change directory
+            session.write("cd \"$wd\"\n")
+            // Run command and echo a sentinel to know when done
+            val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
+            session.write(command + "; echo $sentinel\n")
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < timeoutMs) {
+                Thread.sleep(50)
+                if (sb.contains(sentinel)) break
+            }
+            binder.terminateSession(sessionId)
+            val out = sb.toString()
+            return out.replace(sentinel, "").trim()
+        }
+        return "Hidden session not available"
     }
 }
