@@ -1308,71 +1308,29 @@ class AgentOrchestrator(
                 val output: String
                 val exit: Int
                 if (Settings.agent_use_terminal_session) {
-                    // Use hidden terminal session via SessionService when available
-                    val outHidden = runCatching { HiddenShell.execInHiddenSession(context as? MainActivity, wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
-                    if (!outHidden.contains("Hidden session not available")) {
-                        output = outHidden
-                        // Parse EXIT_CODE=NN if present at end of output
-                        val exitMatch = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(outHidden)
-                        exit = exitMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                    // Use hidden terminal session via SessionService when available, only if rootfs is ready
+                    val rootfsReady = try { com.rk.terminal.ui.screens.terminal.Rootfs.isFilesDownloaded() } catch (_: Throwable) { false }
+                    if (rootfsReady) {
+                        val outHidden = runCatching { HiddenShell.execInHiddenSession(context as? MainActivity, wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
+                        if (!outHidden.contains("Hidden session not available")) {
+                            output = outHidden
+                            val exitMatch = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(outHidden)
+                            exit = exitMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                        } else {
+                            // Hidden not available; fallback to ProcessBuilder
+                            val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
+                            output = fb.first
+                            exit = fb.second
+                        }
                     } else {
-                        // Fallback to ProcessBuilder
-                        val fallback = runCatching {
-                            val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
-                            if (envObj != null) {
-                                val env = pb.environment()
-                                envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
-                            }
-                            runCatching {
-                                val alpineRoot = deriveAlpineRootFromWorkspace(wd)
-                                if (alpineRoot != null) {
-                                    val env = pb.environment()
-                                    val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
-                                    env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
-                                }
-                            }
-                            val proc = pb.start()
-                            val reader = proc.inputStream.bufferedReader()
-                            val start = System.currentTimeMillis()
-                            val sb = StringBuilder()
-                            while (proc.isAlive) {
-                                while (reader.ready()) sb.append(reader.readLine()).append('\n')
-                                if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
-                                try { Thread.sleep(20) } catch (_: InterruptedException) {}
-                            }
-                            if (proc.isAlive) proc.destroyForcibly()
-                            Pair(sb.toString(), runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 })
-                        }.getOrElse { Pair(it.message ?: it.toString(), -1) }
-                        output = fallback.first
-                        exit = fallback.second
+                        val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
+                        output = fb.first
+                        exit = fb.second
                     }
                 } else {
-                    val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
-                    if (envObj != null) {
-                        val env = pb.environment()
-                        envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
-                    }
-                    // If workspace indicates an Alpine root, prepend its bin dirs to PATH
-                    runCatching {
-                        val alpineRoot = deriveAlpineRootFromWorkspace(wd)
-                        if (alpineRoot != null) {
-                            val env = pb.environment()
-                            val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
-                            env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
-                        }
-                    }
-                    val proc = pb.start()
-                    val reader = proc.inputStream.bufferedReader()
-                    val start = System.currentTimeMillis()
-                    val sb = StringBuilder()
-                    while (proc.isAlive) {
-                        while (reader.ready()) sb.append(reader.readLine()).append('\n')
-                        if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
-                        try { Thread.sleep(20) } catch (_: InterruptedException) {}
-                    }
-                    if (proc.isAlive) proc.destroyForcibly()
-                    exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
-                    output = sb.toString()
+                    val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
+                    output = fb.first
+                    exit = fb.second
                 }
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
@@ -2548,6 +2506,35 @@ class AgentOrchestrator(
         val osRelease = File(root, "etc/os-release")
         val ok = runCatching { osRelease.readText().lowercase().contains("id=alpine") }.getOrElse { false }
         return if (ok) root else null
+    }
+
+    private fun runCommandWithProcessBuilder(command: String, wd: String, envObj: JSONObject?, timeoutMs: Long): Pair<String, Int> {
+        val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
+        if (envObj != null) {
+            val env = pb.environment()
+            envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
+        }
+        // Prepend Alpine bin dirs if workspace looks like a mounted Alpine tree
+        runCatching {
+            val alpineRoot = deriveAlpineRootFromWorkspace(wd)
+            if (alpineRoot != null) {
+                val env = pb.environment()
+                val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
+                env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
+            }
+        }
+        val proc = pb.start()
+        val reader = proc.inputStream.bufferedReader()
+        val start = System.currentTimeMillis()
+        val sb = StringBuilder()
+        while (proc.isAlive) {
+            while (reader.ready()) sb.append(reader.readLine()).append('\n')
+            if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
+            try { Thread.sleep(20) } catch (_: InterruptedException) {}
+        }
+        if (proc.isAlive) proc.destroyForcibly()
+        val exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
+        return Pair(sb.toString(), exit)
     }
 }
 
