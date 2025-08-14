@@ -1293,6 +1293,15 @@ class AgentOrchestrator(
                     val env = pb.environment()
                     envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
                 }
+                // If workspace indicates an Alpine root, prepend its bin dirs to PATH
+                runCatching {
+                    val alpineRoot = deriveAlpineRootFromWorkspace(wd)
+                    if (alpineRoot != null) {
+                        val env = pb.environment()
+                        val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
+                        env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
+                    }
+                }
                 val proc = pb.start()
                 val reader = proc.inputStream.bufferedReader()
                 val start = System.currentTimeMillis()
@@ -2472,5 +2481,15 @@ class AgentOrchestrator(
         val hasMgr = managers.any { cmd.contains(it) }
         val hasVersionProbe = cmd.contains("--version") || cmd.matches(Regex(".*\\s-v(\\s|$).*"))
         return hasMgr && hasVersionProbe
+    }
+
+    private fun deriveAlpineRootFromWorkspace(wd: String): String? {
+        val needle = "/local/alpine"
+        val idx = wd.indexOf(needle)
+        if (idx < 0) return null
+        val root = wd.substring(0, idx + needle.length)
+        val osRelease = File(root, "etc/os-release")
+        val ok = runCatching { osRelease.readText().lowercase().contains("id=alpine") }.getOrElse { false }
+        return if (ok) root else null
     }
 }
