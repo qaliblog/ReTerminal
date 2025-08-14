@@ -64,6 +64,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.platform.LocalFocusManager
+import com.rk.settings.Settings
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -91,9 +92,6 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
     // Tab state: 0 = Chat, 1 = Git
     var selectedTab by remember { mutableStateOf(0) }
-
-    // Search agent toggle per chat UI
-    var searchAgentEnabled by remember { mutableStateOf(false) }
 
     // Chat history persistence under chat/<chatId>/history.json
     val chatDir = remember(currentChatId.value) { File(application!!.filesDir, "chat/${currentChatId.value}").apply { mkdirs() } }
@@ -229,20 +227,27 @@ fun ChatView(mainActivityActivity: MainActivity) {
     fun runGitCommand(path: String, command: String, onDone: (Int, String) -> Unit) {
         scope.launch(Dispatchers.IO) {
             try {
-                val pb = ProcessBuilder("sh", "-c", command)
-                    .directory(File(path))
-                    .redirectErrorStream(true)
-                // inject PATH if provided
-                if (!gitPath.isNullOrBlank()) {
-                    val env = pb.environment()
-                    env["PATH"] = gitPath + ":" + (env["PATH"] ?: "")
+                if (Settings.agent_use_terminal_session) {
+                    val pathExport = if (!gitPath.isNullOrBlank()) "export PATH=\"$gitPath:\$PATH\"; " else ""
+                    val cmd = pathExport + command
+                    val out = HiddenShell.execInHiddenSession(path, cmd, 60_000L)
+                    launch(Dispatchers.Main) { onDone(0, out) }
+                } else {
+                    val pb = ProcessBuilder("sh", "-c", command)
+                        .directory(File(path))
+                        .redirectErrorStream(true)
+                    // inject PATH if provided
+                    if (!gitPath.isNullOrBlank()) {
+                        val env = pb.environment()
+                        env["PATH"] = gitPath + ":" + (env["PATH"] ?: "")
+                    }
+                    val proc = pb.start()
+                    val output = proc.inputStream.bufferedReader().use { it.readText() }
+                    val code = proc.waitFor()
+                    launch(Dispatchers.Main) { onDone(code, output) }
                 }
-                val proc = pb.start()
-                val output = proc.inputStream.bufferedReader().use { it.readText() }
-                val code = proc.waitFor()
-                scope.launch(Dispatchers.Main) { onDone(code, output) }
             } catch (e: Exception) {
-                scope.launch(Dispatchers.Main) { onDone(-1, e.message ?: e.toString()) }
+                launch(Dispatchers.Main) { onDone(-1, e.message ?: e.toString()) }
             }
         }
     }
@@ -318,12 +323,12 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             )
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                         Button(onClick = {
-                                 sanitizeGitSettings()
-                                 val cmd = "$gitBin --version"
-                                 appendGitLog("$ $cmd")
-                                 runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
-                             }) { Text("Test Git") }
+                            Button(onClick = {
+                                sanitizeGitSettings()
+                                val cmd = "$gitBin --version"
+                                appendGitLog("$ $cmd")
+                                runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
+                            }) { Text("Test Git") }
                         }
                         OutlinedTextField(
                             value = gitCommitMsg.value,
@@ -350,7 +355,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     }
                 }
                 Card(modifier = Modifier.fillMaxWidth().weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                    Column(Modifier.padding(12.dp)) {
+                    Column(Modifier.padding(12dp)) {
                         Text("Git Log", style = MaterialTheme.typography.titleSmall)
                         Spacer(Modifier.height(8.dp))
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
