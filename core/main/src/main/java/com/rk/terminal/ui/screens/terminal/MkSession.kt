@@ -139,4 +139,66 @@ Updating : apk update && apk upgrade
         }
 
     }
+
+    fun createSessionWithEnv(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        workingMode: Int,
+        extraEnv: Array<String>
+    ): TerminalSession {
+        with(activity) {
+            val envSession = mutableListOf<String>()
+            // Build base env as in createSession
+            envSession.addAll(listOf(
+                "PATH=${System.getenv("PATH")}:/sbin:${localBinDir().absolutePath}",
+                "HOME=/sdcard",
+                "PUBLIC_HOME=${getExternalFilesDir(null)?.absolutePath}",
+                "COLORTERM=truecolor",
+                "TERM=xterm-256color",
+                "LANG=C.UTF-8",
+                "BIN=${localBinDir()}",
+                "DEBUG=${BuildConfig.DEBUG}",
+                "PREFIX=${filesDir.parentFile!!.path}",
+                "LD_LIBRARY_PATH=${localLibDir().absolutePath}",
+                "LINKER=${if(File("/system/bin/linker64").exists()){"/system/bin/linker64"}else{"/system/bin/linker"}}",
+                "NATIVE_LIB_DIR=${applicationInfo.nativeLibraryDir}",
+                "PKG=${packageName}",
+                "RISH_APPLICATION_ID=${packageName}",
+                "PKG_PATH=${applicationInfo.sourceDir}",
+                "PROOT_TMP_DIR=${getTempDir().child(session_id).also { if (it.exists().not()){it.mkdirs()} }}",
+                "PROOT_LOADER=${applicationInfo.nativeLibraryDir}/libproot-loader.so",
+            ))
+            if (File(applicationInfo.nativeLibraryDir).child("libproot-loader32.so").exists()){
+                envSession.add("PROOT_LOADER32=${applicationInfo.nativeLibraryDir}/libproot-loader32.so")
+            }
+            envSession.addAll(extraEnv)
+
+            // Ensure init files exist
+            val initFile: File = localBinDir().child("init-host")
+            if (initFile.exists().not()){
+                initFile.createFileIfNot()
+                initFile.writeText(assets.open("init-host.sh").bufferedReader().use { it.readText() })
+            }
+            localBinDir().child("init").apply {
+                if (exists().not()){
+                    createFileIfNot()
+                    writeText(assets.open("init.sh").bufferedReader().use { it.readText() })
+                }
+            }
+
+            val workingDir = "/sdcard"
+            val args: Array<String> = if (workingMode == WorkingMode.ALPINE) arrayOf("-c", initFile.absolutePath) else arrayOf()
+            val shell = "/system/bin/sh"
+
+            return TerminalSession(
+                shell,
+                workingDir,
+                args,
+                envSession.toTypedArray(),
+                TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
+                sessionClient,
+            )
+        }
+    }
 }

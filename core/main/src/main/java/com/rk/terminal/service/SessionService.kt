@@ -62,6 +62,12 @@ class SessionService : Service() {
             }
         }
 
+        fun createHiddenSession(id: String, client: TerminalSessionClient, activity: MainActivity, workingMode: Int, extraEnv: Array<String>): TerminalSession {
+            return MkSession.createSessionWithEnv(activity, client, id, workingMode = workingMode, extraEnv = extraEnv).also {
+                sessions[id] = it
+            }
+        }
+
         fun terminateHiddenSession(id: String) {
             runCatching { sessions[id]?.finishIfRunning() }
             sessions.remove(id)
