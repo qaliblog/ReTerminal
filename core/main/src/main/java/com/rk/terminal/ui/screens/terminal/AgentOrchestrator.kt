@@ -2666,7 +2666,7 @@ object MainShell {
         val outPath = outFile.absolutePath.replace("'", "'\\''")
         val sentinel = "__MAIN_DONE_${System.currentTimeMillis()}__"
         // Build command line to execute in the visible terminal session
-        val cmdLine = "cd \"$wd\"; umask 022; ( $command ); code=$?; printf '%s\\n' ${sentinel} >> '$outPath'; printf 'EXIT_CODE=%s\\n' $code >> '$outPath'\n"
+        val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; code=$?; printf '%s\\n' '$sentinel' >> '$outPath'; printf 'EXIT_CODE=%s\\n' $code >> '$outPath'\n"
         // Write to the session PTY
         runCatching { session.write(cmdLine) }.onFailure { return Pair("write failed: ${it.message}", -1) }
         // Poll
