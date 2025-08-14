@@ -2736,54 +2736,135 @@ class AgentOrchestrator(
                 }
                 val lowerTarget = target.lowercase()
                 val htmlTitle = deriveTitleFromGoal(lastPlanGoal)
-                fun htmlTemplate(): String = """
-                    <!-- idempotent:web-template-html -->
-                    <!DOCTYPE html>
-                    <html lang=\"en\">
-                    <head>
-                      <meta charset=\"UTF-8\" />
-                      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
-                      <title>${htmlTitle}</title>
-                      <link rel=\"stylesheet\" href=\"/static/style.css\" />
-                    </head>
-                    <body>
-                      <h1>${htmlTitle}</h1>
-                      <div id=\"message\"></div>
-                      <div id=\"board\" class=\"board\">
-                        <div class=\"cell\" data-row=\"0\" data-col=\"0\"></div>
-                        <div class=\"cell\" data-row=\"0\" data-col=\"1\"></div>
-                        <div class=\"cell\" data-row=\"0\" data-col=\"2\"></div>
-                        <div class=\"cell\" data-row=\"1\" data-col=\"0\"></div>
-                        <div class=\"cell\" data-row=\"1\" data-col=\"1\"></div>
-                        <div class=\"cell\" data-row=\"1\" data-col=\"2\"></div>
-                        <div class=\"cell\" data-row=\"2\" data-col=\"0\"></div>
-                        <div class=\"cell\" data-row=\"2\" data-col=\"1\"></div>
-                        <div class=\"cell\" data-row=\"2\" data-col=\"2\"></div>
-                      </div>
-                      <script src=\"/static/script.js\"></script>
-                    </body>
-                    </html>
-                """.trimIndent()
-                fun cssTemplate(): String = """
-                    /* idempotent:web-template-css */
-                    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
-                    .board { display: grid; grid-template-columns: repeat(3, 80px); grid-gap: 6px; margin-top: 12px; }
-                    .cell { width: 80px; height: 80px; border: 1px solid #333; display: flex; align-items: center; justify-content: center; font-size: 32px; cursor: pointer; }
-                """.trimIndent()
-                fun jsTemplate(): String = """
-                    // idempotent:web-template-js
-                    const boardEl = document.getElementById('board');
-                    const messageEl = document.getElementById('message');
-                    boardEl.addEventListener('click', async (ev) => {
-                      const cell = ev.target;
-                      if (!cell.classList.contains('cell') || cell.textContent) return;
-                      const row = parseInt(cell.dataset.row, 10);
-                      const col = parseInt(cell.dataset.col, 10);
-                      const res = await fetch('/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ row, col }) });
-                      const data = await res.json();
-                      messageEl.textContent = data.message || '';
-                    });
-                """.trimIndent()
+                val goalLower = (lastPlanGoal ?: "").lowercase()
+                fun htmlTemplate(): String {
+                    return if (goalLower.contains("snake")) {
+                        """
+                        <!-- idempotent:web-template-html -->
+                        <!DOCTYPE html>
+                        <html lang=\"en\">
+                        <head>
+                          <meta charset=\"UTF-8\" />
+                          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+                          <title>${htmlTitle}</title>
+                          <link rel=\"stylesheet\" href=\"/static/style.css\" />
+                        </head>
+                        <body>
+                          <div class=\"game-container\">
+                            <h1>${htmlTitle}</h1>
+                            <canvas id=\"gameCanvas\" width=\"560\" height=\"560\"></canvas>
+                            <div class=\"score\" id=\"score\"></div>
+                          </div>
+                          <script src=\"/static/script.js\"></script>
+                        </body>
+                        </html>
+                        """.trimIndent()
+                    } else if (goalLower.contains("piano")) {
+                        """
+                        <!-- idempotent:web-template-html -->
+                        <!DOCTYPE html>
+                        <html lang=\"en\">
+                        <head>
+                          <meta charset=\"UTF-8\" />
+                          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+                          <title>${htmlTitle}</title>
+                          <link rel=\"stylesheet\" href=\"/static/style.css\" />
+                        </head>
+                        <body>
+                          <div class=\"game-container\">
+                            <h1>${htmlTitle}</h1>
+                            <canvas id=\"gameCanvas\" width=\"360\" height=\"640\"></canvas>
+                            <div id=\"message\"></div>
+                          </div>
+                          <script src=\"/static/script.js\"></script>
+                        </body>
+                        </html>
+                        """.trimIndent()
+                    } else {
+                        """
+                        <!-- idempotent:web-template-html -->
+                        <!DOCTYPE html>
+                        <html lang=\"en\">
+                        <head>
+                          <meta charset=\"UTF-8\" />
+                          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+                          <title>${htmlTitle}</title>
+                          <link rel=\"stylesheet\" href=\"/static/style.css\" />
+                        </head>
+                        <body>
+                          <h1>${htmlTitle}</h1>
+                          <div id=\"message\"></div>
+                          <script src=\"/static/script.js\"></script>
+                        </body>
+                        </html>
+                        """.trimIndent()
+                    }
+                }
+                fun cssTemplate(): String {
+                    return if (goalLower.contains("snake")) {
+                        """
+                        /* idempotent:web-template-css */
+                        body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #111; color: #eee; margin: 0; }
+                        .game-container { text-align: center; }
+                        canvas { background: #000; border: 1px solid #444; }
+                        .score { margin-top: 12px; }
+                        """.trimIndent()
+                    } else if (goalLower.contains("piano")) {
+                        """
+                        /* idempotent:web-template-css */
+                        body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #222; color: #eee; margin: 0; }
+                        .game-container { text-align: center; }
+                        canvas { background: #000; border: 1px solid #555; }
+                        #message { margin-top: 8px; }
+                        """.trimIndent()
+                    } else {
+                        """
+                        /* idempotent:web-template-css */
+                        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+                        """.trimIndent()
+                    }
+                }
+                fun jsTemplate(): String {
+                    return if (goalLower.contains("snake")) {
+                        """
+                        // idempotent:web-template-js
+                        const canvas = document.getElementById('gameCanvas');
+                        const ctx = canvas.getContext('2d');
+                        const BLOCK = 20; let dx = BLOCK; let dy = 0; let speed = 120; let score = 0;
+                        let snake = [ {x: 200, y: 200}, {x: 180, y: 200}, {x: 160, y: 200} ];
+                        let food = { x: 100, y: 100 };
+                        function rnd(n){ return Math.floor(Math.random() * n); }
+                        function placeFood(){ food = { x: rnd(canvas.width/BLOCK)*BLOCK, y: rnd(canvas.height/BLOCK)*BLOCK}; }
+                        function draw(){ ctx.fillStyle='#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+                          ctx.fillStyle='red'; ctx.fillRect(food.x, food.y, BLOCK, BLOCK);
+                          ctx.fillStyle='lime'; snake.forEach(p=>ctx.fillRect(p.x,p.y,BLOCK,BLOCK)); }
+                        function move(){ const head = { x: snake[0].x + dx, y: snake[0].y + dy}; snake.unshift(head);
+                          if (head.x===food.x && head.y===food.y){ score+=10; placeFood(); if (speed>60) speed-=5; } else { snake.pop(); } }
+                        function collide(){ const h=snake[0]; if (h.x<0||h.y<0||h.x>=canvas.width||h.y>=canvas.height) return true; return snake.slice(1).some(p=>p.x===h.x&&p.y===h.y); }
+                        function loop(){ if (collide()){ alert('Game Over. Score: '+score); return; } move(); draw(); setTimeout(loop,speed);} placeFood(); draw(); setTimeout(loop,speed);
+                        document.addEventListener('keydown', e=>{ const k=e.keyCode; const L=37,U=38,R=39,D=40,TAB=9; if(k===TAB){ e.preventDefault(); const dirs=[[BLOCK,0],[0,BLOCK],[-BLOCK,0],[0,-BLOCK]]; const cur=[dx,dy]; let i=dirs.findIndex(d=>d[0]===cur[0]&&d[1]===cur[1]); i=(i+1)%dirs.length; dx=dirs[i][0]; dy=dirs[i][1]; return; } if(k===L&&dx===0){dx=-BLOCK;dy=0;} if(k===U&&dy===0){dx=0;dy=-BLOCK;} if(k===R&&dx===0){dx=BLOCK;dy=0;} if(k===D&&dy===0){dx=0;dy=BLOCK;} });
+                        """.trimIndent()
+                    } else if (goalLower.contains("piano")) {
+                        """
+                        // idempotent:web-template-js
+                        const canvas = document.getElementById('gameCanvas');
+                        const ctx = canvas.getContext('2d');
+                        const COLS = 4; const TILE_H = 40; let speed = 4; let tiles=[]; let score=0; let running=true;
+                        function spawn(){ const col=Math.floor(Math.random()*COLS); tiles.push({x: col*(canvas.width/COLS), y: -TILE_H}); }
+                        function step(){ if(!running) return; ctx.fillStyle='#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+                          ctx.fillStyle='#fff'; for(const t of tiles){ t.y+=speed; ctx.fillRect(t.x, t.y, canvas.width/COLS-2, TILE_H-2); }
+                          tiles = tiles.filter(t=>t.y<canvas.height); if(Math.random()<0.05) spawn(); requestAnimationFrame(step); }
+                        canvas.addEventListener('mousedown', ev=>{ const r=canvas.getBoundingClientRect(); const x=ev.clientX-r.left; const y=ev.clientY-r.top; const col=Math.floor(x/(canvas.width/COLS));
+                          const hit=tiles.find(t=> t.y+TILE_H>y && t.y<y && Math.floor(t.x/(canvas.width/COLS))===col ); if(hit){ score++; tiles=tiles.filter(t=>t!==hit);} else { running=false; alert('Miss! Score: '+score);} });
+                        spawn(); requestAnimationFrame(step);
+                        """.trimIndent()
+                    } else {
+                        """
+                        // idempotent:web-template-js
+                        console.log('App ready');
+                        """.trimIndent()
+                    }
+                }
                 fun pyLogicTemplate(): String = """
                     # idempotent:tic_tac_toe_logic
                     def check_winner(board):
