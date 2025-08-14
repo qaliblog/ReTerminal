@@ -2588,38 +2588,45 @@ object HiddenShell {
         // Create session on main thread
         val createLatch = java.util.concurrent.CountDownLatch(1)
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        var scheduledOk = false
         mainHandler.post {
             try {
                 val session = binder.createHiddenSession(sessionId, client, activity, workingMode)
-                // Ensure world-readable out file when on shared storage
                 val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
                 // Delay writes so proot + login shell can initialize and attach to the pty
                 mainHandler.postDelayed({
                     runCatching { session.write(cmdLine) }
                 }, 800)
                 mainHandler.postDelayed({
-                    // Second attempt in case the first was sent too early
                     runCatching {
-                        if (!File(outFile.absolutePath).exists() || runCatching { outFile.readText() }.getOrElse { "" }.contains(sentinel).not()) {
+                        if (!outFile.exists() || runCatching { outFile.readText() }.getOrElse { "" }.contains(sentinel).not()) {
                             session.write(cmdLine)
                         }
                     }
                 }, 1600)
+                scheduledOk = true
+            } catch (e: Exception) {
+                runCatching {
+                    outFile.parentFile?.mkdirs()
+                    outFile.writeText("Hidden session error: ${e.message ?: e.toString()}\n")
+                    outFile.appendText(sentinel)
+                }
             } finally {
                 createLatch.countDown()
             }
         }
-        createLatch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+        createLatch.await(3, java.util.concurrent.TimeUnit.SECONDS)
         val start = System.currentTimeMillis()
 
         // Poll the output file until sentinel appears or timeout
         var content: String = ""
+        var sawSentinel = false
         while (System.currentTimeMillis() - start < timeoutMs) {
             if (outFile.exists()) {
                 content = runCatching { outFile.readText() }.getOrElse { "" }
-                if (content.contains(sentinel)) break
+                if (content.contains(sentinel)) { sawSentinel = true; break }
             }
-            try { Thread.sleep(80) } catch (_: InterruptedException) {}
+            try { Thread.sleep(100) } catch (_: InterruptedException) {}
         }
 
         // Terminate session on main thread (best-effort)
@@ -2632,6 +2639,9 @@ object HiddenShell {
             content = runCatching { outFile.readText() }.getOrElse { "" }
         }
         content = content.replace(sentinel, "").trim()
+        if (!sawSentinel && scheduledOk) {
+            content = (if (content.isBlank()) "" else content + "\n") + "[hidden session timeout before sentinel]"
+        }
         runCatching { outFile.delete() }
         return content
     }
