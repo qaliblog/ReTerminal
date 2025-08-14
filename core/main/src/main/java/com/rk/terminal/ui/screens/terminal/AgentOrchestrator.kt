@@ -1282,12 +1282,25 @@ class AgentOrchestrator(
                 ToolResult(d.exists() && d.isDirectory, null)
             }
             "run_shell" -> {
-                val command = call.args.optString("command")
+                var command = call.args.optString("command")
                 val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L)
                 val envObj = call.args.optJSONObject("env")
                 require(command.isNotBlank()) { "command missing" }
                 val wd = workingDirProvider()
                 val cacheKey = commandCacheKey(command, wd)
+                // Normalize common typos like pip3--version -> pip3 --version
+                command = command.replace(Regex("\\b(pip3?)--version\\b"), "$1 --version")
+                command = command.replace(Regex("\\b(python3?)--version\\b"), "$1 --version")
+                // Robustify python/pip version checks using fallbacks and non-failing tail
+                fun robustifyPythonPip(cmd: String): String {
+                    val hasPy = Regex("\\bpython(3)?\\s*--version").containsMatchIn(cmd)
+                    val hasPip = Regex("\\bpip(3)?\\s*--version").containsMatchIn(cmd)
+                    val parts = mutableListOf<String>()
+                    if (hasPy) parts += "( (command -v python3 >/dev/null 2>&1 && python3 --version) || (command -v python >/dev/null 2>&1 && python --version) || echo 'python not found' )"
+                    if (hasPip) parts += "( (command -v pip3 >/dev/null 2>&1 && pip3 --version) || (command -v pip >/dev/null 2>&1 && pip --version) || echo 'pip not found' )"
+                    return if (parts.isNotEmpty()) parts.joinToString(" && ") + " || true" else cmd
+                }
+                command = robustifyPythonPip(command)
                 val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
                 if (envObj != null) {
                     val env = pb.environment()
