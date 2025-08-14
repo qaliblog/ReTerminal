@@ -1275,13 +1275,11 @@ class AgentOrchestrator(
              Tool ordering guidance:
              - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
              - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
-             - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
+             - Before modifying an existing file, first read it to get context; avoid blind overwrites. Prefer apply_changes with minimal edits.
+             - For tasks that rely on system state (package installation, runtimes), first run an environment preflight using run_shell to check OS/manager/runtime availability.
              - Use get_cached_command_output before re-running heavy run_shell.
-             - For multi-file reads, keep limits small and targeted.
-             - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
-             - When context is missing, propose the minimal discovery call to fetch it.
-             - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
-               uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
+             - Keep reads targeted; keep modifications idempotent.
+             - If user goal involves installing packages, prefer native package manager on Alpine (apk add py3-<pkg>) over pip when PEP 668 is present.
              - Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
@@ -1432,20 +1430,25 @@ class AgentOrchestrator(
 							return "git config user.email 'you@example.com' && git config user.name 'You' && ${cmd}"
 						}
 						// Flask import missing -> install Flask
-						if (lower.contains("moduleNotFoundError".lowercase()) && lower.contains("flask")) {
+						if (lower.contains("modulenotfounderror") && lower.contains("flask")) {
 							return if (lastDetectedManagers.contains("apk")) "apk update && apk add py3-flask" else "python3 -m pip install --upgrade pip setuptools wheel && python3 -m pip install flask"
 						}
-						if ((lower.contains("no module named") || lower.contains("moduleNotFoundError".lowercase())) && lower.contains("flask")) {
+						if ((lower.contains("no module named") || lower.contains("modulenotfounderror")) && lower.contains("flask")) {
 							return if (lastDetectedManagers.contains("apk")) "apk update && apk add py3-flask" else "python3 -m pip install --upgrade pip setuptools wheel && python3 -m pip install flask"
 						}
-						// pip/Flask upgrades
+						// pip/Flask/Pygame upgrades
 						val pipInstall = Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(cmd)
 						if (pipInstall) {
-							// PEP 668: externally managed env on Alpine (apk) -> prefer system package when available
 							val installing = cmd.substringAfter("install ").trim()
 							val targetPkg = installing.split(" ").firstOrNull()?.trim()?.lowercase() ?: ""
 							val pep668 = lower.contains("externally-managed-environment") || lower.contains("externally managed")
 							val apkAvailable = lastDetectedManagers.contains("apk") || lower.contains("apk-tools")
+							if (apkAvailable && targetPkg == "pygame") {
+								return "apk update && apk add py3-pygame"
+							}
+							if (lower.contains("gcc: not found") || lower.contains("sdl2-config: not found")) {
+								if (apkAvailable) return "apk update && apk add build-base sdl2-dev sdl2_image-dev sdl2_mixer-dev sdl2_ttf-dev"
+							}
 							if (pep668 && apkAvailable) {
 								val apkName = when (targetPkg) {
 									"flask" -> "py3-flask"
@@ -1453,21 +1456,17 @@ class AgentOrchestrator(
 								}
 								return "apk update && apk add ${apkName}"
 							}
-							// If PEP 668 and no apk, fall back to virtualenv to avoid system site-packages
 							if (pep668) {
 								val pkgPart = cmd.substringAfter("install ")
 								return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
 							}
-							// Prefer python3 -m pip invocation
 							if (!cmd.contains("python3 -m pip")) {
 								return cmd.replaceFirst(Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE), "python3 -m pip install ")
 							}
-							// Externally managed env or permission issues -> use venv
 							if (lower.contains("externally-managed-environment") || lower.contains("permission denied") || lower.contains("not writeable") || lower.contains("is not owned by")) {
 								val pkgPart = cmd.substringAfter("install ")
 								return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
 							}
-							// pip missing -> try apk install then pip
 							if (lower.contains("pip: not found") || lower.contains("no module named pip") || lower.contains("command not found: pip")) {
 								val pkgPart = cmd.substringAfter("install ")
 								return "(command -v apk >/dev/null 2>&1 && apk update && apk add py3-pip) || true && python3 -m pip install ${pkgPart}"
@@ -1485,12 +1484,12 @@ if (exit != 0) {
                         combined.append(retry.first)
                         output = combined.toString()
                         exit = retry.second
-                        if (exit == 0 && isInstallCommand(upgraded)) {
+                        if (exit == 0 && isInstallCommand(upgraded) && !output.lowercase().contains("externally-managed-environment")) {
                             lastInstallSuccess = true
                         }
                     }
                 }
-                if (exit == 0 && isInstallCommand(command)) {
+                if (exit == 0 && isInstallCommand(command) && !output.lowercase().contains("externally-managed-environment")) {
                     lastInstallSuccess = true
                 }
                 val obs = output.ifBlank { null }
@@ -1522,8 +1521,9 @@ if (exit != 0) {
                     if (lower.contains("yum ")) lastDetectedManagers.add("yum")
                     if (lower.contains("pacman ")) lastDetectedManagers.add("pacman")
                 }
-                // If a pip install keeps failing due to PEP 668 and we did not resolve above, mark last task failed to trigger remediation on next loop
-                if (!lastInstallSuccess && Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(command) && output.lowercase().contains("externally-managed-environment")) {
+                // PEP 668 detected: mark failure to trigger remediation instead of false success
+                if (Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(command) && output.lowercase().contains("externally-managed-environment")) {
+                    lastInstallSuccess = false
                     currentTaskContext?.let { t -> markTaskFailed(t.id, "pep668_externally_managed_env") }
                 }
                 ToolResult(exit == 0 || isEnvCheck, obs)
