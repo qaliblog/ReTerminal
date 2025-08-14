@@ -681,7 +681,7 @@ class AgentOrchestrator(
         """.trimIndent()
         val suggestContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", suggestSys), LlmMessage("user", suggestUser))))
         val suggestJson = extractFirstJsonObject(suggestContent)
-        val sites = runCatching { JSONObject(suggestJson).optJSONArray("sites") }.getOrNull() ?: JSONArray()
+        val sites = if (suggestJson != null) runCatching { JSONObject(suggestJson).optJSONArray("sites") }.getOrNull() ?: JSONArray() else JSONArray()
         val fetched = JSONArray()
         fun curl(url: String): String {
             val cmd = "curl -L --max-time 15 --silent --show-error --compressed --user-agent 'Mozilla/5.0' '" + url.replace("'", "%27") + "'"
