@@ -2587,12 +2587,24 @@ object HiddenShell {
 
         // Create session on main thread
         val createLatch = java.util.concurrent.CountDownLatch(1)
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
             try {
                 val session = binder.createHiddenSession(sessionId, client, activity, workingMode)
-                // Ensure world-readable out file when on shared storage and set XPWD for Alpine init
+                // Ensure world-readable out file when on shared storage
                 val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
-                session.write(cmdLine)
+                // Delay writes so proot + login shell can initialize and attach to the pty
+                mainHandler.postDelayed({
+                    runCatching { session.write(cmdLine) }
+                }, 800)
+                mainHandler.postDelayed({
+                    // Second attempt in case the first was sent too early
+                    runCatching {
+                        if (!File(outFile.absolutePath).exists() || runCatching { outFile.readText() }.getOrElse { "" }.contains(sentinel).not()) {
+                            session.write(cmdLine)
+                        }
+                    }
+                }, 1600)
             } finally {
                 createLatch.countDown()
             }

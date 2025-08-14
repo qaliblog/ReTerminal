@@ -227,25 +227,10 @@ fun ChatView(mainActivityActivity: MainActivity) {
     fun runGitCommand(path: String, command: String, onDone: (Int, String) -> Unit) {
         scope.launch(Dispatchers.IO) {
             try {
-                if (Settings.agent_use_terminal_session) {
-                    val pathExport = if (!gitPath.isNullOrBlank()) "export PATH=\"$gitPath:\$PATH\"; " else ""
-                    val cmd = pathExport + command
-                    val out = HiddenShell.execInHiddenSession(mainActivityActivity, path, cmd, 60_000L)
-                    launch(Dispatchers.Main) { onDone(0, out) }
-                } else {
-                    val pb = ProcessBuilder("sh", "-c", command)
-                        .directory(File(path))
-                        .redirectErrorStream(true)
-                    // inject PATH if provided
-                    if (!gitPath.isNullOrBlank()) {
-                        val env = pb.environment()
-                        env["PATH"] = gitPath + ":" + (env["PATH"] ?: "")
-                    }
-                    val proc = pb.start()
-                    val output = proc.inputStream.bufferedReader().use { it.readText() }
-                    val code = proc.waitFor()
-                    launch(Dispatchers.Main) { onDone(code, output) }
-                }
+                val pathExport = if (!gitPath.isNullOrBlank()) "export PATH=\"$gitPath:\$PATH\"; " else ""
+                val cmd = pathExport + command
+                val out = HiddenShell.execInHiddenSession(mainActivityActivity, path, cmd, 60_000L)
+                launch(Dispatchers.Main) { onDone(0, out) }
             } catch (e: Exception) {
                 launch(Dispatchers.Main) { onDone(-1, e.message ?: e.toString()) }
             }
