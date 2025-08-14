@@ -89,6 +89,7 @@ class AgentOrchestrator(
         val filesModified: MutableList<String> = mutableListOf()
     )
     private var currentRunStats: RunStats? = null
+    private var currentTaskContext: Task? = null
     private fun beginRunStats() { currentRunStats = RunStats() }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
@@ -410,6 +411,7 @@ class AgentOrchestrator(
                 continue
             }
             val result = try {
+                currentTaskContext = pseudoTask
                 executeToolCall(toolCall)
             } catch (e: Exception) {
                 val err = e.message ?: e.toString()
@@ -945,7 +947,10 @@ class AgentOrchestrator(
             val effectiveToolCall = if (isModifyingTool(coerced.type) && Settings.writer_agent_enabled) {
                 runCatching { writerSuggestTool(plan.goal, task, coerced) }.getOrNull() ?: coerced
             } else coerced
-            val result = runCatching { executeToolCall(effectiveToolCall) }.getOrElse { e ->
+            val result = runCatching {
+                currentTaskContext = task
+                executeToolCall(effectiveToolCall)
+            }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
@@ -958,7 +963,7 @@ class AgentOrchestrator(
                 }
                 onStatus("Task ${task.id}: plan revision unavailable; proceeding with remediation…")
                 ToolResult(false, null)
-            }
+            }.also { currentTaskContext = null }
 
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
@@ -1379,7 +1384,7 @@ class AgentOrchestrator(
                 val raw = call.args.optString("path")
                 val path = if (raw.isBlank()) workingDirProvider() else raw
                 // Guard: only allow when preflight says ok
-                val allow = shouldAllowRecursiveListing(Task("tmp", call.type, task.category, task.targets, task.search, task.markers))
+                val allow = shouldAllowRecursiveListing(currentTaskContext)
                 val maxDepth = if (allow) call.args.optInt("max_depth", 3).coerceIn(1, 3) else 0
                 val maxEntries = if (allow) call.args.optInt("max_entries", 300).coerceIn(1, 300) else 1
                 val root = resolvePath(path)
@@ -2488,10 +2493,10 @@ class AgentOrchestrator(
         return if (ok) root else null
     }
 
-    private fun shouldAllowRecursiveListing(task: Task): Boolean {
-        val cat = task.category?.lowercase()?.trim()
+    private fun shouldAllowRecursiveListing(task: Task?): Boolean {
+        val cat = task?.category?.lowercase()?.trim()
         if (cat != "list_dir_recursive") return false
-        val g = (task.description + " " + (task.search?.joinToString(" ") ?: "")).lowercase()
+        val g = ((task?.description ?: "") + " " + (task?.search?.joinToString(" ") ?: "")).lowercase()
         val hints = listOf("android", "kotlin", "java", "src", "main", "androidmanifest")
         return hints.any { g.contains(it) }
     }
