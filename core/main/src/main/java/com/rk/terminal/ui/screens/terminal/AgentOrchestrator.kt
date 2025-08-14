@@ -1315,7 +1315,7 @@ class AgentOrchestrator(
                 saveCommandCache()
                 persistCliReport()
                 currentRunStats?.commandsRun?.add(command)
-                val isEnvCheck = listOf("uname", "os-release", "command -v", "echo $SHELL", "echo $PATH").any { command.contains(it) }
+                val isEnvCheck = listOf("uname", "os-release", "command -v", "echo \$SHELL", "echo \$PATH").any { command.contains(it) }
                 ToolResult(exit == 0 || isEnvCheck, obs)
             }
             "get_cached_command_output" -> {
