@@ -2557,7 +2557,14 @@ object HiddenShell {
         val current = service.currentSession.value
         val workingMode = service.sessionList[current.first] ?: 0
         val sessionId = "agent-bg-" + System.currentTimeMillis()
-        val sb = StringBuilder()
+
+        // Prepare output capture file
+        val outFile = File(activity.cacheDir, "$sessionId.out")
+        runCatching { if (outFile.exists()) outFile.delete() }.getOrElse { }
+        val outPath = outFile.absolutePath.replace("'", "'\\''")
+        val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
+
+        // Minimal client
         val client = object : TerminalSessionClient {
             override fun onTextChanged(changedSession: TerminalSession) {}
             override fun onTitleChanged(changedSession: TerminalSession) {}
@@ -2576,17 +2583,46 @@ object HiddenShell {
             override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
             override fun logStackTrace(tag: String?, e: Exception?) {}
         }
-        val session = binder.createSession(sessionId, client, activity, workingMode)
-        session.write("cd \"$wd\"\n")
-        val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
-        session.write(command + "; echo $sentinel\n")
-        val start = System.currentTimeMillis()
-        while (System.currentTimeMillis() - start < timeoutMs) {
-            Thread.sleep(50)
-            if (sb.contains(sentinel)) break
+
+        // Create session on main thread
+        val createLatch = java.util.concurrent.CountDownLatch(1)
+        val sessionHolder = arrayOfNulls<TerminalSession>(1)
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                val session = binder.createSession(sessionId, client, activity, workingMode)
+                sessionHolder[0] = session
+                // Send combined command on main thread
+                val cmdLine = "cd \"$wd\"; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
+                session.write(cmdLine)
+            } finally {
+                createLatch.countDown()
+            }
         }
-        binder.terminateSession(sessionId)
-        val out = sb.toString()
-        return out.replace(sentinel, "").trim()
+        // Wait for session creation/command dispatch
+        createLatch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+        val start = System.currentTimeMillis()
+
+        // Poll the output file until sentinel appears or timeout
+        var content: String = ""
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            if (outFile.exists()) {
+                content = runCatching { outFile.readText() }.getOrElse { "" }
+                if (content.contains(sentinel)) break
+            }
+            try { Thread.sleep(50) } catch (_: InterruptedException) {}
+        }
+
+        // Terminate session on main thread (best-effort)
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            runCatching { binder.terminateSession(sessionId) }
+        }
+
+        // Clean and return
+        if (content.isBlank() && outFile.exists()) {
+            content = runCatching { outFile.readText() }.getOrElse { "" }
+        }
+        content = content.replace(sentinel, "").trim()
+        runCatching { outFile.delete() }
+        return content
     }
 }
