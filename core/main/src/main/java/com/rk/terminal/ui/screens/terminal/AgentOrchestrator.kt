@@ -980,6 +980,22 @@ class AgentOrchestrator(
                     }
                 }
 
+                // If this task is a Python/pip presence check and output shows versions, consider it complete
+                runCatching {
+                    val cmdStr = if (effectiveToolCall.type == "run_shell") effectiveToolCall.args.optString("command").lowercase() else ""
+                    val outLower = result.observation?.lowercase().orEmpty()
+                    val isPyCheckTask = task.description.lowercase().let { it.contains("python") || it.contains("pip") } &&
+                            (task.description.lowercase().contains("check") || task.description.lowercase().contains("installed") || task.description.lowercase().contains("accessible"))
+                    val versionSignals = outLower.contains("python ") && outLower.contains("pip ")
+                    if (effectiveToolCall.type == "run_shell" && isPyCheckTask && versionSignals) {
+                        markTaskDone(task.id)
+                        onStatus("Task ${task.id}: done")
+                        persistPlanWithStatuses(plan)
+                        endRunStatsAndReport(onStatus, verb = "thought")
+                        return true
+                    }
+                }
+
                 // If the tool modified the workspace, consider the task complete.
                 if (isModifyingTool(effectiveToolCall.type)) {
                     markTaskDone(task.id)
@@ -1334,6 +1350,24 @@ class AgentOrchestrator(
                     }
                     if (cmd.contains("git commit") && (lower.contains("please tell me who you are") || lower.contains("user.name") && lower.contains("user.email"))) {
                         return "git config user.email 'you@example.com' && git config user.name 'You' && ${cmd}"
+                    }
+                    // pip/Flask upgrades
+                    val pipInstall = Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(cmd)
+                    if (pipInstall) {
+                        // Prefer python3 -m pip invocation
+                        if (!cmd.contains("python3 -m pip")) {
+                            return cmd.replaceFirst(Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE), "python3 -m pip install ")
+                        }
+                        // Externally managed env or permission issues -> use venv
+                        if (lower.contains("externally-managed-environment") || lower.contains("permission denied") || lower.contains("not writeable") || lower.contains("is not owned by")) {
+                            val pkgPart = cmd.substringAfter("install ")
+                            return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
+                        }
+                        // pip missing -> try apk install then pip
+                        if (lower.contains("pip: not found") || lower.contains("no module named pip") || lower.contains("command not found: pip")) {
+                            val pkgPart = cmd.substringAfter("install ")
+                            return "(command -v apk >/dev/null 2>&1 && apk update && apk add py3-pip) || true && python3 -m pip install ${pkgPart}"
+                        }
                     }
                     return null
                 }
