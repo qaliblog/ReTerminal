@@ -982,8 +982,9 @@ class AgentOrchestrator(
                     return true
                 }
 
-                // If this is a discovery tool and the task category is discovery, complete the task now.
-                if (isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) {
+                // If this is a discovery tool and the task category is discovery, or env preflight shell, complete the task now.
+                val envPreflight = effectiveToolCall.type == "run_shell" && isEnvPreflightCommand(effectiveToolCall.args.optString("command"))
+                if ((isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) || envPreflight) {
                     markTaskDone(task.id)
                     onStatus("Task ${task.id}: done")
                     // Ensure UI sees latest statuses
@@ -1315,7 +1316,7 @@ class AgentOrchestrator(
                 saveCommandCache()
                 persistCliReport()
                 currentRunStats?.commandsRun?.add(command)
-                val isEnvCheck = listOf("uname", "os-release", "command -v", "echo \$SHELL", "echo \$PATH").any { command.contains(it) }
+                val isEnvCheck = isEnvPreflightCommand(command)
                 ToolResult(exit == 0 || isEnvCheck, obs)
             }
             "get_cached_command_output" -> {
@@ -2419,5 +2420,15 @@ class AgentOrchestrator(
             }
             else -> proposed
         }
+    }
+
+    private fun isEnvPreflightCommand(command: String): Boolean {
+        val cmd = command.lowercase()
+        val baseSignals = listOf("uname", "os-release", "command -v", "which", "echo \$shell", "echo \$path")
+        if (baseSignals.any { cmd.contains(it) }) return true
+        val managers = listOf("apt", "dnf", "yum", "pacman", "apk", "zypper", "brew")
+        val hasMgr = managers.any { cmd.contains(it) }
+        val hasVersionProbe = cmd.contains("--version") || cmd.matches(Regex(".*\\s-v(\\s|$).*"))
+        return hasMgr && hasVersionProbe
     }
 }
