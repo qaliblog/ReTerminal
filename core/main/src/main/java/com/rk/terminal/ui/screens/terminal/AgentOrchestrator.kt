@@ -907,6 +907,12 @@ class AgentOrchestrator(
         return tasks.optJSONObject(taskId)?.optString("status") == "done"
     }
 
+    private fun isTaskFailed(taskId: String): Boolean {
+        val progress = loadProgress()
+        val tasks = progress.optJSONObject("tasks") ?: return false
+        return tasks.optJSONObject(taskId)?.optString("status") == "failed"
+    }
+
     private fun taskStatus(taskId: String): String = if (isTaskDone(taskId)) "done" else "pending"
 
     private fun listTopLevel(dir: File, limit: Int = 50): String {
@@ -943,7 +949,8 @@ class AgentOrchestrator(
     }
 
     fun getNextPendingTask(plan: Plan): Task? {
-        return plan.tasks.firstOrNull { !isTaskDone(it.id) }
+        // Skip tasks already done or explicitly marked as failed
+        return plan.tasks.firstOrNull { !isTaskDone(it.id) && !isTaskFailed(it.id) }
     }
 
     suspend fun executeNextTask(
@@ -1416,6 +1423,23 @@ class AgentOrchestrator(
                     // pip/Flask upgrades
                     val pipInstall = Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(cmd)
                     if (pipInstall) {
+                        // PEP 668: externally managed env on Alpine (apk) -> prefer system package when available
+                        val installing = cmd.substringAfter("install ").trim()
+                        val targetPkg = installing.split(" ").firstOrNull()?.trim()?.lowercase() ?: ""
+                        val pep668 = lower.contains("externally-managed-environment") || lower.contains("externally managed")
+                        val apkAvailable = lastDetectedManagers.contains("apk") || lower.contains("apk-tools")
+                        if (pep668 && apkAvailable) {
+                            val apkName = when (targetPkg) {
+                                "flask" -> "py3-flask"
+                                else -> "py3-${'$'}{targetPkg}"
+                            }
+                            return "apk update && apk add ${apkName}"
+                        }
+                        // If PEP 668 and no apk, fall back to virtualenv to avoid system site-packages
+                        if (pep668) {
+                            val pkgPart = cmd.substringAfter("install ")
+                            return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
+                        }
                         // Prefer python3 -m pip invocation
                         if (!cmd.contains("python3 -m pip")) {
                             return cmd.replaceFirst(Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE), "python3 -m pip install ")
@@ -1469,6 +1493,20 @@ class AgentOrchestrator(
                     put("exit", exit)
                     put("output_preview", output.take(800))
                     put("bytes", output.length)
+                }
+                // Persist environment signals for later tool coercion
+                runCatching {
+                    val lower = output.lowercase()
+                    if (lower.contains("id=alpine") || lower.contains("apk-tools")) lastDetectedOsId = "alpine"
+                    if (lower.contains("apk-tools") || lower.contains("\napk ")) lastDetectedManagers.add("apk")
+                    if (lower.contains("apt ") || lower.contains("apt-get ")) lastDetectedManagers.add("apt")
+                    if (lower.contains("dnf ")) lastDetectedManagers.add("dnf")
+                    if (lower.contains("yum ")) lastDetectedManagers.add("yum")
+                    if (lower.contains("pacman ")) lastDetectedManagers.add("pacman")
+                }
+                // If a pip install keeps failing due to PEP 668 and we did not resolve above, mark last task failed to trigger remediation on next loop
+                if (!lastInstallSuccess && Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(command) && output.lowercase().contains("externally-managed-environment")) {
+                    currentTaskContext?.let { t -> markTaskFailed(t.id, "pep668_externally_managed_env") }
                 }
                 ToolResult(exit == 0 || isEnvCheck, obs)
             }
