@@ -2001,6 +2001,36 @@ class AgentOrchestrator(
                 f.writeText(root.toString(2))
                 ToolResult(true, JSONObject().put("path", f.absolutePath).put("updated", true).toString())
             }
+            "create_file" -> {
+                val t = proposed.type.lowercase().trim()
+                if (t == "create_file") return proposed
+                // Heuristics for target path when missing
+                val desc = (task.description ?: "").lowercase()
+                val target = when {
+                    !task.targets.isNullOrEmpty() -> task.targets!!.first()
+                    desc.contains("html") -> "templates/index.html"
+                    desc.contains("css") -> "static/style.css"
+                    desc.contains("javascript") || desc.contains("js") -> "static/app.js"
+                    desc.contains("flask") || desc.contains("app.py") -> "app.py"
+                    else -> "NEW_FILE"
+                }
+                ToolCall("create_file", JSONObject().put("path", target))
+            }
+            "write_file" -> {
+                // If writer didn't propose a write tool yet, first probe the likely file to avoid immediate failure
+                val t = proposed.type.lowercase().trim()
+                if (t == "write_file" || t == "apply_changes") return proposed
+                val desc = (task.description ?: "").lowercase()
+                val target = when {
+                    !task.targets.isNullOrEmpty() -> task.targets!!.first()
+                    desc.contains("app.py") || desc.contains("flask") -> "app.py"
+                    desc.contains("html") -> "templates/index.html"
+                    desc.contains("css") -> "static/style.css"
+                    desc.contains("javascript") || desc.contains("js") -> "static/app.js"
+                    else -> wd
+                }
+                ToolCall("stat_file", JSONObject().put("path", target))
+            }
             else -> ToolResult(false, "unknown_tool_type:${call.type}")
         }
     }
@@ -2662,6 +2692,36 @@ class AgentOrchestrator(
                         ?: "build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"
                     ToolCall("grep", JSONObject().put("path", wd).put("pattern", pattern).put("max_results", 200))
                 }
+            }
+            "create_file" -> {
+                val t = proposed.type.lowercase().trim()
+                if (t == "create_file") return proposed
+                // Heuristics for target path when missing
+                val desc = (task.description ?: "").lowercase()
+                val target = when {
+                    !task.targets.isNullOrEmpty() -> task.targets!!.first()
+                    desc.contains("html") -> "templates/index.html"
+                    desc.contains("css") -> "static/style.css"
+                    desc.contains("javascript") || desc.contains("js") -> "static/app.js"
+                    desc.contains("flask") || desc.contains("app.py") -> "app.py"
+                    else -> "NEW_FILE"
+                }
+                ToolCall("create_file", JSONObject().put("path", target))
+            }
+            "write_file" -> {
+                // If writer didn't propose a write tool yet, first probe the likely file to avoid immediate failure
+                val t = proposed.type.lowercase().trim()
+                if (t == "write_file" || t == "apply_changes") return proposed
+                val desc = (task.description ?: "").lowercase()
+                val target = when {
+                    !task.targets.isNullOrEmpty() -> task.targets!!.first()
+                    desc.contains("app.py") || desc.contains("flask") -> "app.py"
+                    desc.contains("html") -> "templates/index.html"
+                    desc.contains("css") -> "static/style.css"
+                    desc.contains("javascript") || desc.contains("js") -> "static/app.js"
+                    else -> wd
+                }
+                ToolCall("stat_file", JSONObject().put("path", target))
             }
             else -> coerceInstallPythonIfNeeded() ?: proposed
         }
