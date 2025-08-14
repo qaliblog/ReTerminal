@@ -2554,7 +2554,7 @@ object HiddenShell {
         if (activity == null || activity.sessionBinder == null) return "Hidden session not available"
         val binder: SessionService.SessionBinder = activity.sessionBinder!!
         val service = binder.getService()
-        // Force Alpine working mode to ensure apk/git and PATH from Alpine are available
+        // Use Alpine working mode to ensure apk/git and Alpine PATH are available for hidden session
         val workingMode = com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE
         val sessionId = "agent-bg-" + System.currentTimeMillis()
 
@@ -2564,7 +2564,12 @@ object HiddenShell {
         runCatching { if (outFile.exists()) outFile.delete() }.getOrElse { }
         val outPath = outFile.absolutePath.replace("'", "'\\''")
         val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
-        val extraEnv = arrayOf("XPWD=$wd")
+        // Ensure XPWD and PATH are propagated so init.sh cd's correctly and tool resolution matches expectations
+        val inheritedPath = (System.getenv("PATH") ?: "")
+        val extraEnv = arrayOf(
+            "XPWD=$wd",
+            "PATH=${inheritedPath}"
+        )
 
         // Minimal client
         val client = object : TerminalSessionClient {

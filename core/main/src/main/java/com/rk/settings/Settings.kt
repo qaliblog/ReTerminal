@@ -154,7 +154,7 @@ object Settings {
 
     // Use hidden terminal session for agent shell
     var agent_use_terminal_session
-        get() = Preference.getBoolean(key = "agent_use_terminal_session", default = false)
+        get() = Preference.getBoolean(key = "agent_use_terminal_session", default = true)
         set(value) = Preference.setBoolean(key = "agent_use_terminal_session", value)
 }
 
