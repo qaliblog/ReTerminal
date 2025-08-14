@@ -25,6 +25,7 @@ import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.service.SessionService
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import android.util.Log
 
 /**
  * Minimal agent orchestrator that:
@@ -2560,6 +2561,7 @@ object HiddenShell {
         runCatching { if (outFile.exists()) outFile.delete() }
         val outPath = outFile.absolutePath
         val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
+        Log.d("HiddenShell", "creating hidden session id=$sessionId wd=$wd out=$outPath")
 
         // Build environment for init-host/init
         val inheritedPath = (System.getenv("PATH") ?: "")
@@ -2607,12 +2609,14 @@ object HiddenShell {
                     runCatching { session.write("\n") }
                 }, 400)
                 scheduledOk = true
+                Log.d("HiddenShell", "session scheduled ok id=$sessionId")
             } catch (e: Exception) {
                 runCatching {
                     outFile.parentFile?.mkdirs()
                     outFile.writeText("Hidden session error: ${e.message ?: e.toString()}\n")
                     outFile.appendText(sentinel)
                 }
+                Log.e("HiddenShell", "create failed: ${e.message}")
             } finally {
                 createLatch.countDown()
             }
@@ -2645,8 +2649,10 @@ object HiddenShell {
             if (!outFile.exists()) {
                 content += "\n[out file missing: $outPath]"
             }
+            Log.w("HiddenShell", "timeout waiting for sentinel id=$sessionId")
         }
         runCatching { outFile.delete() }
+        Log.d("HiddenShell", "done id=$sessionId bytes=${content.length}")
         return content
     }
 }
@@ -2657,7 +2663,7 @@ object MainShell {
         val binder = activity.sessionBinder!!
         val service = binder.getService()
         val currentId = service.currentSession.value.first
-        val session = service.getSession(currentId) ?: return Pair("Main session not available", -1)
+        val session = binder.getSession(currentId) ?: return Pair("Main session not available", -1)
         // Prepare output file and sentinel
         val preferredOut = runCatching { File(wd).takeIf { it.exists() && it.isDirectory && it.canWrite() } }.getOrNull()
         val outFile = runCatching { File(preferredOut ?: activity.cacheDir, ".main-${System.currentTimeMillis()}.out") }.getOrNull()
@@ -2666,9 +2672,14 @@ object MainShell {
         val outPath = outFile.absolutePath.replace("'", "'\\''")
         val sentinel = "__MAIN_DONE_${System.currentTimeMillis()}__"
         // Build command line to execute in the visible terminal session
-        val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; code=$?; printf '%s\\n' '$sentinel' >> '$outPath'; printf 'EXIT_CODE=%s\\n' $code >> '$outPath'\n"
+        val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; code=${'$'}?; printf '%s\\n' '$sentinel' >> '$outPath'; printf 'EXIT_CODE=%s\\n' ${'$'}code >> '$outPath'\n"
         // Write to the session PTY
-        runCatching { session.write(cmdLine) }.onFailure { return Pair("write failed: ${it.message}", -1) }
+        try {
+            session.write(cmdLine)
+        } catch (e: Exception) {
+            return Pair("write failed: ${e.message}", -1)
+        }
+        Log.d("MainShell", "wrote to main session id=${currentId} out=$outPath")
         // Poll
         val start = System.currentTimeMillis()
         var content = ""
@@ -2682,6 +2693,7 @@ object MainShell {
         }
         val exit = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(content)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: (if (saw) 0 else -1)
         runCatching { outFile.delete() }
+        Log.d("MainShell", "done exit=${exit} bytes=${content.length}")
         return Pair(content, exit)
     }
 }
