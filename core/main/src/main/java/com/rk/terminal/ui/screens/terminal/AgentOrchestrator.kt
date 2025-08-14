@@ -120,6 +120,9 @@ class AgentOrchestrator(
     // Track workspace changes to refresh codebase cache
     private val pendingCodebaseChanges: MutableSet<String> = linkedSetOf()
     private var lastCodebaseRefreshMs: Long = 0L
+    // Environment detection signals cached during run_shell preflight
+    private var lastDetectedOsId: String? = null
+    private val lastDetectedManagers: MutableSet<String> = linkedSetOf()
 
     init {
         // Load persisted observations if available to make the agent resilient to restarts
@@ -2241,6 +2244,13 @@ class AgentOrchestrator(
         """.trimIndent()
         val summaryContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", summarySys), LlmMessage("user", summaryUser))))
         val summaryJson = extractFirstJsonObject(summaryContent) ?: JSONObject().put("overview", "").put("roles", JSONArray()).put("notes", JSONArray()).toString()
+        // If workspace appears empty, avoid hallucinated analysis
+        val langsEmpty = (overview.optJSONArray("languages")?.length() ?: 0) == 0
+        val fwsEmpty = (overview.optJSONArray("frameworks")?.length() ?: 0) == 0
+        val importantEmpty = important.length() == 0
+        val analysisObj = if (langsEmpty && fwsEmpty && importantEmpty) {
+            JSONObject().put("overview", "Workspace appears empty.").put("roles", JSONArray()).put("notes", JSONArray())
+        } else runCatching { JSONObject(summaryJson) }.getOrElse { JSONObject().put("overview", summaryContent.take(1000)) }
         // Build recursive scan targets based on frameworks and common asset directories
         val frameworks = overview.optJSONArray("frameworks") ?: JSONArray()
         val languages = overview.optJSONArray("languages") ?: JSONArray()
@@ -2299,7 +2309,7 @@ class AgentOrchestrator(
             .put("detected", overview)
             .put("important_files", important)
             .put("recursive_scan_targets", if (includeRecursive) targetsArr else JSONArray())
-            .put("analysis", runCatching { JSONObject(summaryJson) }.getOrElse { JSONObject().put("overview", summaryContent.take(1000)) })
+            .put("analysis", analysisObj)
         val cacheFile = File(wd, Settings.codebase_cache_path)
         cacheFile.writeText(cache.toString(2))
         onStatus("Codebase: cache written ${cacheFile.absolutePath}")
@@ -2383,6 +2393,38 @@ class AgentOrchestrator(
             return runCatching { File(wd, Settings.codebase_cache_path).takeIf { it.exists() }?.readText() }
                 .mapCatching { JSONObject(it!!) }.getOrNull()
         }
+        fun preferredPackageManager(): String? {
+            // Prefer explicit manager signal, else infer from OS ID
+            if (lastDetectedManagers.contains("apk")) return "apk"
+            if (lastDetectedManagers.contains("apt")) return "apt"
+            if (lastDetectedManagers.contains("dnf")) return "dnf"
+            if (lastDetectedManagers.contains("yum")) return "yum"
+            if (lastDetectedManagers.contains("pacman")) return "pacman"
+            when (lastDetectedOsId) {
+                "alpine" -> return "apk"
+                "debian", "ubuntu" -> return "apt"
+                "fedora" -> return "dnf"
+                "centos", "rhel" -> return "yum"
+                "arch" -> return "pacman"
+            }
+            return null
+        }
+        fun coerceInstallPythonIfNeeded(): ToolCall? {
+            val desc = task.description.lowercase()
+            val installingPython = desc.contains("install") && (desc.contains("python") || desc.contains("pip"))
+            val t = proposed.type.lowercase().trim()
+            if (!installingPython && t != "run_shell") return null
+            val mgr = preferredPackageManager() ?: return null
+            val cmd = when (mgr) {
+                "apk" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (apk update && apk add --no-cache python3 py3-pip)"
+                "apt" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (apt-get update && apt-get install -y python3 python3-pip)"
+                "dnf" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (dnf install -y python3 python3-pip)"
+                "yum" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (yum install -y python3 python3-pip)"
+                "pacman" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (pacman -Sy --noconfirm python python-pip)"
+                else -> null
+            }
+            return if (cmd != null) ToolCall("run_shell", JSONObject().put("command", cmd)) else null
+        }
         return when (cat) {
             "list_dir" -> {
                 val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
@@ -2418,7 +2460,7 @@ class AgentOrchestrator(
                     ToolCall("grep", JSONObject().put("path", wd).put("pattern", pattern).put("max_results", 200))
                 }
             }
-            else -> proposed
+            else -> coerceInstallPythonIfNeeded() ?: proposed
         }
     }
 
