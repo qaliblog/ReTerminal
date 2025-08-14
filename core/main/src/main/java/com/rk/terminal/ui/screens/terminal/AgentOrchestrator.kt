@@ -1312,7 +1312,9 @@ class AgentOrchestrator(
                     val outHidden = runCatching { HiddenShell.execInHiddenSession(context as? MainActivity, wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
                     if (!outHidden.contains("Hidden session not available")) {
                         output = outHidden
-                        exit = 0 // best-effort; hidden session does not provide exit code
+                        // Parse EXIT_CODE=NN if present at end of output
+                        val exitMatch = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(outHidden)
+                        exit = exitMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
                     } else {
                         // Fallback to ProcessBuilder
                         val fallback = runCatching {

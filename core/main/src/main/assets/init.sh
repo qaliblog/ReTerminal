@@ -13,14 +13,17 @@ if [ -n "$XCMD" ]; then
     set +e
     if [ -n "$XOUT" ]; then
         sh -c "$XCMD" > "$XOUT" 2>&1
+        code=$?
         if [ -n "$XSENTINEL" ]; then
             printf '%s\n' "$XSENTINEL" >> "$XOUT"
         fi
+        printf 'EXIT_CODE=%s\n' "$code" >> "$XOUT"
     else
         # Fallback to stdout if no XOUT provided
         sh -c "$XCMD"
+        code=$?
     fi
-    exit $?
+    exit $code
 fi
 export PS1="\[\e[38;5;46m\]\u\[\033[39m\]@karbon \[\033[39m\]\w \[\033[0m\]\\$ "
 # shellcheck disable=SC2034
