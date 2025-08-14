@@ -91,7 +91,7 @@ class AgentOrchestrator(
     private var currentRunStats: RunStats? = null
     private var currentTaskContext: Task? = null
     private var lastInstallSuccess: Boolean = false
-    private fun beginRunStats() { currentRunStats = RunStats() }
+    private fun beginRunStats() { currentRunStats = RunStats(); appendTaskLog("run_start") { } }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
         stats.endedMs = System.currentTimeMillis()
@@ -104,6 +104,19 @@ class AgentOrchestrator(
         if (stats.grepPatterns.isNotEmpty()) parts.add("grep ${stats.grepPatterns.size} pattern(s)")
         val summary = "${verb} for ${secs}s${if (parts.isNotEmpty()) "; " + parts.joinToString("; ") else ""}"
         onStatus(summary)
+        runCatching {
+            val j = JSONObject()
+            val tcObj = JSONObject()
+            stats.toolCounts.forEach { (k, v) -> tcObj.put(k, v) }
+            j.put("duration_s", secs)
+                .put("tool_counts", tcObj)
+                .put("files_read", JSONArray(stats.filesRead))
+                .put("dirs_listed", JSONArray(stats.dirsListed))
+                .put("grep_patterns", JSONArray(stats.grepPatterns))
+                .put("commands_run", JSONArray(stats.commandsRun))
+                .put("files_modified", JSONArray(stats.filesModified))
+            appendTaskLog("run_end") { put("stats", j) }
+        }
         currentRunStats = null
     }
  
@@ -119,6 +132,9 @@ class AgentOrchestrator(
     private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
     private val cliReportFile: File by lazy { File(agentDir, "cli_report.json") }
     private val writerToolsFile: File by lazy { File(agentDir, "writer_tools.json") }
+
+    // Add task log file (JSON Lines)
+    private val taskLogFile: File by lazy { File(agentDir, "task_log.jsonl") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
@@ -324,6 +340,11 @@ class AgentOrchestrator(
         val jsonText = extractFirstJsonObject(content) ?: return@withContext "mini_plan"
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext "mini_plan"
         val action = obj.optString("action").ifBlank { "mini_plan" }
+        appendTaskLog("remediation_decision") {
+            put("task_id", task.id)
+            put("action", action)
+            put("failure_note", failureNote.take(400))
+        }
         return@withContext action
     }
 
@@ -375,6 +396,11 @@ class AgentOrchestrator(
         }
         val mini = MiniPlan(parent, reason, tasks)
         persistMiniPlanWithStatuses(mini)
+        appendTaskLog("mini_plan_created") {
+            put("parent_task_id", parent)
+            put("reason", reason)
+            put("steps", tasks.size)
+        }
         return@withContext mini
     }
 
@@ -385,15 +411,22 @@ class AgentOrchestrator(
             if (created == null) return false
             mini = created
             onStatus("Mini-plan created for ${parentTask.id}: ${mini.tasks.size} step(s)")
+            appendTaskLog("mini_plan_start") { put("parent_task_id", parentTask.id); put("steps", mini.tasks.size) }
         }
         var steps = 0
         val maxSteps = 12
         while (steps < maxSteps) {
             val mt = getNextPendingMiniTask(mini) ?: return true
             onStatus("Mini ${mini.parentTaskId}.${mt.id}: ${mt.description}")
+            appendTaskLog("mini_step_start") {
+                put("parent_task_id", mini.parentTaskId)
+                put("step_id", mt.id)
+                put("description", mt.description)
+            }
             val attemptNo = incrementMiniTaskAttempts(mini.parentTaskId, mt.id)
             if (attemptNo > 3) {
                 onStatus("Mini ${mini.parentTaskId}.${mt.id}: attempts exceeded")
+                appendTaskLog("mini_step_aborted") { put("parent_task_id", mini.parentTaskId); put("step_id", mt.id); put("reason", "attempts_exceeded") }
                 return false
             }
             val pseudoTask = Task(
@@ -404,13 +437,9 @@ class AgentOrchestrator(
                 search = mt.search,
                 markers = mt.markers
             )
-            val toolCall = requestSingleToolCall(plan.goal, pseudoTask)
-            if (toolCall == null) {
-                observations[pseudoTask.id] = "mini could not determine action"
-                saveObservations()
-                steps++
-                continue
-            }
+            val proposed = requestSingleToolCall(plan.goal, pseudoTask)
+            val toolCall = proposed ?: ToolCall("analyze", JSONObject())
+            appendTaskLog("tool_call_selected") { put("task_id", pseudoTask.id); put("type", toolCall.type); put("args", toolCall.args) }
             val result = try {
                 currentTaskContext = pseudoTask
                 executeToolCall(toolCall)
@@ -419,7 +448,21 @@ class AgentOrchestrator(
                 observations[pseudoTask.id] = "mini error: ${err}"
                 saveObservations()
                 steps++
+                appendTaskLog("tool_result") {
+                    put("task_id", pseudoTask.id)
+                    put("type", toolCall.type)
+                    put("ok", false)
+                    put("error", (e.message ?: e.toString()).take(1000))
+                }
                 continue
+            } finally {
+                currentTaskContext = null
+            }
+            appendTaskLog("tool_result") {
+                put("task_id", pseudoTask.id)
+                put("type", toolCall.type)
+                put("ok", result.ok)
+                result.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
             }
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
@@ -430,6 +473,7 @@ class AgentOrchestrator(
                 // Consider the mini step done on any successful action
                 markMiniTaskDone(mini.parentTaskId, mt.id)
                 onStatus("Mini ${mini.parentTaskId}.${mt.id}: done")
+                appendTaskLog("mini_step_done") { put("parent_task_id", mini.parentTaskId); put("step_id", mt.id) }
             } else {
                 if (!observations.containsKey(pseudoTask.id)) {
                     observations[pseudoTask.id] = "mini failed without exception"
@@ -572,6 +616,11 @@ class AgentOrchestrator(
         }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
+        runCatching {
+            val tArr = JSONArray()
+            plan.tasks.forEach { t -> tArr.put(JSONObject().put("id", t.id).put("description", t.description).put("category", t.category ?: "")) }
+            appendTaskLog("plan_created") { put("goal", plan.goal); put("tasks", tArr) }
+        }
         return@withContext plan
     }
 
@@ -772,6 +821,11 @@ class AgentOrchestrator(
         tObj.put("attempts", tObj.optInt("attempts", 0))
         tasks.put(taskId, tObj)
         saveProgress(progress)
+        appendTaskLog("task_done") {
+            put("task_id", taskId)
+            put("attempts", tObj.optInt("attempts", 0))
+            put("ts", tObj.optLong("ts"))
+        }
     }
 
     private fun markTaskFailed(taskId: String, note: String) {
@@ -785,6 +839,12 @@ class AgentOrchestrator(
         saveProgress(progress)
         observations[taskId] = note
         saveObservations()
+        appendTaskLog("task_failed") {
+            put("task_id", taskId)
+            put("attempts", tObj.optInt("attempts", 0))
+            put("note", note.take(400))
+            put("ts", tObj.optLong("ts"))
+        }
     }
 
     private fun incrementAttempts(taskId: String): Int {
@@ -796,6 +856,7 @@ class AgentOrchestrator(
         if (!tObj.has("status")) tObj.put("status", "pending")
         tasks.put(taskId, tObj)
         saveProgress(progress)
+        appendTaskLog("task_attempt") { put("task_id", taskId); put("attempt", next) }
         return next
     }
 
@@ -902,6 +963,12 @@ class AgentOrchestrator(
 
         val task = getNextPendingTask(plan) ?: return false
         onStatus("Task ${task.id}: ${task.description}")
+        appendTaskLog("task_start") {
+            put("task_id", task.id)
+            put("description", task.description)
+            put("category", task.category ?: "")
+            put("plan_goal", plan.goal)
+        }
 
         val attemptNo = incrementAttempts(task.id)
         if (attemptNo > 3) {
@@ -922,6 +989,7 @@ class AgentOrchestrator(
                 observations[task.id] = "could not determine action for this task"
                 saveObservations()
                 onStatus("Task ${task.id}: no action suggested; revising plan…")
+                appendTaskLog("tool_call_none") { put("task_id", task.id) }
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
@@ -948,6 +1016,7 @@ class AgentOrchestrator(
             val effectiveToolCall = if (isModifyingTool(coerced.type) && Settings.writer_agent_enabled) {
                 runCatching { writerSuggestTool(plan.goal, task, coerced) }.getOrNull() ?: coerced
             } else coerced
+            appendTaskLog("tool_call_selected") { put("task_id", task.id); put("type", effectiveToolCall.type); put("args", effectiveToolCall.args) }
             val result = runCatching {
                 currentTaskContext = task
                 executeToolCall(effectiveToolCall)
@@ -956,6 +1025,7 @@ class AgentOrchestrator(
                 observations[task.id] = "error: ${err}"
                 saveObservations()
                 onStatus("Task ${task.id} failed: ${err}; revising plan…")
+                appendTaskLog("task_error") { put("task_id", task.id); put("error", err.take(1000)) }
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, err)
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
@@ -965,6 +1035,12 @@ class AgentOrchestrator(
                 onStatus("Task ${task.id}: plan revision unavailable; proceeding with remediation…")
                 ToolResult(false, null)
             }.also { currentTaskContext = null }
+            appendTaskLog("tool_result") {
+                put("task_id", task.id)
+                put("type", effectiveToolCall.type)
+                put("ok", result.ok)
+                result.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
+            }
 
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
@@ -1061,36 +1137,17 @@ class AgentOrchestrator(
                 }
                 lastObservation = result.observation ?: lastObservation
                 lastToolType = effectiveToolCall.type
-
-                // Discovery-type call; iterate to request the next action using fresh observation
                 stepsTaken++
-                continue
+
             } else {
+                // Failure without exception; note and break
                 if (!observations.containsKey(task.id)) {
                     observations[task.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${task.id}: failed; revising plan…")
-                val revised = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
-                if (revised != null) {
-                    persistPlanWithStatuses(revised)
-                    endRunStatsAndReport(onStatus, verb = "thought")
-                    return true
-                }
-                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                val decision = decideRemediationAction(plan.goal, task, "unknown_failure")
-                when (decision) {
-                    "mini_plan" -> {
-                        val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
-                    }
-                    "revise_plan" -> {
-                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
-                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
-                    }
-                    "retry" -> { stepsTaken++; continue }
-                    else -> { return false }
-                }
+                onStatus("Task ${task.id}: failed")
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return false
             }
         }
 
@@ -1276,6 +1333,11 @@ class AgentOrchestrator(
             else -> tc.type
         }
         val call = if (normalizedType == tc.type) tc else ToolCall(normalizedType, tc.args)
+        appendTaskLog("tool_execute") {
+            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
+            put("type", call.type)
+            put("args", call.args)
+        }
         return when (call.type) {
             "create_file" -> {
                 val path = call.args.optString("path")
@@ -1401,6 +1463,13 @@ class AgentOrchestrator(
                 persistCliReport()
                 currentRunStats?.commandsRun?.add(command)
                 val isEnvCheck = isEnvPreflightCommand(command)
+                appendTaskLog("run_shell_result") {
+                    put("command", command)
+                    put("wd", wd)
+                    put("exit", exit)
+                    put("output_preview", output.take(800))
+                    put("bytes", output.length)
+                }
                 ToolResult(exit == 0 || isEnvCheck, obs)
             }
             "get_cached_command_output" -> {
@@ -2008,6 +2077,11 @@ class AgentOrchestrator(
         }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
+        runCatching {
+            val tArr = JSONArray()
+            plan.tasks.forEach { t -> tArr.put(JSONObject().put("id", t.id).put("description", t.description).put("category", t.category ?: "")) }
+            appendTaskLog("plan_created") { put("goal", plan.goal); put("tasks", tArr) }
+        }
         return@withContext plan
     }
 
@@ -2021,19 +2095,26 @@ class AgentOrchestrator(
                 continue
             }
             onStatus("Task ${task.id}: ${task.description}")
-             val toolCall = requestSingleToolCall(plan.goal, task)
-             if (toolCall == null) {
-                 observations[task.id] = "could not determine action for this task"
-                 saveObservations()
-                 onStatus("Task ${task.id}: could not determine action")
-                 return
+            val toolCall = requestSingleToolCall(plan.goal, task)
+            if (toolCall == null) {
+                observations[task.id] = "could not determine action for this task"
+                saveObservations()
+                onStatus("Task ${task.id}: could not determine action")
+                return
             }
+            appendTaskLog("tool_call_selected") { put("task_id", task.id); put("type", toolCall.type); put("args", toolCall.args) }
             val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
                 onStatus("Task ${task.id} failed: ${err}")
                 ToolResult(false, null)
+            }
+            appendTaskLog("tool_result") {
+                put("task_id", task.id)
+                put("type", toolCall.type)
+                put("ok", result.ok)
+                result.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
             }
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
@@ -2198,6 +2279,7 @@ class AgentOrchestrator(
         }
         val newPlan = Plan(goalOut, tasks)
         persistPlanWithStatuses(newPlan)
+        appendTaskLog("plan_revised") { put("goal", newPlan.goal); put("tasks", JSONArray().apply { newPlan.tasks.forEach { t -> put(JSONObject().put("id", t.id).put("description", t.description).put("category", t.category ?: "")) } }); put("error_note", errorNote.take(400)) }
         return@withContext newPlan
     }
 
@@ -2581,6 +2663,19 @@ class AgentOrchestrator(
                 c.contains("dnf install") || c.contains("yum install") ||
                 Regex("\\bpacman\\s+-S(\n|\r| |$)").containsMatchIn(c) ||
                 c.contains("pip install") || c.contains("pip3 install")
+    }
+
+    private fun appendTaskLog(type: String, build: (JSONObject.() -> Unit)? = null) {
+        runCatching {
+            val obj = JSONObject()
+                .put("type", type)
+                .put("ts", System.currentTimeMillis())
+                .put("session_id", sessionId)
+            build?.invoke(obj)
+            taskLogFile.parentFile?.mkdirs()
+            if (!taskLogFile.exists()) taskLogFile.createNewFile()
+            taskLogFile.appendText(obj.toString() + "\n")
+        }
     }
 }
 
