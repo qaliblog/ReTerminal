@@ -2376,6 +2376,10 @@ class AgentOrchestrator(
     private fun coerceToolCallForTaskCategory(task: Task, proposed: ToolCall): ToolCall {
         val wd = workingDirProvider()
         val cat = (task.category ?: "").lowercase()
+        fun loadCodebaseCache(): JSONObject? {
+            return runCatching { File(wd, Settings.codebase_cache_path).takeIf { it.exists() }?.readText() }
+                .mapCatching { JSONObject(it!!) }.getOrNull()
+        }
         return when (cat) {
             "list_dir" -> {
                 val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
@@ -2394,6 +2398,22 @@ class AgentOrchestrator(
                 val pattern = task.search?.firstOrNull()?.ifBlank { null } ?: "."
                 val t = proposed.type.lowercase().trim()
                 if (t == "grep") proposed else ToolCall("grep", JSONObject().put("path", target).put("pattern", pattern).put("max_results", 200))
+            }
+            "list_dir_recursive" -> {
+                val cache = loadCodebaseCache()
+                val targets = cache?.optJSONArray("recursive_scan_targets")
+                if (targets != null && targets.length() > 0) {
+                    val first = targets.optJSONObject(0)
+                    val base = first?.optString("base")?.ifBlank { null } ?: wd
+                    val depth = first?.optInt("max_depth", 3) ?: 3
+                    val entries = first?.optInt("max_entries", 500) ?: 500
+                    ToolCall("list_dir_recursive", JSONObject().put("path", base).put("max_depth", depth).put("max_entries", entries))
+                } else {
+                    // Downgrade to grep for project files as a discovery step
+                    val pattern = task.search?.firstOrNull()?.ifBlank { null }
+                        ?: "build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"
+                    ToolCall("grep", JSONObject().put("path", wd).put("pattern", pattern).put("max_results", 200))
+                }
             }
             else -> proposed
         }
