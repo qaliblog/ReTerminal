@@ -1313,8 +1313,31 @@ class AgentOrchestrator(
                 command = robustifyPythonPip(command)
                 // Always run inside the visible main terminal session
                 val mainOut = MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs)
-                val output = mainOut.first
-                val exit = mainOut.second
+                var output = mainOut.first
+                var exit = mainOut.second
+                // Heuristic upgrade on failure: try one improved command
+                fun suggestCommandUpgradeHeuristic(cmd: String, out: String): String? {
+                    val lower = out.lowercase()
+                    if (cmd.trim().startsWith("git ") && lower.contains("not a git repository")) {
+                        if (!cmd.contains("git init")) return "git init && ${cmd}"
+                    }
+                    if (cmd.contains("git commit") && (lower.contains("please tell me who you are") || lower.contains("user.name") && lower.contains("user.email"))) {
+                        return "git config user.email 'you@example.com' && git config user.name 'You' && ${cmd}"
+                    }
+                    return null
+                }
+                if (exit != 0) {
+                    val upgraded = suggestCommandUpgradeHeuristic(command, output)
+                    if (upgraded != null) {
+                        val retry = MainShell.execInMainSession(context as? MainActivity, wd, upgraded, timeoutMs)
+                        val combined = StringBuilder()
+                        combined.append(output)
+                        combined.append("\n----- retry: ").append(upgraded).append(" -----\n")
+                        combined.append(retry.first)
+                        output = combined.toString()
+                        exit = retry.second
+                    }
+                }
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
                     .put("command", command)
