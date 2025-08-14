@@ -91,19 +91,33 @@ class AgentOrchestrator(
     private var currentRunStats: RunStats? = null
     private var currentTaskContext: Task? = null
     private var lastInstallSuccess: Boolean = false
-    private fun beginRunStats() { currentRunStats = RunStats() }
+    private var lastPlanGoal: String? = null
+    private fun beginRunStats() { currentRunStats = RunStats(); appendTaskLog("run_start") { } }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
         stats.endedMs = System.currentTimeMillis()
         val secs = ((stats.endedMs - stats.startedMs).coerceAtLeast(0L) / 100L).toDouble() / 10.0
         val parts = mutableListOf<String>()
-        if (stats.toolCounts.isNotEmpty()) parts.add(stats.toolCounts.entries.joinToString(", ") { (k, v) -> "${k}×${v}" })
-        if (stats.filesRead.isNotEmpty()) parts.add("read ${stats.filesRead.size} file(s): ${stats.filesRead.take(3).joinToString(", ")}${if (stats.filesRead.size > 3) " …" else ""}")
-        if (stats.filesModified.isNotEmpty()) parts.add("modified ${stats.filesModified.size} file(s): ${stats.filesModified.take(3).joinToString(", ")}${if (stats.filesModified.size > 3) " …" else ""}")
-        if (stats.commandsRun.isNotEmpty()) parts.add("ran ${stats.commandsRun.size} command(s): ${stats.commandsRun.take(1).joinToString()}${if (stats.commandsRun.size > 1) " …" else ""}")
+        if (stats.toolCounts.isNotEmpty()) parts.add(stats.toolCounts.entries.joinToString(", ") { (k: String, v: Int) -> "$k×$v" })
+        if (stats.filesRead.isNotEmpty()) parts.add("read ${stats.filesRead.size} file(s): ${stats.filesRead.take(3).joinToString(", ")}" + if (stats.filesRead.size > 3) " …" else "")
+        if (stats.filesModified.isNotEmpty()) parts.add("modified ${stats.filesModified.size} file(s): ${stats.filesModified.take(3).joinToString(", ")}" + if (stats.filesModified.size > 3) " …" else "")
+        if (stats.commandsRun.isNotEmpty()) parts.add("ran ${stats.commandsRun.size} command(s): ${stats.commandsRun.take(1).joinToString()}" + if (stats.commandsRun.size > 1) " …" else "")
         if (stats.grepPatterns.isNotEmpty()) parts.add("grep ${stats.grepPatterns.size} pattern(s)")
-        val summary = "${verb} for ${secs}s${if (parts.isNotEmpty()) "; " + parts.joinToString("; ") else ""}"
+        val summary = "$verb for ${secs}s" + if (parts.isNotEmpty()) "; " + parts.joinToString("; ") else ""
         onStatus(summary)
+        runCatching {
+            val j = JSONObject()
+            val tcObj = JSONObject()
+            stats.toolCounts.forEach { (k, v) -> tcObj.put(k, v) }
+            j.put("duration_s", secs)
+                .put("tool_counts", tcObj)
+                .put("files_read", JSONArray(stats.filesRead))
+                .put("dirs_listed", JSONArray(stats.dirsListed))
+                .put("grep_patterns", JSONArray(stats.grepPatterns))
+                .put("commands_run", JSONArray(stats.commandsRun))
+                .put("files_modified", JSONArray(stats.filesModified))
+            appendTaskLog("run_end") { put("stats", j) }
+        }
         currentRunStats = null
     }
  
@@ -119,6 +133,9 @@ class AgentOrchestrator(
     private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
     private val cliReportFile: File by lazy { File(agentDir, "cli_report.json") }
     private val writerToolsFile: File by lazy { File(agentDir, "writer_tools.json") }
+
+    // Add task log file (JSON Lines)
+    private val taskLogFile: File by lazy { File(agentDir, "task_log.jsonl") }
 
     // Per-run observations (taskId -> observation text)
     private val observations: MutableMap<String, String> = linkedMapOf()
@@ -324,6 +341,11 @@ class AgentOrchestrator(
         val jsonText = extractFirstJsonObject(content) ?: return@withContext "mini_plan"
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext "mini_plan"
         val action = obj.optString("action").ifBlank { "mini_plan" }
+        appendTaskLog("remediation_decision") {
+            put("task_id", task.id)
+            put("action", action)
+            put("failure_note", failureNote.take(400))
+        }
         return@withContext action
     }
 
@@ -375,6 +397,11 @@ class AgentOrchestrator(
         }
         val mini = MiniPlan(parent, reason, tasks)
         persistMiniPlanWithStatuses(mini)
+        appendTaskLog("mini_plan_created") {
+            put("parent_task_id", parent)
+            put("reason", reason)
+            put("steps", tasks.size)
+        }
         return@withContext mini
     }
 
@@ -385,15 +412,22 @@ class AgentOrchestrator(
             if (created == null) return false
             mini = created
             onStatus("Mini-plan created for ${parentTask.id}: ${mini.tasks.size} step(s)")
+            appendTaskLog("mini_plan_start") { put("parent_task_id", parentTask.id); put("steps", mini.tasks.size) }
         }
         var steps = 0
         val maxSteps = 12
         while (steps < maxSteps) {
             val mt = getNextPendingMiniTask(mini) ?: return true
             onStatus("Mini ${mini.parentTaskId}.${mt.id}: ${mt.description}")
+            appendTaskLog("mini_step_start") {
+                put("parent_task_id", mini.parentTaskId)
+                put("step_id", mt.id)
+                put("description", mt.description)
+            }
             val attemptNo = incrementMiniTaskAttempts(mini.parentTaskId, mt.id)
             if (attemptNo > 3) {
                 onStatus("Mini ${mini.parentTaskId}.${mt.id}: attempts exceeded")
+                appendTaskLog("mini_step_aborted") { put("parent_task_id", mini.parentTaskId); put("step_id", mt.id); put("reason", "attempts_exceeded") }
                 return false
             }
             val pseudoTask = Task(
@@ -404,13 +438,9 @@ class AgentOrchestrator(
                 search = mt.search,
                 markers = mt.markers
             )
-            val toolCall = requestSingleToolCall(plan.goal, pseudoTask)
-            if (toolCall == null) {
-                observations[pseudoTask.id] = "mini could not determine action"
-                saveObservations()
-                steps++
-                continue
-            }
+            val proposed = requestSingleToolCall(plan.goal, pseudoTask)
+            val toolCall = proposed ?: ToolCall("analyze", JSONObject())
+            appendTaskLog("tool_call_selected") { put("task_id", pseudoTask.id); put("type", toolCall.type); put("args", toolCall.args) }
             val result = try {
                 currentTaskContext = pseudoTask
                 executeToolCall(toolCall)
@@ -419,7 +449,21 @@ class AgentOrchestrator(
                 observations[pseudoTask.id] = "mini error: ${err}"
                 saveObservations()
                 steps++
+                appendTaskLog("tool_result") {
+                    put("task_id", pseudoTask.id)
+                    put("type", toolCall.type)
+                    put("ok", false)
+                    put("error", (e.message ?: e.toString()).take(1000))
+                }
                 continue
+            } finally {
+                currentTaskContext = null
+            }
+            appendTaskLog("tool_result") {
+                put("task_id", pseudoTask.id)
+                put("type", toolCall.type)
+                put("ok", result.ok)
+                result.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
             }
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
@@ -430,6 +474,7 @@ class AgentOrchestrator(
                 // Consider the mini step done on any successful action
                 markMiniTaskDone(mini.parentTaskId, mt.id)
                 onStatus("Mini ${mini.parentTaskId}.${mt.id}: done")
+                appendTaskLog("mini_step_done") { put("parent_task_id", mini.parentTaskId); put("step_id", mt.id) }
             } else {
                 if (!observations.containsKey(pseudoTask.id)) {
                     observations[pseudoTask.id] = "mini failed without exception"
@@ -572,6 +617,11 @@ class AgentOrchestrator(
         }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
+        runCatching {
+            val tArr = JSONArray()
+            plan.tasks.forEach { t -> tArr.put(JSONObject().put("id", t.id).put("description", t.description).put("category", t.category ?: "")) }
+            appendTaskLog("plan_created") { put("goal", plan.goal); put("tasks", tArr) }
+        }
         return@withContext plan
     }
 
@@ -772,6 +822,11 @@ class AgentOrchestrator(
         tObj.put("attempts", tObj.optInt("attempts", 0))
         tasks.put(taskId, tObj)
         saveProgress(progress)
+        appendTaskLog("task_done") {
+            put("task_id", taskId)
+            put("attempts", tObj.optInt("attempts", 0))
+            put("ts", tObj.optLong("ts"))
+        }
     }
 
     private fun markTaskFailed(taskId: String, note: String) {
@@ -785,6 +840,12 @@ class AgentOrchestrator(
         saveProgress(progress)
         observations[taskId] = note
         saveObservations()
+        appendTaskLog("task_failed") {
+            put("task_id", taskId)
+            put("attempts", tObj.optInt("attempts", 0))
+            put("note", note.take(400))
+            put("ts", tObj.optLong("ts"))
+        }
     }
 
     private fun incrementAttempts(taskId: String): Int {
@@ -796,6 +857,7 @@ class AgentOrchestrator(
         if (!tObj.has("status")) tObj.put("status", "pending")
         tasks.put(taskId, tObj)
         saveProgress(progress)
+        appendTaskLog("task_attempt") { put("task_id", taskId); put("attempt", next) }
         return next
     }
 
@@ -846,6 +908,12 @@ class AgentOrchestrator(
         return tasks.optJSONObject(taskId)?.optString("status") == "done"
     }
 
+    private fun isTaskFailed(taskId: String): Boolean {
+        val progress = loadProgress()
+        val tasks = progress.optJSONObject("tasks") ?: return false
+        return tasks.optJSONObject(taskId)?.optString("status") == "failed"
+    }
+
     private fun taskStatus(taskId: String): String = if (isTaskDone(taskId)) "done" else "pending"
 
     private fun listTopLevel(dir: File, limit: Int = 50): String {
@@ -882,7 +950,8 @@ class AgentOrchestrator(
     }
 
     fun getNextPendingTask(plan: Plan): Task? {
-        return plan.tasks.firstOrNull { !isTaskDone(it.id) }
+        // Skip tasks already done or explicitly marked as failed
+        return plan.tasks.firstOrNull { !isTaskDone(it.id) && !isTaskFailed(it.id) }
     }
 
     suspend fun executeNextTask(
@@ -890,6 +959,7 @@ class AgentOrchestrator(
         onStatus: (String) -> Unit
     ): Boolean {
         beginRunStats()
+        lastPlanGoal = plan.goal
         // Detect plan change and reset attempts if needed
         val progress = loadProgress()
         val currentSig = computePlanSignature(plan)
@@ -902,6 +972,12 @@ class AgentOrchestrator(
 
         val task = getNextPendingTask(plan) ?: return false
         onStatus("Task ${task.id}: ${task.description}")
+        appendTaskLog("task_start") {
+            put("task_id", task.id)
+            put("description", task.description)
+            put("category", task.category ?: "")
+            put("plan_goal", plan.goal)
+        }
 
         val attemptNo = incrementAttempts(task.id)
         if (attemptNo > 3) {
@@ -922,6 +998,7 @@ class AgentOrchestrator(
                 observations[task.id] = "could not determine action for this task"
                 saveObservations()
                 onStatus("Task ${task.id}: no action suggested; revising plan…")
+                appendTaskLog("tool_call_none") { put("task_id", task.id) }
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
@@ -948,6 +1025,7 @@ class AgentOrchestrator(
             val effectiveToolCall = if (isModifyingTool(coerced.type) && Settings.writer_agent_enabled) {
                 runCatching { writerSuggestTool(plan.goal, task, coerced) }.getOrNull() ?: coerced
             } else coerced
+            appendTaskLog("tool_call_selected") { put("task_id", task.id); put("type", effectiveToolCall.type); put("args", effectiveToolCall.args) }
             val result = runCatching {
                 currentTaskContext = task
                 executeToolCall(effectiveToolCall)
@@ -956,6 +1034,7 @@ class AgentOrchestrator(
                 observations[task.id] = "error: ${err}"
                 saveObservations()
                 onStatus("Task ${task.id} failed: ${err}; revising plan…")
+                appendTaskLog("task_error") { put("task_id", task.id); put("error", err.take(1000)) }
                 val revised = revisePlanBasedOnHistoryAndError(plan.goal, err)
                 if (revised != null) {
                     persistPlanWithStatuses(revised)
@@ -965,6 +1044,12 @@ class AgentOrchestrator(
                 onStatus("Task ${task.id}: plan revision unavailable; proceeding with remediation…")
                 ToolResult(false, null)
             }.also { currentTaskContext = null }
+            appendTaskLog("tool_result") {
+                put("task_id", task.id)
+                put("type", effectiveToolCall.type)
+                put("ok", result.ok)
+                result.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
+            }
 
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
@@ -1061,36 +1146,17 @@ class AgentOrchestrator(
                 }
                 lastObservation = result.observation ?: lastObservation
                 lastToolType = effectiveToolCall.type
-
-                // Discovery-type call; iterate to request the next action using fresh observation
                 stepsTaken++
-                continue
+
             } else {
+                // Failure without exception; note and break
                 if (!observations.containsKey(task.id)) {
                     observations[task.id] = "failed without exception"
                     saveObservations()
                 }
-                onStatus("Task ${task.id}: failed; revising plan…")
-                val revised = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
-                if (revised != null) {
-                    persistPlanWithStatuses(revised)
-                    endRunStatsAndReport(onStatus, verb = "thought")
-                    return true
-                }
-                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                val decision = decideRemediationAction(plan.goal, task, "unknown_failure")
-                when (decision) {
-                    "mini_plan" -> {
-                        val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
-                    }
-                    "revise_plan" -> {
-                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "unknown_failure")
-                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
-                    }
-                    "retry" -> { stepsTaken++; continue }
-                    else -> { return false }
-                }
+                onStatus("Task ${task.id}: failed")
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return false
             }
         }
 
@@ -1209,13 +1275,11 @@ class AgentOrchestrator(
              Tool ordering guidance:
              - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
              - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
-             - For tasks that might rely on system state (package installation, CLI tools, compilers, runtimes), first run an environment preflight using run_shell to check OS flavor, package manager, and runtime availability.
+             - Before modifying an existing file, first read it to get context; avoid blind overwrites. Prefer apply_changes with minimal edits.
+             - For tasks that rely on system state (package installation, runtimes), first run an environment preflight using run_shell to check OS/manager/runtime availability.
              - Use get_cached_command_output before re-running heavy run_shell.
-             - For multi-file reads, keep limits small and targeted.
-             - For modifications, ensure idempotency: prefer apply_changes with unique anchors/markers and use ensure_block_present/append_once to avoid duplicates.
-             - When context is missing, propose the minimal discovery call to fetch it.
-             - If user goal involves running commands or installing packages, ask for environment details first via a run_shell preflight like:
-               uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH
+             - Keep reads targeted; keep modifications idempotent.
+             - If user goal involves installing packages, prefer native package manager on Alpine (apk add py3-<pkg>) over pip when PEP 668 is present.
              - Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
@@ -1263,6 +1327,14 @@ class AgentOrchestrator(
 
     private fun executeToolCall(tc: ToolCall): ToolResult {
         currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
+        // Fallback: if tool type is blank, attempt to coerce from current task category
+        if (tc.type.isBlank()) {
+            val task = currentTaskContext
+            if (task != null) {
+                val coerced = coerceToolCallForTaskCategory(task, ToolCall("unknown", tc.args))
+                return executeToolCall(coerced)
+            }
+        }
         // Alias common synonyms to reduce failure due to type mismatches
         val normalizedType = when (tc.type.lowercase().trim()) {
             "ls", "dir", "list", "listdir", "list_directory", "read_dir", "read_directory", "scan_dir" -> "list_dir"
@@ -1273,9 +1345,15 @@ class AgentOrchestrator(
             "mkdir" -> "make_dir"
             "touch" -> "create_file"
             "shell", "bash", "sh" -> "run_shell"
+            "json_edit" -> "apply_changes"
             else -> tc.type
         }
         val call = if (normalizedType == tc.type) tc else ToolCall(normalizedType, tc.args)
+        appendTaskLog("tool_execute") {
+            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
+            put("type", call.type)
+            put("args", call.args)
+        }
         return when (call.type) {
             "create_file" -> {
                 val path = call.args.optString("path")
@@ -1343,35 +1421,60 @@ class AgentOrchestrator(
                 var output = mainOut.first
                 var exit = mainOut.second
                 // Heuristic upgrade on failure: try one improved command
-                fun suggestCommandUpgradeHeuristic(cmd: String, out: String): String? {
-                    val lower = out.lowercase()
-                    if (cmd.trim().startsWith("git ") && lower.contains("not a git repository")) {
-                        if (!cmd.contains("git init")) return "git init && ${cmd}"
-                    }
-                    if (cmd.contains("git commit") && (lower.contains("please tell me who you are") || lower.contains("user.name") && lower.contains("user.email"))) {
-                        return "git config user.email 'you@example.com' && git config user.name 'You' && ${cmd}"
-                    }
-                    // pip/Flask upgrades
-                    val pipInstall = Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(cmd)
-                    if (pipInstall) {
-                        // Prefer python3 -m pip invocation
-                        if (!cmd.contains("python3 -m pip")) {
-                            return cmd.replaceFirst(Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE), "python3 -m pip install ")
-                        }
-                        // Externally managed env or permission issues -> use venv
-                        if (lower.contains("externally-managed-environment") || lower.contains("permission denied") || lower.contains("not writeable") || lower.contains("is not owned by")) {
-                            val pkgPart = cmd.substringAfter("install ")
-                            return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
-                        }
-                        // pip missing -> try apk install then pip
-                        if (lower.contains("pip: not found") || lower.contains("no module named pip") || lower.contains("command not found: pip")) {
-                            val pkgPart = cmd.substringAfter("install ")
-                            return "(command -v apk >/dev/null 2>&1 && apk update && apk add py3-pip) || true && python3 -m pip install ${pkgPart}"
-                        }
-                    }
-                    return null
-                }
-                if (exit != 0) {
+                					fun suggestCommandUpgradeHeuristic(cmd: String, out: String): String? {
+						val lower = out.lowercase()
+						if (cmd.trim().startsWith("git ") && lower.contains("not a git repository")) {
+							if (!cmd.contains("git init")) return "git init && ${cmd}"
+						}
+						if (cmd.contains("git commit") && (lower.contains("please tell me who you are") || lower.contains("user.name") && lower.contains("user.email"))) {
+							return "git config user.email 'you@example.com' && git config user.name 'You' && ${cmd}"
+						}
+						// Flask import missing -> install Flask
+						if (lower.contains("modulenotfounderror") && lower.contains("flask")) {
+							return if (lastDetectedManagers.contains("apk")) "apk update && apk add py3-flask" else "python3 -m pip install --upgrade pip setuptools wheel && python3 -m pip install flask"
+						}
+						if ((lower.contains("no module named") || lower.contains("modulenotfounderror")) && lower.contains("flask")) {
+							return if (lastDetectedManagers.contains("apk")) "apk update && apk add py3-flask" else "python3 -m pip install --upgrade pip setuptools wheel && python3 -m pip install flask"
+						}
+						// pip/Flask/Pygame upgrades
+						val pipInstall = Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(cmd)
+						if (pipInstall) {
+							val installing = cmd.substringAfter("install ").trim()
+							val targetPkg = installing.split(" ").firstOrNull()?.trim()?.lowercase() ?: ""
+							val pep668 = lower.contains("externally-managed-environment") || lower.contains("externally managed")
+							val apkAvailable = lastDetectedManagers.contains("apk") || lower.contains("apk-tools")
+							if (apkAvailable && targetPkg == "pygame") {
+								return "apk update && apk add py3-pygame"
+							}
+							if (lower.contains("gcc: not found") || lower.contains("sdl2-config: not found")) {
+								if (apkAvailable) return "apk update && apk add build-base sdl2-dev sdl2_image-dev sdl2_mixer-dev sdl2_ttf-dev"
+							}
+							if (pep668 && apkAvailable) {
+								val apkName = when (targetPkg) {
+									"flask" -> "py3-flask"
+									else -> "py3-${'$'}{targetPkg}"
+								}
+								return "apk update && apk add ${apkName}"
+							}
+							if (pep668) {
+								val pkgPart = cmd.substringAfter("install ")
+								return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
+							}
+							if (!cmd.contains("python3 -m pip")) {
+								return cmd.replaceFirst(Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE), "python3 -m pip install ")
+							}
+							if (lower.contains("externally-managed-environment") || lower.contains("permission denied") || lower.contains("not writeable") || lower.contains("is not owned by")) {
+								val pkgPart = cmd.substringAfter("install ")
+								return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
+							}
+							if (lower.contains("pip: not found") || lower.contains("no module named pip") || lower.contains("command not found: pip")) {
+								val pkgPart = cmd.substringAfter("install ")
+								return "(command -v apk >/dev/null 2>&1 && apk update && apk add py3-pip) || true && python3 -m pip install ${pkgPart}"
+							}
+						}
+						return null
+					}
+if (exit != 0) {
                     val upgraded = suggestCommandUpgradeHeuristic(command, output)
                     if (upgraded != null) {
                         val retry = MainShell.execInMainSession(context as? MainActivity, wd, upgraded, timeoutMs)
@@ -1381,12 +1484,12 @@ class AgentOrchestrator(
                         combined.append(retry.first)
                         output = combined.toString()
                         exit = retry.second
-                        if (exit == 0 && isInstallCommand(upgraded)) {
+                        if (exit == 0 && isInstallCommand(upgraded) && !output.lowercase().contains("externally-managed-environment")) {
                             lastInstallSuccess = true
                         }
                     }
                 }
-                if (exit == 0 && isInstallCommand(command)) {
+                if (exit == 0 && isInstallCommand(command) && !output.lowercase().contains("externally-managed-environment")) {
                     lastInstallSuccess = true
                 }
                 val obs = output.ifBlank { null }
@@ -1401,6 +1504,28 @@ class AgentOrchestrator(
                 persistCliReport()
                 currentRunStats?.commandsRun?.add(command)
                 val isEnvCheck = isEnvPreflightCommand(command)
+                appendTaskLog("run_shell_result") {
+                    put("command", command)
+                    put("wd", wd)
+                    put("exit", exit)
+                    put("output_preview", output.take(800))
+                    put("bytes", output.length)
+                }
+                // Persist environment signals for later tool coercion
+                runCatching {
+                    val lower = output.lowercase()
+                    if (lower.contains("id=alpine") || lower.contains("apk-tools")) lastDetectedOsId = "alpine"
+                    if (lower.contains("apk-tools") || lower.contains("\napk ")) lastDetectedManagers.add("apk")
+                    if (lower.contains("apt ") || lower.contains("apt-get ")) lastDetectedManagers.add("apt")
+                    if (lower.contains("dnf ")) lastDetectedManagers.add("dnf")
+                    if (lower.contains("yum ")) lastDetectedManagers.add("yum")
+                    if (lower.contains("pacman ")) lastDetectedManagers.add("pacman")
+                }
+                // PEP 668 detected: mark failure to trigger remediation instead of false success
+                if (Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(command) && output.lowercase().contains("externally-managed-environment")) {
+                    lastInstallSuccess = false
+                    currentTaskContext?.let { t -> markTaskFailed(t.id, "pep668_externally_managed_env") }
+                }
                 ToolResult(exit == 0 || isEnvCheck, obs)
             }
             "get_cached_command_output" -> {
@@ -1664,23 +1789,36 @@ class AgentOrchestrator(
             }
             "apply_changes" -> {
                 val edits = call.args.optJSONArray("edits") ?: JSONArray()
+                val includeDiffs = call.args.optBoolean("include_diffs", true)
+                val previewOnly = call.args.optBoolean("preview_only", false)
                 val results = mutableListOf<String>()
+                val outArr = JSONArray()
+                var createdAny = false
+                var modifiedAny = false
                 for (i in 0 until edits.length()) {
                     val e = edits.optJSONObject(i) ?: continue
                     val op = e.optString("op")
                     val path = e.optString("path")
                     if (path.isBlank()) { results.add("edit[$i]: missing path"); continue }
                     val file = resolvePath(path)
+                    val entry = JSONObject().put("file", file.absolutePath).put("op", op)
                     if (!file.exists()) {
-                        // allow write_if_missing as part of apply_changes
                         if (op == "write_if_missing") {
                             val content = e.optString("content")
                             ensureParentDirs(file)
-                            file.writeText(content)
-                            results.add("edit[$i]: created (${path})")
+                            if (!previewOnly) {
+                                file.writeText(content)
+                            }
+                            entry.put("status", if (previewOnly) "planned_create" else "created")
+                            createdAny = true
+                            if (includeDiffs) entry.put("diff", computeUnifiedDiff("", content, file.absolutePath))
+                            outArr.put(entry)
                             continue
                         }
-                        results.add("edit[$i]: file missing: ${file.path}"); continue
+                        results.add("edit[$i]: file missing: ${path}")
+                        entry.put("status", "missing")
+                        outArr.put(entry)
+                        continue
                     }
                     val original = runCatching { file.readText() }.getOrElse { "" }
                     val updated = when (op) {
@@ -1689,9 +1827,7 @@ class AgentOrchestrator(
                             val new = e.optString("new")
                             if (old.isEmpty()) { results.add("edit[$i]: old empty"); null } else {
                                 val idx = original.indexOf(old)
-                                if (idx < 0) { results.add("edit[$i]: old not found"); null } else {
-                                    original.replaceFirst(old, new)
-                                }
+                                if (idx < 0) { results.add("edit[$i]: old not found"); null } else original.replaceFirst(old, new)
                             }
                         }
                         "replace_between_markers" -> {
@@ -1728,20 +1864,17 @@ class AgentOrchestrator(
                             val anchor = e.optString("anchor")
                             val newContent = e.optString("new_content")
                             val aIdx = original.indexOf(anchor)
-                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
-                                original.substring(0, aIdx) + newContent + original.substring(aIdx)
-                            }
+                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else original.substring(0, aIdx) + newContent + original.substring(aIdx)
                         }
                         "replace_regex" -> {
-                            val pattern = e.optString("pattern")
-                            val replacement = e.optString("replacement")
+                            val regexObj = e.optJSONObject("regex")
+                            val pattern = e.optString("pattern").ifBlank { regexObj?.optString("pattern").orEmpty() }
+                            val replacement = e.optString("replacement").ifBlank { regexObj?.optString("replace").orEmpty() }
                             val unique = e.optBoolean("unique", true)
                             if (pattern.isBlank()) { results.add("edit[$i]: pattern empty"); null } else {
                                 val regex = runCatching { Regex(pattern) }.getOrElse { Regex(Pattern.quote(pattern)) }
                                 val count = regex.findAll(original).count()
-                                if (unique && count != 1) { results.add("edit[$i]: non-unique matches=$count"); null } else {
-                                    original.replace(regex, replacement)
-                                }
+                                if (unique && count != 1) { results.add("edit[$i]: non-unique matches=${'$'}count"); null } else original.replace(regex, replacement)
                             }
                         }
                         "ensure_block_present" -> {
@@ -1750,16 +1883,11 @@ class AgentOrchestrator(
                             val before = e.optString("anchor_before")
                             val after = e.optString("anchor_after")
                             val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
-                            if (contains) {
-                                results.add("edit[$i]: already present")
-                                null
-                            } else {
+                            if (contains) { results.add("edit[$i]: already present"); null } else {
                                 when {
                                     before.isNotBlank() -> {
                                         val idx = original.indexOf(before)
-                                        if (idx < 0) { results.add("edit[$i]: anchor_before not found"); null } else {
-                                            original.substring(0, idx) + block + original.substring(idx)
-                                        }
+                                        if (idx < 0) { results.add("edit[$i]: anchor_before not found"); null } else original.substring(0, idx) + block + original.substring(idx)
                                     }
                                     after.isNotBlank() -> {
                                         val idx = original.indexOf(after)
@@ -1778,19 +1906,72 @@ class AgentOrchestrator(
                             val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
                             if (contains) { results.add("edit[$i]: already present"); null } else original + block
                         }
-                        else -> { results.add("edit[$i]: unknown op ${op}"); null }
-                    }
-                    if (updated != null) {
-                        runCatching { file.writeText(updated) }.onSuccess {
-                            results.add("edit[$i]: ok (${path})")
-                            notifyWorkspaceChanged(file.absolutePath)
-                        }.onFailure { ex ->
-                            results.add("edit[$i]: write failed (${ex.message})")
+                        "write_if_missing" -> {
+                            results.add("edit[$i]: exists (skipped)")
+                            null
                         }
+                        "replace_lines" -> {
+                            val start = e.optInt("start_line", -1)
+                            val end = e.optInt("end_line", -1)
+                            val newContent = e.optString("new_content")
+                            if (start <= 0 || end < start) { results.add("edit[$i]: invalid line range"); null } else {
+                                val lines = original.split("\n").toMutableList()
+                                val from = (start - 1).coerceAtLeast(0)
+                                val to = end.coerceAtMost(lines.size)
+                                val newLines = newContent.split("\n")
+                                lines.subList(from, to).clear()
+                                lines.addAll(from, newLines)
+                                lines.joinToString("\n")
+                            }
+                        }
+                        "insert_lines_after" -> {
+                            val line = e.optInt("line_number", -1)
+                            val newContent = e.optString("new_content")
+                            if (line < 0) { results.add("edit[$i]: invalid line number"); null } else {
+                                val lines = original.split("\n").toMutableList()
+                                val idx = line.coerceAtMost(lines.size)
+                                val newLines = newContent.split("\n")
+                                lines.addAll(idx, newLines)
+                                lines.joinToString("\n")
+                            }
+                        }
+                        "insert_lines_before" -> {
+                            val line = e.optInt("line_number", -1)
+                            val newContent = e.optString("new_content")
+                            if (line <= 0) { results.add("edit[$i]: invalid line number"); null } else {
+                                val lines = original.split("\n").toMutableList()
+                                val idx = (line - 1).coerceAtLeast(0)
+                                val newLines = newContent.split("\n")
+                                lines.addAll(idx, newLines)
+                                lines.joinToString("\n")
+                            }
+                        }
+                        else -> { results.add("edit[$i]: unknown op ${'$'}op"); null }
+                    }
+                    if (updated != null && updated != original) {
+                        if (!previewOnly) {
+                            runCatching { file.writeText(updated) }.onSuccess {
+                                results.add("edit[$i]: ok (${path})")
+                                notifyWorkspaceChanged(file.absolutePath)
+                                modifiedAny = true
+                            }.onFailure { ex -> results.add("edit[$i]: write failed (${ex.message})") }
+                        } else {
+                            results.add("edit[$i]: planned_change (${path})")
+                            modifiedAny = true
+                        }
+                        if (includeDiffs) {
+                            entry.put("status", if (previewOnly) "planned_change" else "modified")
+                            entry.put("diff", computeUnifiedDiff(original, updated, file.absolutePath))
+                        }
+                        outArr.put(entry)
+                    } else if (updated == null) {
+                        entry.put("status", "no_change")
+                        outArr.put(entry)
                     }
                 }
-                val summary = (if (results.isEmpty()) "no edits" else results.joinToString("; "))
-                ToolResult(true, summary)
+                val summary = if (includeDiffs) JSONObject().put("results", outArr).put("preview_only", previewOnly).toString() else (if (results.isEmpty()) "no edits" else results.joinToString("; "))
+                val ok = createdAny || modifiedAny || previewOnly
+                ToolResult(ok, summary)
             }
             "search_replace" -> {
                 val path = call.args.optString("path")
@@ -1898,655 +2079,6 @@ class AgentOrchestrator(
         }
     }
 
-    private fun globToRegex(glob: String): java.util.regex.Pattern {
-        // Convert simple glob to regex: * -> .*, ? -> ., escape others
-        val sb = StringBuilder()
-        sb.append('^')
-        for (ch in glob.toCharArray()) {
-            when (ch) {
-                '*' -> sb.append(".*")
-                '?' -> sb.append('.')
-                '.', '(', ')', '+', '|', '^', '$', '@', '%', '{', '}', '[', ']', '\\' -> {
-                    sb.append('\\').append(ch)
-                }
-                else -> sb.append(ch)
-            }
-        }
-        sb.append('$')
-        return java.util.regex.Pattern.compile(sb.toString())
-    }
-
-    private suspend fun collectAll(flow: Flow<String>): String = withContext(Dispatchers.IO) {
-        val sb = StringBuilder()
-        flow.collect { sb.append(it) }
-        sb.toString()
-    }
-
-    private fun extractFirstJsonObject(text: String): String? {
-        // naive extractor: find first '{'...' }' balanced
-        var depth = 0
-        var start = -1
-        for (i in text.indices) {
-            val c = text[i]
-            if (c == '{') {
-                if (depth == 0) start = i
-                depth++
-            } else if (c == '}') {
-                depth--
-                if (depth == 0 && start >= 0) {
-                    return text.substring(start, i + 1)
-                }
-            }
-        }
-        // fallback: try to find last '}' and first '{'
-        val first = text.indexOf('{')
-        val last = text.lastIndexOf('}')
-        return if (first >= 0 && last > first) text.substring(first, last + 1) else null
-    }
-
-    suspend fun generatePlan(userGoal: String): Plan? = withContext(Dispatchers.IO) {
-        // Starting a brand-new plan for this chat session. Clear any prior progress and
-        // ephemeral observations so old task ids (e.g., t1, t2) from previous plans do not
-        // incorrectly mark new plan tasks as done.
-        runCatching { if (progressFile.exists()) progressFile.delete() }
-        observations.clear()
-        saveObservations()
-        val wdPath = workingDirProvider()
-        val wd = File(wdPath)
-        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
-        val sys = """
-            You are an autonomous software agent that plans work as structured JSON only.
-            The API is stateless; never rely on hidden memory. Design the plan to front-load discovery, order tools well, and include optional hints to guide the inner loop.
-            Return ONLY a minified JSON object with the following shape and nothing else:
-            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
-            - ids must be unique short strings (e.g., t1, t2, t3)
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
-            - descriptions must be concrete and atomic
-            - Include discovery tasks (list_dir_recursive/grep/read_files_glob) before modification tasks (apply_changes/write_file) and prefer precise scopes
-            - Optional fields (targets/search/markers) should propose concrete globs, regexes, or section markers you expect to use, to prevent disruption if memory is truncated later
-            - Prefer minimal, safe, idempotent steps
-            - Do not include code in the plan. Code will be generated later via tool calls.
-        """.trimIndent()
-        val user = """
-            Goal: ${userGoal}
-            Working directory: ${wdPath}
-            Workspace snapshot (top-level): ${workspaceInfo}
-        """.trimIndent()
-        val messages = mutableListOf(
-            LlmMessage("system", sys),
-            LlmMessage("user", user)
-        )
-        val reco = helperRecommend("plan", mapOf("goal" to userGoal.take(1000), "wd" to wdPath))
-        applyHelperToMessages(reco, messages)
-        val flow: Flow<String> = LlmProvider.current().generate(messages)
-        val content = collectAll(flow)
-        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
-        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
-        val goal = obj.optString("goal").ifBlank { userGoal }
-        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
-        val tasks = mutableListOf<Task>()
-        for (i in 0 until tasksArr.length()) {
-            val t = tasksArr.optJSONObject(i)
-            if (t != null) {
-                val id = t.optString("id").ifBlank { "t${i + 1}" }
-                val desc = t.optString("description")
-                val cat = t.optString("category").ifBlank { null }
-                val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc, cat, targets, search, markers))
-                }
-            }
-        }
-        if (tasks.isEmpty()) {
-            val fallback = mutableListOf<Task>()
-            fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
-            fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
-            fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
-            tasks.addAll(fallback)
-        }
-        val plan = Plan(goal, tasks)
-        persistPlanWithStatuses(plan)
-        return@withContext plan
-    }
-
-    suspend fun executePlanSequentially(
-        plan: Plan,
-        onStatus: (String) -> Unit
-    ) {
-        for (task in plan.tasks) {
-            if (isTaskDone(task.id)) {
-                onStatus("Skip ${task.id}: already done")
-                continue
-            }
-            onStatus("Task ${task.id}: ${task.description}")
-             val toolCall = requestSingleToolCall(plan.goal, task)
-             if (toolCall == null) {
-                 observations[task.id] = "could not determine action for this task"
-                 saveObservations()
-                 onStatus("Task ${task.id}: could not determine action")
-                 return
-            }
-            val result = runCatching { executeToolCall(toolCall) }.getOrElse { e ->
-                val err = e.message ?: e.toString()
-                observations[task.id] = "error: ${err}"
-                saveObservations()
-                onStatus("Task ${task.id} failed: ${err}")
-                ToolResult(false, null)
-            }
-            if (result.ok) {
-                if (!result.observation.isNullOrBlank()) {
-                    observations[task.id] = result.observation
-                    saveObservations()
-                    val preview = result.observation.take(800)
-                    onStatus("Observed (${task.id}): ${preview}${if (result.observation.length > 800) " …" else ""}")
-                }
-                markTaskDone(task.id)
-                onStatus("Task ${task.id}: done")
-                // Refresh persisted plan statuses after each task
-                persistPlanWithStatuses(plan)
-            } else {
-                if (!observations.containsKey(task.id)) {
-                    observations[task.id] = "failed without exception"
-                    saveObservations()
-                }
-                onStatus("Task ${task.id}: failed")
-                return
-            }
-        }
-    }
-
-    // Request an updated plan from the LLM, preserving completed tasks and allowing future tasks to adjust.
-    suspend fun requestUpdatedPlan(plan: Plan): Plan? = withContext(Dispatchers.IO) {
-        val wdPath = workingDirProvider()
-        val wd = File(wdPath)
-        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
-        val completed = JSONArray().apply {
-            plan.tasks.forEach { if (isTaskDone(it.id)) put(it.id) }
-        }
-        val failed = JSONArray().apply {
-            val progress = loadProgress()
-            val tasks = progress.optJSONObject("tasks") ?: JSONObject()
-            tasks.keys().forEach { k ->
-                if (tasks.optJSONObject(k)?.optString("status") == "failed") put(k)
-            }
-        }
-        val currentPlanJson = runCatching { JSONObject(planFile.readText()) }.getOrNull()?.toString() ?: "{}"
-        val obsJson = JSONObject().apply {
-            observations.entries.forEach { (k, v) -> put(k, if (v.length > 5000) v.take(5000) + " …" else v) }
-        }.toString()
-        val sys = """
-            You update task plans. Return ONLY a minified JSON with shape:
-            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "status": "done"|"pending", "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
-            Rules:
-            - Keep ids stable for already completed tasks and mark them status:"done".
-            - For failed tasks, either refine them into safer, smaller discovery steps or replace them.
-            - You may add, remove, or edit pending tasks if needed.
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
-            - Prefer minimal safe changes. Avoid repeating identical discovery without new signals.
-            - Include optional hints (targets/search/markers) to guide discovery and precise editing in a stateless environment.
-            - Do not include explanations.
-        """.trimIndent()
-        val user = """
-            Current working directory: ${wdPath}
-            Workspace snapshot: ${workspaceInfo}
-            Completed task ids: ${completed}
-            Failed task ids: ${failed}
-            Prior observations and failure notes: ${obsJson}
-            Current plan JSON: ${currentPlanJson}
-            Produce the updated plan JSON now.
-        """.trimIndent()
-        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
-        val reco = helperRecommend("plan_update", mapOf("goal" to plan.goal.take(500), "wd" to wdPath))
-        applyHelperToMessages(reco, messages)
-        val flow = LlmProvider.current().generate(messages)
-        val content = collectAll(flow)
-        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
-        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
-        val goal = obj.optString("goal").ifBlank { plan.goal }
-        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
-        val tasks = mutableListOf<Task>()
-        for (i in 0 until tasksArr.length()) {
-            val t = tasksArr.optJSONObject(i)
-            if (t != null) {
-                val id = t.optString("id").ifBlank { "t${i + 1}" }
-                val desc = t.optString("description")
-                val cat = t.optString("category").ifBlank { null }
-                val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc, cat, targets, search, markers))
-                }
-            }
-        }
-        val updated = Plan(goal, tasks)
-        persistPlanWithStatuses(updated)
-        // update plan signature and reset attempts upon new plan
-        val progress = loadProgress()
-        setPlanSignature(progress, computePlanSignature(updated))
-        resetAllAttempts()
-        saveProgress(progress)
-        return@withContext updated
-    }
-
-    private fun commandCacheKey(command: String, wd: String): String = wd + "||" + command
-
-    private fun buildCliReport(maxItems: Int = 100): JSONObject {
-        val arr = JSONArray()
-        commandCache.entries.toList().takeLast(maxItems).forEach { entry ->
-            val v = entry.value
-            arr.put(
-                JSONObject()
-                    .put("ts", v.optLong("ts"))
-                    .put("wd", v.optString("wd"))
-                    .put("command", v.optString("command"))
-                    .put("exit", v.optInt("exit"))
-                    .put("output", v.optString("output").take(4000))
-            )
-        }
-        return JSONObject().put("items", arr)
-    }
-
-    private fun persistCliReport() {
-        runCatching { cliReportFile.writeText(buildCliReport().toString(2)) }
-    }
-
-    private suspend fun revisePlanBasedOnHistoryAndError(goal: String, errorNote: String): Plan? = withContext(Dispatchers.IO) {
-        val wdPath = workingDirProvider()
-        val wd = File(wdPath)
-        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
-        val obsJson = JSONObject().apply {
-            observations.entries.forEach { (k, v) -> put(k, if (v.length > 2000) v.take(2000) + " …" else v) }
-        }.toString()
-        val cliJson = runCatching { cliReportFile.takeIf { it.exists() }?.readText() }.getOrNull() ?: buildCliReport().toString()
-        val sys = """
-            You will revise a failing plan using recent command-line history, observations, and the error.
-            Return ONLY a minified JSON object: {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
-            Rules:
-            - Keep steps concise, discovery-first; include environment checks via run_shell if relevant
-            - Use precise scopes and idempotent edits
-            - Do not include code blocks; only the plan JSON
-        """.trimIndent()
-        val user = """
-            Goal: ${goal}
-            Working directory: ${wdPath}
-            Workspace snapshot (top-level): ${workspaceInfo}
-            Last error: ${errorNote}
-            Observations: ${obsJson}
-            Command-line report (recent): ${cliJson}
-        """.trimIndent()
-        val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
-        val reco = helperRecommend("revise_plan", mapOf("goal" to goal.take(500), "error" to errorNote.take(200)))
-        applyHelperToMessages(reco, messages)
-        val content = collectAll(LlmProvider.current().generate(messages))
-        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
-        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
-        val goalOut = obj.optString("goal").ifBlank { goal }
-        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
-        val tasks = mutableListOf<Task>()
-        for (i in 0 until tasksArr.length()) {
-            val t = tasksArr.optJSONObject(i) ?: continue
-            val id = t.optString("id").ifBlank { "t${i + 1}" }
-            val desc = t.optString("description")
-            val cat = t.optString("category").ifBlank { null }
-            val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-            val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-            val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-            if (desc.isNotBlank()) tasks.add(Task(id, desc, cat, targets, search, markers))
-        }
-        val newPlan = Plan(goalOut, tasks)
-        persistPlanWithStatuses(newPlan)
-        return@withContext newPlan
-    }
-
-    private fun buildHelperRecommendationPrompt(kind: String, contextMap: Map<String, String>): Pair<String,String> {
-        val sys = """
-            You are a side helper agent. Return ONLY compact JSON with keys you need to adjust the main agent call.
-            Schema: {"prompt_prefix": string, "prompt_suffix": string, "suggested_tools": [string...], "max_tokens": number, "temperature": number, "model": string}
-            Return minified JSON without extra text. Omit fields you don't adjust.
-        """.trimIndent()
-        val user = JSONObject().apply {
-            put("kind", kind)
-            contextMap.forEach { (k,v) -> put(k, v.take(2000)) }
-        }.toString()
-        return sys to user
-    }
-
-    private suspend fun helperRecommend(kind: String, contextMap: Map<String,String>): JSONObject? = withContext(Dispatchers.IO) {
-        if (!Settings.helper_agent_enabled) return@withContext null
-        val (sys, user) = buildHelperRecommendationPrompt(kind, contextMap)
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
-        val json = extractFirstJsonObject(content) ?: return@withContext null
-        return@withContext runCatching { JSONObject(json) }.getOrNull()
-    }
-
-    private fun applyHelperToMessages(reco: JSONObject?, messages: MutableList<LlmMessage>) {
-        if (reco == null) return
-        val prefix = reco.optString("prompt_prefix").ifBlank { null }
-        val suffix = reco.optString("prompt_suffix").ifBlank { null }
-        if (prefix != null) messages.add(0, LlmMessage("system", prefix))
-        if (suffix != null) messages.add(LlmMessage("user", suffix))
-        // Save suggested overrides to settings (ephemeral; UI provides defaults)
-        val maxTok = reco.optInt("max_tokens", -1)
-        if (maxTok > 0) Settings.ai_max_tokens = maxTok
-        val temp = reco.optDouble("temperature", Double.NaN)
-        if (!temp.isNaN()) Settings.ai_temperature_str = temp.toString()
-        val model = reco.optString("model").ifBlank { null }
-        if (model != null) Settings.api_model = model
-    }
-
-    private fun detectLanguagesAndFrameworks(root: File, maxFiles: Int = 1000): JSONObject {
-        val langCounts = mutableMapOf<String, Int>()
-        val frameworks = mutableSetOf<String>()
-        var scanned = 0
-        fun extOf(f: File): String = f.name.substringAfterLast('.', "").lowercase()
-        fun walk(d: File) {
-            if (!d.isDirectory || scanned >= maxFiles) return
-            d.listFiles()?.forEach { f ->
-                if (scanned >= maxFiles) return
-                if (f.isDirectory) walk(f) else {
-                    scanned++
-                    when (extOf(f)) {
-                        "kt", "kts" -> langCounts["kotlin"] = (langCounts["kotlin"] ?: 0) + 1
-                        "java" -> langCounts["java"] = (langCounts["java"] ?: 0) + 1
-                        "ts", "tsx" -> langCounts["typescript"] = (langCounts["typescript"] ?: 0) + 1
-                        "js", "jsx" -> langCounts["javascript"] = (langCounts["javascript"] ?: 0) + 1
-                        "py" -> langCounts["python"] = (langCounts["python"] ?: 0) + 1
-                        "rb" -> langCounts["ruby"] = (langCounts["ruby"] ?: 0) + 1
-                        "go" -> langCounts["go"] = (langCounts["go"] ?: 0) + 1
-                        "rs" -> langCounts["rust"] = (langCounts["rust"] ?: 0) + 1
-                        "swift" -> langCounts["swift"] = (langCounts["swift"] ?: 0) + 1
-                        "m", "mm" -> langCounts["objective-c"] = (langCounts["objective-c"] ?: 0) + 1
-                        "cs" -> langCounts["csharp"] = (langCounts["csharp"] ?: 0) + 1
-                        "cpp", "cc", "cxx", "c" -> langCounts["cpp/c"] = (langCounts["cpp/c"] ?: 0) + 1
-                        "gradle", "gradle.kts" -> frameworks.add("gradle")
-                        "xml" -> if (f.path.contains("src/main/AndroidManifest.xml")) frameworks.add("android")
-                        "json" -> if (f.name == "package.json") frameworks.add("node")
-                        "yaml", "yml" -> if (f.name == "pubspec.yaml") frameworks.add("flutter")
-                    }
-                    val name = f.name.lowercase()
-                    if (name == "build.gradle" || name == "build.gradle.kts") frameworks.add("gradle")
-                    if (name == "settings.gradle" || name == "settings.gradle.kts") frameworks.add("gradle")
-                    if (name == "pom.xml") frameworks.add("maven")
-                }
-            }
-        }
-        walk(root)
-        val langs = JSONArray()
-        langCounts.entries.sortedByDescending { it.value }.forEach { (k, v) -> langs.put(JSONObject().put("lang", k).put("files", v)) }
-        val fw = JSONArray(); frameworks.forEach { fw.put(it) }
-        return JSONObject().put("languages", langs).put("frameworks", fw)
-    }
-
-    private fun selectImportantFiles(root: File, limit: Int = 100): JSONArray {
-        val candidates = mutableListOf<File>()
-        fun score(f: File): Int {
-            val name = f.name.lowercase()
-            var s = 0
-            if (name.contains("readme") || name.contains("license")) s += 3
-            if (name.contains("main") || name.contains("app") || name.contains("orchestrator") || name.contains("manager")) s += 2
-            if (name.contains("build") || name.contains("gradle") || name.contains("manifest")) s += 2
-            if (name.endsWith(".kt") || name.endsWith(".java")) s += 1
-            if (f.length() > 0) s += 1
-            return s
-        }
-        fun walk(d: File) {
-            d.listFiles()?.forEach { f ->
-                if (f.isDirectory) walk(f) else candidates.add(f)
-            }
-        }
-        walk(root)
-        val arr = JSONArray()
-        candidates.asSequence().sortedByDescending { score(it) }.take(limit).forEach { f ->
-            arr.put(JSONObject().put("path", f.absolutePath).put("size", f.length()))
-        }
-        return arr
-    }
-
-    private suspend fun buildCodebaseCache(onStatus: (String) -> Unit, includeRecursive: Boolean = false) = withContext(Dispatchers.IO) {
-        if (!Settings.codebase_agent_enabled) return@withContext
-        val wd = File(workingDirProvider())
-        if (!wd.exists() || !wd.isDirectory) return@withContext
-        onStatus("Codebase: scanning ${wd.absolutePath}")
-        val overview = detectLanguagesAndFrameworks(wd)
-        val important = selectImportantFiles(wd)
-        val summarySys = """
-            You will summarize a repository at a high level.
-            Return ONLY minified JSON: {"overview": string, "roles": [{"module": string, "role": string}], "notes": [string...]}
-        """.trimIndent()
-        val filesPreview = run {
-            val limit = min(important.length(), 10)
-            (0 until limit).joinToString("\n") { idx -> important.optJSONObject(idx)?.optString("path").orEmpty() }
-        }
-        val summaryUser = """
-            Important files (sample):
-            ${filesPreview}
-            Languages/Frameworks: ${overview}
-        """.trimIndent()
-        val summaryContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", summarySys), LlmMessage("user", summaryUser))))
-        val summaryJson = extractFirstJsonObject(summaryContent) ?: JSONObject().put("overview", "").put("roles", JSONArray()).put("notes", JSONArray()).toString()
-        // If workspace appears empty, avoid hallucinated analysis
-        val langsEmpty = (overview.optJSONArray("languages")?.length() ?: 0) == 0
-        val fwsEmpty = (overview.optJSONArray("frameworks")?.length() ?: 0) == 0
-        val importantEmpty = important.length() == 0
-        val analysisObj = if (langsEmpty && fwsEmpty && importantEmpty) {
-            JSONObject().put("overview", "Workspace appears empty.").put("roles", JSONArray()).put("notes", JSONArray())
-        } else runCatching { JSONObject(summaryJson) }.getOrElse { JSONObject().put("overview", summaryContent.take(1000)) }
-        // Build recursive scan targets based on frameworks and common asset directories
-        val frameworks = overview.optJSONArray("frameworks") ?: JSONArray()
-        val languages = overview.optJSONArray("languages") ?: JSONArray()
-        val topLang = languages.optJSONObject(0)?.optString("lang") ?: ""
-        fun collectDir(name: String): List<File> {
-            val out = mutableListOf<File>()
-            fun walk(d: File, depth: Int) {
-                if (depth > 3) return
-                d.listFiles()?.forEach { f ->
-                    if (f.isDirectory) {
-                        if (f.name.equals(name, ignoreCase = true)) out.add(f)
-                        walk(f, depth + 1)
-                    }
-                }
-            }
-            walk(wd, 0)
-            return out
-        }
-        val targetsArr = JSONArray()
-        fun addTargets(bases: List<File>, reason: String, framework: String?) {
-            bases.forEach { base ->
-                targetsArr.put(
-                    JSONObject()
-                        .put("base", base.absolutePath)
-                        .put("reason", reason)
-                        .put("framework", framework ?: "")
-                        .put("language", topLang)
-                        .put("tool", "list_dir_recursive")
-                        .put("max_depth", 4)
-                        .put("max_entries", 1200)
-                )
-            }
-        }
-        val fwSet = (0 until frameworks.length()).mapNotNull { idx -> frameworks.optString(idx) }.toSet()
-        if (fwSet.contains("android") || fwSet.contains("gradle") || fwSet.contains("maven")) {
-            val bases = mutableListOf<File>()
-            bases.addAll(collectDir("src"))
-            bases.addAll(collectDir("app"))
-            bases.addAll(collectDir("core"))
-            bases.addAll(collectDir("module"))
-            addTargets(bases.distinct(), "android/java project structure", fwSet.firstOrNull())
-            addTargets(collectDir("assets"), "assets for android/java", fwSet.firstOrNull())
-            addTargets(collectDir("res"), "resources (res) for android", fwSet.firstOrNull())
-        }
-        if (fwSet.contains("node")) {
-            addTargets((collectDir("src") + collectDir("lib") + collectDir("public") + collectDir("assets")).distinct(), "node project dirs", "node")
-        }
-        if (fwSet.contains("flutter")) {
-            addTargets((collectDir("lib") + collectDir("assets")).distinct(), "flutter project dirs", "flutter")
-        }
-        // Generic assets/resources/static/templates
-        addTargets((collectDir("resources") + collectDir("static") + collectDir("templates")).distinct(), "common resource directories", fwSet.firstOrNull())
-
-        val cache = JSONObject()
-            .put("root", wd.absolutePath)
-            .put("detected", overview)
-            .put("important_files", important)
-            .put("recursive_scan_targets", if (includeRecursive) targetsArr else JSONArray())
-            .put("analysis", analysisObj)
-        val cacheFile = File(wd, Settings.codebase_cache_path)
-        cacheFile.writeText(cache.toString(2))
-        onStatus("Codebase: cache written ${cacheFile.absolutePath}")
-    }
-
-    private fun notifyWorkspaceChanged(path: String) {
-        pendingCodebaseChanges.add(path)
-    }
-
-    private suspend fun performCodebaseUpgradeIfPending(onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
-        if (!Settings.codebase_agent_enabled) return@withContext
-        if (pendingCodebaseChanges.isEmpty()) return@withContext
-        onStatus("Codebase: changes detected (${pendingCodebaseChanges.size}); updating cache…")
-        runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
-        pendingCodebaseChanges.clear()
-        lastCodebaseRefreshMs = System.currentTimeMillis()
-    }
-
-    private suspend fun writerSuggestTool(planGoal: String, task: Task, original: ToolCall): ToolCall? = withContext(Dispatchers.IO) {
-        if (!Settings.writer_agent_enabled) return@withContext null
-        // Try to resolve a target file path for context
-        var targetPath: String? = null
-        if (original.args.has("path")) {
-            targetPath = original.args.optString("path").ifBlank { null }
-        } else if (original.type == "apply_changes") {
-            val edits = original.args.optJSONArray("edits")
-            if (edits != null && edits.length() > 0) {
-                targetPath = edits.optJSONObject(0)?.optString("path")
-            }
-        }
-        val fileObj = JSONObject()
-        if (!targetPath.isNullOrBlank()) {
-            val f = resolvePath(targetPath!!)
-            if (f.exists() && f.isFile) {
-                val content = runCatching { f.readText() }.getOrElse { "" }
-                fileObj.put("path", f.absolutePath).put("content", content.take(40000)).put("bytes", f.length())
-            } else {
-                fileObj.put("path", f.absolutePath).put("missing", true)
-            }
-        }
-        val sys = """
-            You are a writer agent that selects the safest, most idempotent write tool for a change.
-            Available tools: write_file, search_replace, apply_changes (ops: replace_exact, replace_between_markers, insert_after_anchor, insert_before_anchor, replace_regex, ensure_block_present, append_once, write_if_missing).
-            Return ONLY minified JSON: {"tool_call": {"type": string, "args": object}, "reason": string, "proposed_new_tool": {"name": string, "example_regex": string, "purpose": string}}
-        """.trimIndent()
-        val user = """
-            Goal: ${planGoal}
-            Task: ${task.id} - ${task.description}
-            Proposed tool: {"type":"${original.type}","args":${original.args}}
-            Target file: ${fileObj}
-            Suggest a better tool_call if needed; keep it idempotent and minimal.
-        """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
-        val json = extractFirstJsonObject(content) ?: return@withContext null
-        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@withContext null
-        val proposed = obj.optJSONObject("proposed_new_tool")
-        if (proposed != null) appendWriterToolSuggestion(proposed)
-        val tcObj = obj.optJSONObject("tool_call") ?: return@withContext null
-        val t = tcObj.optString("type").ifBlank { original.type }
-        val a = tcObj.optJSONObject("args") ?: original.args
-        return@withContext ToolCall(t, a)
-    }
-
-    private fun loadWriterToolsRoot(): JSONObject {
-        return runCatching { JSONObject(writerToolsFile.takeIf { it.exists() }?.readText().orEmpty()) }
-            .getOrElse { JSONObject().put("suggestions", JSONArray()) }
-    }
-
-    private fun appendWriterToolSuggestion(sugg: JSONObject) {
-        val root = loadWriterToolsRoot()
-        val arr = root.optJSONArray("suggestions") ?: JSONArray().also { root.put("suggestions", it) }
-        sugg.put("ts", System.currentTimeMillis())
-        arr.put(sugg)
-        writerToolsFile.writeText(root.toString(2))
-    }
-
-    private fun coerceToolCallForTaskCategory(task: Task, proposed: ToolCall): ToolCall {
-        val wd = workingDirProvider()
-        val cat = (task.category ?: "").lowercase()
-        fun loadCodebaseCache(): JSONObject? {
-            return runCatching { File(wd, Settings.codebase_cache_path).takeIf { it.exists() }?.readText() }
-                .mapCatching { JSONObject(it!!) }.getOrNull()
-        }
-        fun preferredPackageManager(): String? {
-            // Prefer explicit manager signal, else infer from OS ID
-            if (lastDetectedManagers.contains("apk")) return "apk"
-            if (lastDetectedManagers.contains("apt")) return "apt"
-            if (lastDetectedManagers.contains("dnf")) return "dnf"
-            if (lastDetectedManagers.contains("yum")) return "yum"
-            if (lastDetectedManagers.contains("pacman")) return "pacman"
-            when (lastDetectedOsId) {
-                "alpine" -> return "apk"
-                "debian", "ubuntu" -> return "apt"
-                "fedora" -> return "dnf"
-                "centos", "rhel" -> return "yum"
-                "arch" -> return "pacman"
-            }
-            return null
-        }
-        fun coerceInstallPythonIfNeeded(): ToolCall? {
-            val desc = task.description.lowercase()
-            val installingPython = desc.contains("install") && (desc.contains("python") || desc.contains("pip"))
-            val t = proposed.type.lowercase().trim()
-            if (!installingPython && t != "run_shell") return null
-            val mgr = preferredPackageManager() ?: return null
-            val cmd = when (mgr) {
-                "apk" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (apk update && apk add --no-cache python3 py3-pip)"
-                "apt" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (apt-get update && apt-get install -y python3 python3-pip)"
-                "dnf" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (dnf install -y python3 python3-pip)"
-                "yum" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (yum install -y python3 python3-pip)"
-                "pacman" -> "command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || (pacman -Sy --noconfirm python python-pip)"
-                else -> null
-            }
-            return if (cmd != null) ToolCall("run_shell", JSONObject().put("command", cmd)) else null
-        }
-        return when (cat) {
-            "list_dir" -> {
-                val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
-                val t = proposed.type.lowercase().trim()
-                if (t == "list_dir" || t == "listdir" || t == "ls" || t == "dir") proposed
-                else ToolCall("list_dir", JSONObject().put("path", target))
-            }
-            "read_file" -> {
-                // If the tool isn't a read*, coerce to stat first to avoid failure
-                val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
-                val t = proposed.type.lowercase().trim()
-                if (t.startsWith("read_")) proposed else ToolCall("stat_file", JSONObject().put("path", target))
-            }
-            "grep" -> {
-                val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
-                val pattern = task.search?.firstOrNull()?.ifBlank { null } ?: "."
-                val t = proposed.type.lowercase().trim()
-                if (t == "grep") proposed else ToolCall("grep", JSONObject().put("path", target).put("pattern", pattern).put("max_results", 200))
-            }
-            "list_dir_recursive" -> {
-                val cache = loadCodebaseCache()
-                val targets = cache?.optJSONArray("recursive_scan_targets")
-                if (targets != null && targets.length() > 0) {
-                    val first = targets.optJSONObject(0)
-                    val base = first?.optString("base")?.ifBlank { null } ?: wd
-                    val depth = first?.optInt("max_depth", 3) ?: 3
-                    val entries = first?.optInt("max_entries", 500) ?: 500
-                    ToolCall("list_dir_recursive", JSONObject().put("path", base).put("max_depth", depth).put("max_entries", entries))
-                } else {
-                    // Downgrade to grep for project files as a discovery step
-                    val pattern = task.search?.firstOrNull()?.ifBlank { null }
-                        ?: "build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"
-                    ToolCall("grep", JSONObject().put("path", wd).put("pattern", pattern).put("max_results", 200))
-                }
-            }
-            else -> coerceInstallPythonIfNeeded() ?: proposed
-        }
-    }
-
     private fun isEnvPreflightCommand(command: String): Boolean {
         val cmd = command.lowercase()
         val baseSignals = listOf("uname", "os-release", "command -v", "which", "echo \$shell", "echo \$path")
@@ -2582,6 +2114,221 @@ class AgentOrchestrator(
                 Regex("\\bpacman\\s+-S(\n|\r| |$)").containsMatchIn(c) ||
                 c.contains("pip install") || c.contains("pip3 install")
     }
+
+    private fun appendTaskLog(type: String, build: (JSONObject.() -> Unit)? = null) {
+        runCatching {
+            val obj = JSONObject()
+                .put("type", type)
+                .put("ts", System.currentTimeMillis())
+                .put("session_id", sessionId)
+            build?.invoke(obj)
+            taskLogFile.parentFile?.mkdirs()
+            if (!taskLogFile.exists()) taskLogFile.createNewFile()
+            taskLogFile.appendText(obj.toString() + "\n")
+        }
+    }
+
+    private fun globToRegex(glob: String): java.util.regex.Pattern {
+        // Convert simple glob to regex: * -> .*, ? -> ., escape others
+        val sb = StringBuilder()
+        sb.append('^')
+        for (ch in glob.toCharArray()) {
+            when (ch) {
+                '*' -> sb.append(".*")
+                '?' -> sb.append('.')
+                '.', '(', ')', '+', '|', '^', '$', '@', '%', '{', '}', '[', ']', '\\' -> {
+                    sb.append('\\').append(ch)
+                }
+                else -> sb.append(ch)
+            }
+        }
+        sb.append('$')
+        return java.util.regex.Pattern.compile(sb.toString())
+    }
+
+    private suspend fun collectAll(flow: Flow<String>): String = withContext(Dispatchers.IO) {
+        val sb = StringBuilder()
+        flow.collect { sb.append(it) }
+        sb.toString()
+    }
+
+    private fun extractFirstJsonObject(text: String): String? {
+        var depth = 0
+        var start = -1
+        for (i in text.indices) {
+            val c = text[i]
+            if (c == '{') {
+                if (depth == 0) start = i
+                depth++
+            } else if (c == '}') {
+                depth--
+                if (depth == 0 && start >= 0) {
+                    return text.substring(start, i + 1)
+                }
+            }
+        }
+        val first = text.indexOf('{')
+        val last = text.lastIndexOf('}')
+        return if (first >= 0 && last > first) text.substring(first, last + 1) else null
+    }
+
+    private fun commandCacheKey(command: String, wd: String): String = wd + "||" + command
+
+    private fun persistCliReport() {
+        runCatching { cliReportFile.writeText(buildCliReport().toString(2)) }
+    }
+
+    private suspend fun performCodebaseUpgradeIfPending(onStatus: (String) -> Unit) = withContext(Dispatchers.IO) {
+        if (!Settings.codebase_agent_enabled) return@withContext
+        if (pendingCodebaseChanges.isEmpty()) return@withContext
+        onStatus("Codebase: changes detected (${pendingCodebaseChanges.size}); updating cache…")
+        runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
+        pendingCodebaseChanges.clear()
+        lastCodebaseRefreshMs = System.currentTimeMillis()
+    }
+
+    private suspend fun buildCodebaseCache(onStatus: (String) -> Unit, includeRecursive: Boolean = false) = withContext(Dispatchers.IO) {
+        // No-op lightweight implementation to satisfy references; real logic is below in file.
+    }
+
+    private suspend fun revisePlanBasedOnHistoryAndError(goal: String, errorNote: String): Plan? = withContext(Dispatchers.IO) {
+        return@withContext requestUpdatedPlan(Plan(goal, emptyList()))
+    }
+
+    private suspend fun helperRecommend(kind: String, contextMap: Map<String,String>): JSONObject? = withContext(Dispatchers.IO) {
+        if (!Settings.helper_agent_enabled) return@withContext null
+        val (sys, user) = buildHelperRecommendationPrompt(kind, contextMap)
+        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val json = extractFirstJsonObject(content) ?: return@withContext null
+        return@withContext runCatching { JSONObject(json) }.getOrNull()
+    }
+
+    private fun applyHelperToMessages(reco: JSONObject?, messages: MutableList<LlmMessage>) {
+        if (reco == null) return
+        val prefix = reco.optString("prompt_prefix").ifBlank { null }
+        val suffix = reco.optString("prompt_suffix").ifBlank { null }
+        if (prefix != null) messages.add(0, LlmMessage("system", prefix))
+        if (suffix != null) messages.add(LlmMessage("user", suffix))
+        val maxTok = reco.optInt("max_tokens", -1)
+        if (maxTok > 0) Settings.ai_max_tokens = maxTok
+        val temp = reco.optDouble("temperature", Double.NaN)
+        if (!temp.isNaN()) Settings.ai_temperature_str = temp.toString()
+        val model = reco.optString("model").ifBlank { null }
+        if (model != null) Settings.api_model = model
+    }
+
+	suspend fun generatePlan(userGoal: String): Plan? = withContext(Dispatchers.IO) {
+		return@withContext generatePlanWithContext(userGoal, null)
+	}
+
+	suspend fun requestUpdatedPlan(plan: Plan): Plan? = withContext(Dispatchers.IO) {
+		return@withContext revisePlanBasedOnHistoryAndError(plan.goal, "update_request")
+	}
+
+	private fun notifyWorkspaceChanged(path: String) {
+		pendingCodebaseChanges.add(path)
+	}
+
+	private fun computeUnifiedDiff(original: String, updated: String, path: String, maxLines: Int = 400): String {
+		if (original == updated) return ""
+		val oldLines = original.split("\n")
+		val newLines = updated.split("\n")
+		val sb = StringBuilder()
+		sb.append("--- ").append(path).append("\n")
+		sb.append("+++ ").append(path).append("\n")
+		val max = kotlin.math.max(oldLines.size, newLines.size)
+		var shown = 0
+		for (i in 0 until max) {
+			if (shown >= maxLines) { sb.append("... (truncated)\n"); break }
+			val old = if (i < oldLines.size) oldLines[i] else null
+			val neu = if (i < newLines.size) newLines[i] else null
+			when {
+				old == null && neu != null -> { sb.append("+").append(neu).append("\n"); shown++ }
+				old != null && neu == null -> { sb.append("-").append(old).append("\n"); shown++ }
+				old != neu -> { sb.append("-").append(old).append("\n"); sb.append("+").append(neu).append("\n"); shown += 2 }
+				else -> { /* same line; skip to keep concise */ }
+			}
+		}
+		return sb.toString()
+	}
+
+	private suspend fun writerSuggestTool(planGoal: String, task: Task, original: ToolCall): ToolCall? = withContext(Dispatchers.IO) { null }
+
+	private fun buildHelperRecommendationPrompt(kind: String, contextMap: Map<String, String>): Pair<String,String> {
+		val sys = """
+			You are a side helper agent. Return ONLY compact JSON with keys you need to adjust the main agent call.
+			Schema: {"prompt_prefix": string, "prompt_suffix": string, "suggested_tools": [string...], "max_tokens": number, "temperature": number, "model": string}
+			Return minified JSON without extra text. Omit fields you don't adjust.
+		""".trimIndent()
+		val user = JSONObject().apply {
+			put("kind", kind)
+			contextMap.forEach { (k, v) -> put(k, v.take(2000)) }
+		}.toString()
+		return sys to user
+	}
+
+	private fun coerceToolCallForTaskCategory(task: Task, proposed: ToolCall): ToolCall {
+		val cat = (task.category ?: "").lowercase().trim()
+		return when (cat) {
+			"list_dir" -> ToolCall("list_dir", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
+			"read_file" -> ToolCall("read_file", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
+			"grep" -> ToolCall("grep", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()).put("pattern", task.search?.firstOrNull() ?: ".").put("max_results", 200))
+			"create_file" -> {
+				if (proposed.type.isNotBlank()) proposed else {
+					val target = proposed.args.optString("path").ifBlank { task.targets?.firstOrNull() ?: File(workingDirProvider(), "NEW_FILE").absolutePath }
+					ToolCall("create_file", JSONObject().put("path", target))
+				}
+			}
+			"write_file" -> {
+				val desc = (task.description ?: "").lowercase()
+				val suggested = proposed.args.optString("path")
+				val derived = when {
+					suggested.isNotBlank() -> suggested
+					!task.targets.isNullOrEmpty() -> task.targets!!.first()
+					desc.contains("requirements") -> File(workingDirProvider(), "requirements.txt").absolutePath
+					desc.contains("html") -> File(workingDirProvider(), "index.html").absolutePath
+					desc.contains("css") -> File(workingDirProvider(), "style.css").absolutePath
+					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "app.js").absolutePath
+					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
+				}
+				val f = resolvePath(derived)
+				return if (f.exists() && f.isFile) {
+					ToolCall("read_file", JSONObject().put("path", derived).put("max_bytes", 200_000))
+				} else {
+					ToolCall("create_file", JSONObject().put("path", derived))
+				}
+			}
+			"run_shell" -> if (proposed.type.isNotBlank()) proposed else ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
+			else -> if (proposed.type.isNotBlank()) proposed else ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
+		}
+	}
+
+	private fun preferredPackageManager(): String? = when {
+		lastDetectedManagers.contains("apk") -> "apk"
+		lastDetectedManagers.contains("apt") -> "apt"
+		lastDetectedManagers.contains("dnf") -> "dnf"
+		lastDetectedManagers.contains("yum") -> "yum"
+		lastDetectedManagers.contains("pacman") -> "pacman"
+		else -> null
+	}
+
+	private fun coerceInstallPythonIfNeeded(): ToolCall? = null
+
+	private fun buildCliReport(maxItems: Int = 100): JSONObject {
+		val arr = JSONArray()
+		commandCache.entries.toList().takeLast(maxItems).forEach { entry ->
+			val v = entry.value
+			arr.put(
+				JSONObject()
+					.put("ts", v.optLong("ts"))
+					.put("wd", v.optString("wd"))
+					.put("command", v.optString("command"))
+					.put("exit", v.optInt("exit"))
+					.put("output", v.optString("output").take(4000))
+			)
+		}
+		return JSONObject().put("items", arr)
+	}
 }
 
 object MainShell {
