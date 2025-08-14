@@ -233,7 +233,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 val finalOut = if (out.isBlank()) "(no output)" else out
                 launch(Dispatchers.Main) { onDone(0, finalOut) }
             } catch (e: Exception) {
-                launch(Dispatchers.Main) { onDone(-1, e.message ?: e.toString()) }
+                val msg = (e.message ?: e.toString())
+                launch(Dispatchers.Main) { onDone(-1, "error: $msg") }
             }
         }
     }

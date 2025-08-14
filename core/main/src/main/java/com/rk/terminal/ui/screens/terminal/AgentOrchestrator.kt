@@ -2564,11 +2564,13 @@ object HiddenShell {
         runCatching { if (outFile.exists()) outFile.delete() }.getOrElse { }
         val outPath = outFile.absolutePath.replace("'", "'\\''")
         val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
-        // Ensure XPWD and PATH are propagated so init.sh cd's correctly and tool resolution matches expectations
+        // Ensure XPWD and PATH are propagated; also pass XCMD for non-interactive exec inside init
         val inheritedPath = (System.getenv("PATH") ?: "")
         val extraEnv = arrayOf(
             "XPWD=$wd",
-            "PATH=${inheritedPath}"
+            "PATH=${inheritedPath}",
+            // run command in init via XCMD, ensure it writes sentinel at the end
+            "XCMD=${command} ; printf '%s\\n' ${sentinel}"
         )
 
         // Minimal client
@@ -2602,18 +2604,18 @@ object HiddenShell {
                 } catch (_: Throwable) {
                     binder.createHiddenSession(sessionId, client, activity, workingMode)
                 }
-                val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
+                val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; printf '%s\\n' ${sentinel} >> '$outPath'\n"
                 // Delay writes so proot + login shell can initialize and attach to the pty
                 mainHandler.postDelayed({
                     runCatching { session.write(cmdLine) }
-                }, 800)
+                }, 600)
                 mainHandler.postDelayed({
                     runCatching {
                         if (!outFile.exists() || runCatching { outFile.readText() }.getOrElse { "" }.contains(sentinel).not()) {
                             session.write(cmdLine)
                         }
                     }
-                }, 1600)
+                }, 1200)
                 scheduledOk = true
             } catch (e: Exception) {
                 runCatching {
