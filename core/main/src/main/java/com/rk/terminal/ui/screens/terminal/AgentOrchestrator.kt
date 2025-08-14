@@ -1789,7 +1789,10 @@ if (exit != 0) {
             }
             "apply_changes" -> {
                 val edits = call.args.optJSONArray("edits") ?: JSONArray()
+                val includeDiffs = call.args.optBoolean("include_diffs", true)
+                val previewOnly = call.args.optBoolean("preview_only", false)
                 val results = mutableListOf<String>()
+                val outArr = JSONArray()
                 var createdAny = false
                 var modifiedAny = false
                 for (i in 0 until edits.length()) {
@@ -1798,17 +1801,24 @@ if (exit != 0) {
                     val path = e.optString("path")
                     if (path.isBlank()) { results.add("edit[$i]: missing path"); continue }
                     val file = resolvePath(path)
+                    val entry = JSONObject().put("file", file.absolutePath).put("op", op)
                     if (!file.exists()) {
-                        // allow write_if_missing as part of apply_changes
                         if (op == "write_if_missing") {
                             val content = e.optString("content")
                             ensureParentDirs(file)
-                            file.writeText(content)
-                            results.add("edit[$i]: created (${path})")
+                            if (!previewOnly) {
+                                file.writeText(content)
+                            }
+                            entry.put("status", if (previewOnly) "planned_create" else "created")
                             createdAny = true
+                            if (includeDiffs) entry.put("diff", computeUnifiedDiff("", content, file.absolutePath))
+                            outArr.put(entry)
                             continue
                         }
-                        results.add("edit[$i]: file missing: ${file.path}"); continue
+                        results.add("edit[$i]: file missing: ${path}")
+                        entry.put("status", "missing")
+                        outArr.put(entry)
+                        continue
                     }
                     val original = runCatching { file.readText() }.getOrElse { "" }
                     val updated = when (op) {
@@ -1817,9 +1827,7 @@ if (exit != 0) {
                             val new = e.optString("new")
                             if (old.isEmpty()) { results.add("edit[$i]: old empty"); null } else {
                                 val idx = original.indexOf(old)
-                                if (idx < 0) { results.add("edit[$i]: old not found"); null } else {
-                                    original.replaceFirst(old, new)
-                                }
+                                if (idx < 0) { results.add("edit[$i]: old not found"); null } else original.replaceFirst(old, new)
                             }
                         }
                         "replace_between_markers" -> {
@@ -1856,12 +1864,9 @@ if (exit != 0) {
                             val anchor = e.optString("anchor")
                             val newContent = e.optString("new_content")
                             val aIdx = original.indexOf(anchor)
-                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
-                                original.substring(0, aIdx) + newContent + original.substring(aIdx)
-                            }
+                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else original.substring(0, aIdx) + newContent + original.substring(aIdx)
                         }
                         "replace_regex" -> {
-                            // Support both flat keys and nested {regex:{pattern,replace}}
                             val regexObj = e.optJSONObject("regex")
                             val pattern = e.optString("pattern").ifBlank { regexObj?.optString("pattern").orEmpty() }
                             val replacement = e.optString("replacement").ifBlank { regexObj?.optString("replace").orEmpty() }
@@ -1869,9 +1874,7 @@ if (exit != 0) {
                             if (pattern.isBlank()) { results.add("edit[$i]: pattern empty"); null } else {
                                 val regex = runCatching { Regex(pattern) }.getOrElse { Regex(Pattern.quote(pattern)) }
                                 val count = regex.findAll(original).count()
-                                if (unique && count != 1) { results.add("edit[$i]: non-unique matches=$count"); null } else {
-                                    original.replace(regex, replacement)
-                                }
+                                if (unique && count != 1) { results.add("edit[$i]: non-unique matches=${'$'}count"); null } else original.replace(regex, replacement)
                             }
                         }
                         "ensure_block_present" -> {
@@ -1880,16 +1883,11 @@ if (exit != 0) {
                             val before = e.optString("anchor_before")
                             val after = e.optString("anchor_after")
                             val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
-                            if (contains) {
-                                results.add("edit[$i]: already present")
-                                null
-                            } else {
+                            if (contains) { results.add("edit[$i]: already present"); null } else {
                                 when {
                                     before.isNotBlank() -> {
                                         val idx = original.indexOf(before)
-                                        if (idx < 0) { results.add("edit[$i]: anchor_before not found"); null } else {
-                                            original.substring(0, idx) + block + original.substring(idx)
-                                        }
+                                        if (idx < 0) { results.add("edit[$i]: anchor_before not found"); null } else original.substring(0, idx) + block + original.substring(idx)
                                     }
                                     after.isNotBlank() -> {
                                         val idx = original.indexOf(after)
@@ -1909,24 +1907,70 @@ if (exit != 0) {
                             if (contains) { results.add("edit[$i]: already present"); null } else original + block
                         }
                         "write_if_missing" -> {
-                            // If file exists, skip without error
                             results.add("edit[$i]: exists (skipped)")
                             null
                         }
-                        else -> { results.add("edit[$i]: unknown op ${op}"); null }
-                    }
-                    if (updated != null) {
-                        runCatching { file.writeText(updated) }.onSuccess {
-                            results.add("edit[$i]: ok (${path})")
-                            notifyWorkspaceChanged(file.absolutePath)
-                            modifiedAny = true
-                        }.onFailure { ex ->
-                            results.add("edit[$i]: write failed (${ex.message})")
+                        "replace_lines" -> {
+                            val start = e.optInt("start_line", -1)
+                            val end = e.optInt("end_line", -1)
+                            val newContent = e.optString("new_content")
+                            if (start <= 0 || end < start) { results.add("edit[$i]: invalid line range"); null } else {
+                                val lines = original.split("\n").toMutableList()
+                                val from = (start - 1).coerceAtLeast(0)
+                                val to = end.coerceAtMost(lines.size)
+                                val newLines = newContent.split("\n")
+                                lines.subList(from, to).clear()
+                                lines.addAll(from, newLines)
+                                lines.joinToString("\n")
+                            }
                         }
+                        "insert_lines_after" -> {
+                            val line = e.optInt("line_number", -1)
+                            val newContent = e.optString("new_content")
+                            if (line < 0) { results.add("edit[$i]: invalid line number"); null } else {
+                                val lines = original.split("\n").toMutableList()
+                                val idx = line.coerceAtMost(lines.size)
+                                val newLines = newContent.split("\n")
+                                lines.addAll(idx, newLines)
+                                lines.joinToString("\n")
+                            }
+                        }
+                        "insert_lines_before" -> {
+                            val line = e.optInt("line_number", -1)
+                            val newContent = e.optString("new_content")
+                            if (line <= 0) { results.add("edit[$i]: invalid line number"); null } else {
+                                val lines = original.split("\n").toMutableList()
+                                val idx = (line - 1).coerceAtLeast(0)
+                                val newLines = newContent.split("\n")
+                                lines.addAll(idx, newLines)
+                                lines.joinToString("\n")
+                            }
+                        }
+                        else -> { results.add("edit[$i]: unknown op ${'$'}op"); null }
+                    }
+                    if (updated != null && updated != original) {
+                        if (!previewOnly) {
+                            runCatching { file.writeText(updated) }.onSuccess {
+                                results.add("edit[$i]: ok (${path})")
+                                notifyWorkspaceChanged(file.absolutePath)
+                                modifiedAny = true
+                            }.onFailure { ex -> results.add("edit[$i]: write failed (${ex.message})") }
+                        } else {
+                            results.add("edit[$i]: planned_change (${path})")
+                            modifiedAny = true
+                        }
+                        if (includeDiffs) {
+                            entry.put("status", if (previewOnly) "planned_change" else "modified")
+                            entry.put("diff", computeUnifiedDiff(original, updated, file.absolutePath))
+                        }
+                        outArr.put(entry)
+                    } else if (updated == null) {
+                        entry.put("status", "no_change")
+                        outArr.put(entry)
                     }
                 }
-                val summary = (if (results.isEmpty()) "no edits" else results.joinToString("; "))
-                val ok = createdAny || modifiedAny
+                val summary = if (includeDiffs) JSONObject().put("results", outArr).put("preview_only", previewOnly).toString() else (if (results.isEmpty()) "no edits" else results.joinToString("; "))
+                val ok = createdAny || modifiedAny || previewOnly
                 ToolResult(ok, summary)
             }
             "search_replace" -> {
@@ -2265,6 +2309,29 @@ if (exit != 0) {
 
 	private fun notifyWorkspaceChanged(path: String) {
 		pendingCodebaseChanges.add(path)
+	}
+
+	private fun computeUnifiedDiff(original: String, updated: String, path: String, maxLines: Int = 400): String {
+		if (original == updated) return ""
+		val oldLines = original.split("\n")
+		val newLines = updated.split("\n")
+		val sb = StringBuilder()
+		sb.append("--- ").append(path).append("\n")
+		sb.append("+++ ").append(path).append("\n")
+		val max = kotlin.math.max(oldLines.size, newLines.size)
+		var shown = 0
+		for (i in 0 until max) {
+			if (shown >= maxLines) { sb.append("... (truncated)\n"); break }
+			val old = if (i < oldLines.size) oldLines[i] else null
+			val neu = if (i < newLines.size) newLines[i] else null
+			when {
+				old == null && neu != null -> { sb.append("+").append(neu).append("\n"); shown++ }
+				old != null && neu == null -> { sb.append("-").append(old).append("\n"); shown++ }
+				old != neu -> { sb.append("-").append(old).append("\n"); sb.append("+").append(neu).append("\n"); shown += 2 }
+				else -> { /* same line; skip to keep concise */ }
+			}
+		}
+		return sb.toString()
 	}
 }
 
