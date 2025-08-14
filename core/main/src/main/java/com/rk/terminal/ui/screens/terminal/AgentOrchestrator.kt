@@ -2348,6 +2348,46 @@ if (exit != 0) {
 		}.toString()
 		return sys to user
 	}
+
+	private fun coerceToolCallForTaskCategory(task: Task, proposed: ToolCall): ToolCall {
+		val cat = (task.category ?: "").lowercase().trim()
+		return when (cat) {
+			"list_dir" -> ToolCall("list_dir", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
+			"read_file" -> ToolCall("read_file", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
+			"grep" -> ToolCall("grep", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()).put("pattern", task.search?.firstOrNull() ?: ".").put("max_results", 200))
+			"create_file" -> if (proposed.type.isNotBlank()) proposed else ToolCall("create_file", JSONObject().put("path", task.targets?.firstOrNull() ?: File(workingDirProvider(), "NEW_FILE").absolutePath))
+			"write_file" -> if (proposed.type.isNotBlank()) proposed else ToolCall("read_file", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
+			"run_shell" -> if (proposed.type.isNotBlank()) proposed else ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
+			else -> if (proposed.type.isNotBlank()) proposed else ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
+		}
+	}
+
+	private fun preferredPackageManager(): String? = when {
+		lastDetectedManagers.contains("apk") -> "apk"
+		lastDetectedManagers.contains("apt") -> "apt"
+		lastDetectedManagers.contains("dnf") -> "dnf"
+		lastDetectedManagers.contains("yum") -> "yum"
+		lastDetectedManagers.contains("pacman") -> "pacman"
+		else -> null
+	}
+
+	private fun coerceInstallPythonIfNeeded(): ToolCall? = null
+
+	private fun buildCliReport(maxItems: Int = 100): JSONObject {
+		val arr = JSONArray()
+		commandCache.entries.toList().takeLast(maxItems).forEach { entry ->
+			val v = entry.value
+			arr.put(
+				JSONObject()
+					.put("ts", v.optLong("ts"))
+					.put("wd", v.optString("wd"))
+					.put("command", v.optString("command"))
+					.put("exit", v.optInt("exit"))
+					.put("output", v.optString("output").take(4000))
+			)
+		}
+		return JSONObject().put("items", arr)
+	}
 }
 
 object MainShell {
