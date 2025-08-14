@@ -55,24 +55,7 @@ class SessionService : Service() {
             }
         }
 
-        fun createHiddenSession(id: String, client: TerminalSessionClient, activity: MainActivity, workingMode: Int): TerminalSession {
-            return MkSession.createSession(activity, client, id, workingMode = workingMode).also {
-                // Track only in sessions for lifecycle; do not add to sessionList, do not update notification
-                sessions[id] = it
-            }
-        }
-
-        fun createHiddenSession(id: String, client: TerminalSessionClient, activity: MainActivity, workingMode: Int, extraEnv: Array<String>): TerminalSession {
-            return MkSession.createSessionWithEnv(activity, client, id, workingMode = workingMode, extraEnv = extraEnv).also {
-                sessions[id] = it
-            }
-        }
-
-        fun terminateHiddenSession(id: String) {
-            runCatching { sessions[id]?.finishIfRunning() }
-            sessions.remove(id)
-            // Intentionally do not touch sessionList or notifications
-        }
+        // Hidden session support removed; only visible sessions are supported
         fun getSession(id: String): TerminalSession? {
             return sessions[id]
         }

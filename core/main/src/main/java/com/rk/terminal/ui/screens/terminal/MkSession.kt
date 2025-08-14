@@ -172,6 +172,22 @@ Updating : apk update && apk upgrade
             if (File(applicationInfo.nativeLibraryDir).child("libproot-loader32.so").exists()){
                 envSession.add("PROOT_LOADER32=${applicationInfo.nativeLibraryDir}/libproot-loader32.so")
             }
+
+            // Add Android env variables like createSession
+            val envVariables = mapOf(
+                "ANDROID_ART_ROOT" to System.getenv("ANDROID_ART_ROOT"),
+                "ANDROID_DATA" to System.getenv("ANDROID_DATA"),
+                "ANDROID_I18N_ROOT" to System.getenv("ANDROID_I18N_ROOT"),
+                "ANDROID_ROOT" to System.getenv("ANDROID_ROOT"),
+                "ANDROID_RUNTIME_ROOT" to System.getenv("ANDROID_RUNTIME_ROOT"),
+                "ANDROID_TZDATA_ROOT" to System.getenv("ANDROID_TZDATA_ROOT"),
+                "BOOTCLASSPATH" to System.getenv("BOOTCLASSPATH"),
+                "DEX2OATBOOTCLASSPATH" to System.getenv("DEX2OATBOOTCLASSPATH"),
+                "EXTERNAL_STORAGE" to System.getenv("EXTERNAL_STORAGE")
+            )
+            envSession.addAll(envVariables.map { "${it.key}=${it.value}" })
+
+            // Include any extra env requested by caller (e.g., XPWD)
             envSession.addAll(extraEnv)
 
             // Ensure init files exist
@@ -184,6 +200,18 @@ Updating : apk update && apk upgrade
                 if (exists().not()){
                     createFileIfNot()
                     writeText(assets.open("init.sh").bufferedReader().use { it.readText() })
+                }
+            }
+
+            // Ensure proc shim files exist as in createSession so proot bindings succeed
+            localDir().child("stat").apply {
+                if (exists().not()){
+                    writeText(stat)
+                }
+            }
+            localDir().child("vmstat").apply {
+                if (exists().not()){
+                    writeText(vmstat)
                 }
             }
 

@@ -151,11 +151,6 @@ object Settings {
     var writer_agent_enabled
         get() = Preference.getBoolean(key = "writer_agent_enabled", default = false)
         set(value) = Preference.setBoolean(key = "writer_agent_enabled", value)
-
-    // Use hidden terminal session for agent shell
-    var agent_use_terminal_session
-        get() = Preference.getBoolean(key = "agent_use_terminal_session", default = false)
-        set(value) = Preference.setBoolean(key = "agent_use_terminal_session", value)
 }
 
 object Preference {

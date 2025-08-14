@@ -25,6 +25,7 @@ import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.service.SessionService
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import android.util.Log
 
 /**
  * Minimal agent orchestrator that:
@@ -88,6 +89,8 @@ class AgentOrchestrator(
         val filesModified: MutableList<String> = mutableListOf()
     )
     private var currentRunStats: RunStats? = null
+    private var currentTaskContext: Task? = null
+    private var lastInstallSuccess: Boolean = false
     private fun beginRunStats() { currentRunStats = RunStats() }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
@@ -409,6 +412,7 @@ class AgentOrchestrator(
                 continue
             }
             val result = try {
+                currentTaskContext = pseudoTask
                 executeToolCall(toolCall)
             } catch (e: Exception) {
                 val err = e.message ?: e.toString()
@@ -944,7 +948,10 @@ class AgentOrchestrator(
             val effectiveToolCall = if (isModifyingTool(coerced.type) && Settings.writer_agent_enabled) {
                 runCatching { writerSuggestTool(plan.goal, task, coerced) }.getOrNull() ?: coerced
             } else coerced
-            val result = runCatching { executeToolCall(effectiveToolCall) }.getOrElse { e ->
+            val result = runCatching {
+                currentTaskContext = task
+                executeToolCall(effectiveToolCall)
+            }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
                 saveObservations()
@@ -957,7 +964,7 @@ class AgentOrchestrator(
                 }
                 onStatus("Task ${task.id}: plan revision unavailable; proceeding with remediation…")
                 ToolResult(false, null)
-            }
+            }.also { currentTaskContext = null }
 
             if (result.ok) {
                 if (!result.observation.isNullOrBlank()) {
@@ -973,6 +980,22 @@ class AgentOrchestrator(
                     }
                 }
 
+                // If this task is a Python/pip presence check and output shows versions, consider it complete
+                runCatching {
+                    val cmdStr = if (effectiveToolCall.type == "run_shell") effectiveToolCall.args.optString("command").lowercase() else ""
+                    val outLower = result.observation?.lowercase().orEmpty()
+                    val isPyCheckTask = task.description.lowercase().let { it.contains("python") || it.contains("pip") } &&
+                            (task.description.lowercase().contains("check") || task.description.lowercase().contains("installed") || task.description.lowercase().contains("accessible"))
+                    val versionSignals = outLower.contains("python ") && outLower.contains("pip ")
+                    if (effectiveToolCall.type == "run_shell" && isPyCheckTask && versionSignals) {
+                        markTaskDone(task.id)
+                        onStatus("Task ${task.id}: done")
+                        persistPlanWithStatuses(plan)
+                        endRunStatsAndReport(onStatus, verb = "thought")
+                        return true
+                    }
+                }
+
                 // If the tool modified the workspace, consider the task complete.
                 if (isModifyingTool(effectiveToolCall.type)) {
                     markTaskDone(task.id)
@@ -984,6 +1007,16 @@ class AgentOrchestrator(
                         onStatus("Task ${task.id}: done")
                     }
                     // Ensure UI sees latest statuses
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+
+                // Installation via run_shell succeeded; treat as completion
+                if (lastInstallSuccess) {
+                    lastInstallSuccess = false
+                    markTaskDone(task.id)
+                    onStatus("Task ${task.id}: installation complete")
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
@@ -1305,72 +1338,56 @@ class AgentOrchestrator(
                     return if (parts.isNotEmpty()) parts.joinToString(" && ") + " || true" else cmd
                 }
                 command = robustifyPythonPip(command)
-                val output: String
-                val exit: Int
-                if (Settings.agent_use_terminal_session) {
-                    // Use hidden terminal session via SessionService when available
-                    val outHidden = runCatching { HiddenShell.execInHiddenSession(context as? MainActivity, wd, command, timeoutMs) }.getOrElse { it.message ?: it.toString() }
-                    if (!outHidden.contains("Hidden session not available")) {
-                        output = outHidden
-                        exit = 0 // best-effort; hidden session does not provide exit code
-                    } else {
-                        // Fallback to ProcessBuilder
-                        val fallback = runCatching {
-                            val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
-                            if (envObj != null) {
-                                val env = pb.environment()
-                                envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
-                            }
-                            runCatching {
-                                val alpineRoot = deriveAlpineRootFromWorkspace(wd)
-                                if (alpineRoot != null) {
-                                    val env = pb.environment()
-                                    val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
-                                    env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
-                                }
-                            }
-                            val proc = pb.start()
-                            val reader = proc.inputStream.bufferedReader()
-                            val start = System.currentTimeMillis()
-                            val sb = StringBuilder()
-                            while (proc.isAlive) {
-                                while (reader.ready()) sb.append(reader.readLine()).append('\n')
-                                if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
-                                try { Thread.sleep(20) } catch (_: InterruptedException) {}
-                            }
-                            if (proc.isAlive) proc.destroyForcibly()
-                            Pair(sb.toString(), runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 })
-                        }.getOrElse { Pair(it.message ?: it.toString(), -1) }
-                        output = fallback.first
-                        exit = fallback.second
+                // Always run inside the visible main terminal session
+                val mainOut = MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs)
+                var output = mainOut.first
+                var exit = mainOut.second
+                // Heuristic upgrade on failure: try one improved command
+                fun suggestCommandUpgradeHeuristic(cmd: String, out: String): String? {
+                    val lower = out.lowercase()
+                    if (cmd.trim().startsWith("git ") && lower.contains("not a git repository")) {
+                        if (!cmd.contains("git init")) return "git init && ${cmd}"
                     }
-                } else {
-                    val pb = ProcessBuilder("sh", "-c", command).directory(File(wd)).redirectErrorStream(true)
-                    if (envObj != null) {
-                        val env = pb.environment()
-                        envObj.keys().forEach { k -> env[k] = envObj.optString(k) }
+                    if (cmd.contains("git commit") && (lower.contains("please tell me who you are") || lower.contains("user.name") && lower.contains("user.email"))) {
+                        return "git config user.email 'you@example.com' && git config user.name 'You' && ${cmd}"
                     }
-                    // If workspace indicates an Alpine root, prepend its bin dirs to PATH
-                    runCatching {
-                        val alpineRoot = deriveAlpineRootFromWorkspace(wd)
-                        if (alpineRoot != null) {
-                            val env = pb.environment()
-                            val currentPath = env["PATH"] ?: System.getenv("PATH") ?: ""
-                            env["PATH"] = "$alpineRoot/usr/bin:$alpineRoot/bin:" + currentPath
+                    // pip/Flask upgrades
+                    val pipInstall = Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(cmd)
+                    if (pipInstall) {
+                        // Prefer python3 -m pip invocation
+                        if (!cmd.contains("python3 -m pip")) {
+                            return cmd.replaceFirst(Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE), "python3 -m pip install ")
+                        }
+                        // Externally managed env or permission issues -> use venv
+                        if (lower.contains("externally-managed-environment") || lower.contains("permission denied") || lower.contains("not writeable") || lower.contains("is not owned by")) {
+                            val pkgPart = cmd.substringAfter("install ")
+                            return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
+                        }
+                        // pip missing -> try apk install then pip
+                        if (lower.contains("pip: not found") || lower.contains("no module named pip") || lower.contains("command not found: pip")) {
+                            val pkgPart = cmd.substringAfter("install ")
+                            return "(command -v apk >/dev/null 2>&1 && apk update && apk add py3-pip) || true && python3 -m pip install ${pkgPart}"
                         }
                     }
-                    val proc = pb.start()
-                    val reader = proc.inputStream.bufferedReader()
-                    val start = System.currentTimeMillis()
-                    val sb = StringBuilder()
-                    while (proc.isAlive) {
-                        while (reader.ready()) sb.append(reader.readLine()).append('\n')
-                        if (System.currentTimeMillis() - start > timeoutMs) { proc.destroyForcibly(); break }
-                        try { Thread.sleep(20) } catch (_: InterruptedException) {}
+                    return null
+                }
+                if (exit != 0) {
+                    val upgraded = suggestCommandUpgradeHeuristic(command, output)
+                    if (upgraded != null) {
+                        val retry = MainShell.execInMainSession(context as? MainActivity, wd, upgraded, timeoutMs)
+                        val combined = StringBuilder()
+                        combined.append(output)
+                        combined.append("\n----- retry: ").append(upgraded).append(" -----\n")
+                        combined.append(retry.first)
+                        output = combined.toString()
+                        exit = retry.second
+                        if (exit == 0 && isInstallCommand(upgraded)) {
+                            lastInstallSuccess = true
+                        }
                     }
-                    if (proc.isAlive) proc.destroyForcibly()
-                    exit = runCatching { proc.waitFor(100, java.util.concurrent.TimeUnit.MILLISECONDS); proc.exitValue() }.getOrElse { -1 }
-                    output = sb.toString()
+                }
+                if (exit == 0 && isInstallCommand(command)) {
+                    lastInstallSuccess = true
                 }
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
@@ -1440,8 +1457,10 @@ class AgentOrchestrator(
             "list_dir_recursive" -> {
                 val raw = call.args.optString("path")
                 val path = if (raw.isBlank()) workingDirProvider() else raw
-                val maxDepth = call.args.optInt("max_depth", 3).coerceAtLeast(0)
-                val maxEntries = call.args.optInt("max_entries", 500).coerceAtLeast(1)
+                // Guard: only allow when preflight says ok
+                val allow = shouldAllowRecursiveListing(currentTaskContext)
+                val maxDepth = if (allow) call.args.optInt("max_depth", 3).coerceIn(1, 3) else 0
+                val maxEntries = if (allow) call.args.optInt("max_entries", 300).coerceIn(1, 300) else 1
                 val root = resolvePath(path)
                 val arr = JSONArray()
                 var count = 0
@@ -1455,7 +1474,7 @@ class AgentOrchestrator(
                         if (f.isDirectory) walk(f, depth + 1)
                     }
                 }
-                if (root.exists() && root.isDirectory) walk(root, 0)
+                if (allow && root.exists() && root.isDirectory) walk(root, 0)
                 val out = JSONObject().put("root", root.absolutePath).put("max_depth", maxDepth).put("items", arr).toString()
                 currentRunStats?.dirsListed?.add(root.absolutePath)
                 ToolResult(true, out)
@@ -2547,110 +2566,58 @@ class AgentOrchestrator(
         val ok = runCatching { osRelease.readText().lowercase().contains("id=alpine") }.getOrElse { false }
         return if (ok) root else null
     }
+
+    private fun shouldAllowRecursiveListing(task: Task?): Boolean {
+        val cat = task?.category?.lowercase()?.trim()
+        if (cat != "list_dir_recursive") return false
+        val g = ((task?.description ?: "") + " " + (task?.search?.joinToString(" ") ?: "")).lowercase()
+        val hints = listOf("android", "kotlin", "java", "src", "main", "androidmanifest")
+        return hints.any { g.contains(it) }
+    }
+
+    private fun isInstallCommand(cmd: String): Boolean {
+        val c = cmd.lowercase()
+        return c.contains("apk add") || c.contains("apt-get install") || c.contains("apt install") ||
+                c.contains("dnf install") || c.contains("yum install") ||
+                Regex("\\bpacman\\s+-S(\n|\r| |$)").containsMatchIn(c) ||
+                c.contains("pip install") || c.contains("pip3 install")
+    }
 }
 
-object HiddenShell {
-    fun execInHiddenSession(activity: MainActivity?, wd: String, command: String, timeoutMs: Long): String {
-        if (activity == null || activity.sessionBinder == null) return "Hidden session not available"
-        val binder: SessionService.SessionBinder = activity.sessionBinder!!
+object MainShell {
+    fun execInMainSession(activity: MainActivity?, wd: String, command: String, timeoutMs: Long): Pair<String, Int> {
+        if (activity == null || activity.sessionBinder == null) return Pair("Main session not available", -1)
+        val binder = activity.sessionBinder!!
         val service = binder.getService()
-        // Force Alpine working mode to ensure apk/git and PATH from Alpine are available
-        val workingMode = com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE
-        val sessionId = "agent-bg-" + System.currentTimeMillis()
-
-        // Prefer writing output next to the working directory for proot visibility; fallback to cache
+        val currentId = service.currentSession.value.first
+        val session = binder.getSession(currentId) ?: return Pair("Main session not available", -1)
+        // Prepare output file and sentinel
         val preferredOut = runCatching { File(wd).takeIf { it.exists() && it.isDirectory && it.canWrite() } }.getOrNull()
-        val outFile = runCatching { File(preferredOut ?: activity.cacheDir, ".${sessionId}.out") }.getOrNull() ?: File(activity.cacheDir, ".${sessionId}.out")
-        runCatching { if (outFile.exists()) outFile.delete() }.getOrElse { }
+        val outFile = runCatching { File(preferredOut ?: activity.cacheDir, ".main-${System.currentTimeMillis()}.out") }.getOrNull()
+            ?: File(activity.cacheDir, ".main-${System.currentTimeMillis()}.out")
+        runCatching { if (outFile.exists()) outFile.delete() }
         val outPath = outFile.absolutePath.replace("'", "'\\''")
-        val sentinel = "__AGENT_DONE_${System.currentTimeMillis()}__"
-        val extraEnv = arrayOf("XPWD=$wd")
-
-        // Minimal client
-        val client = object : TerminalSessionClient {
-            override fun onTextChanged(changedSession: TerminalSession) {}
-            override fun onTitleChanged(changedSession: TerminalSession) {}
-            override fun onSessionFinished(finishedSession: TerminalSession) {}
-            override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
-            override fun onPasteTextFromClipboard(session: TerminalSession) {}
-            override fun onBell(session: TerminalSession) {}
-            override fun onColorsChanged(session: TerminalSession) {}
-            override fun onTerminalCursorStateChange(state: Boolean) {}
-            override fun getTerminalCursorStyle(): Int = com.termux.terminal.TerminalEmulator.DEFAULT_TERMINAL_CURSOR_STYLE
-            override fun logError(tag: String?, message: String?) {}
-            override fun logWarn(tag: String?, message: String?) {}
-            override fun logInfo(tag: String?, message: String?) {}
-            override fun logDebug(tag: String?, message: String?) {}
-            override fun logVerbose(tag: String?, message: String?) {}
-            override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
-            override fun logStackTrace(tag: String?, e: Exception?) {}
+        val sentinel = "__MAIN_DONE_${System.currentTimeMillis()}__"
+        val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; code=${'$'}?; printf '%s\\n' '$sentinel' >> '$outPath'; printf 'EXIT_CODE=%s\\n' ${'$'}code >> '$outPath'\n"
+        try {
+            session.write(cmdLine)
+        } catch (e: Exception) {
+            return Pair("write failed: ${e.message}", -1)
         }
-
-        // Create session on main thread
-        val createLatch = java.util.concurrent.CountDownLatch(1)
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        var scheduledOk = false
-        mainHandler.post {
-            try {
-                val session = try {
-                    binder.createHiddenSession(sessionId, client, activity, workingMode, extraEnv)
-                } catch (_: Throwable) {
-                    binder.createHiddenSession(sessionId, client, activity, workingMode)
-                }
-                val cmdLine = "cd \"$wd\"; umask 022; ( $command ) > '$outPath' 2>&1; echo $sentinel >> '$outPath'\n"
-                // Delay writes so proot + login shell can initialize and attach to the pty
-                mainHandler.postDelayed({
-                    runCatching { session.write(cmdLine) }
-                }, 800)
-                mainHandler.postDelayed({
-                    runCatching {
-                        if (!outFile.exists() || runCatching { outFile.readText() }.getOrElse { "" }.contains(sentinel).not()) {
-                            session.write(cmdLine)
-                        }
-                    }
-                }, 1600)
-                scheduledOk = true
-            } catch (e: Exception) {
-                runCatching {
-                    outFile.parentFile?.mkdirs()
-                    outFile.writeText("Hidden session error: ${e.message ?: e.toString()}\n")
-                    outFile.appendText(sentinel)
-                }
-            } finally {
-                createLatch.countDown()
-            }
-        }
-        createLatch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+        Log.d("MainShell", "wrote to main session id=${currentId} out=$outPath")
         val start = System.currentTimeMillis()
-
-        // Poll the output file until sentinel appears or timeout
-        var content: String = ""
-        var sawSentinel = false
+        var content = ""
+        var saw = false
         while (System.currentTimeMillis() - start < timeoutMs) {
             if (outFile.exists()) {
                 content = runCatching { outFile.readText() }.getOrElse { "" }
-                if (content.contains(sentinel)) { sawSentinel = true; break }
+                if (content.contains(sentinel)) { saw = true; break }
             }
             try { Thread.sleep(100) } catch (_: InterruptedException) {}
         }
-
-        // Terminate session on main thread (best-effort)
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            try { binder.terminateHiddenSession(sessionId) } catch (_: Exception) {}
-        }
-
-        // Clean and return
-        if (content.isBlank() && outFile.exists()) {
-            content = runCatching { outFile.readText() }.getOrElse { "" }
-        }
-        content = content.replace(sentinel, "").trim()
-        if (!sawSentinel && scheduledOk) {
-            content = (if (content.isBlank()) "" else content + "\n") + "[hidden session timeout before sentinel]"
-            if (!outFile.exists()) {
-                content += "\n[out file missing: $outPath]"
-            }
-        }
+        val exit = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(content)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: (if (saw) 0 else -1)
         runCatching { outFile.delete() }
-        return content
+        Log.d("MainShell", "done exit=${exit} bytes=${content.length}")
+        return Pair(content, exit)
     }
 }

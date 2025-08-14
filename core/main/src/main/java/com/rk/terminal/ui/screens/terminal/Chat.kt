@@ -65,6 +65,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.platform.LocalFocusManager
 import com.rk.settings.Settings
+import androidx.compose.foundation.layout.PaddingValues
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -146,6 +147,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val activePlan = remember(currentChatId.value) { mutableStateOf<AgentOrchestrator.Plan?>(null) }
     val isPlanning = remember { mutableStateOf(false) }
     var autoRun by remember { mutableStateOf(false) }
+    var searchAssist by remember { mutableStateOf(Settings.helper_agent_enabled || Settings.researcher_agent_enabled) }
 
     // Single agent instance per chat session id
     val agent = remember(currentChatId.value) {
@@ -229,11 +231,13 @@ fun ChatView(mainActivityActivity: MainActivity) {
             try {
                 val pathExport = if (!gitPath.isNullOrBlank()) "export PATH=\"$gitPath:\$PATH\"; " else ""
                 val cmd = pathExport + command
-                val out = HiddenShell.execInHiddenSession(mainActivityActivity, path, cmd, 60_000L)
-                val finalOut = if (out.isBlank()) "(no output)" else out
-                launch(Dispatchers.Main) { onDone(0, finalOut) }
+                val (out, exit) = MainShell.execInMainSession(mainActivityActivity, path, cmd, 60_000L)
+                val body = out.lineSequence().filter { !it.startsWith("EXIT_CODE=") }.joinToString("\n").trim()
+                val finalOut = if (body.isBlank()) "(no output)" else body
+                launch(Dispatchers.Main) { onDone(exit, finalOut.ifBlank { "exit=$exit" }) }
             } catch (e: Exception) {
-                launch(Dispatchers.Main) { onDone(-1, e.message ?: e.toString()) }
+                val msg = (e.message ?: e.toString())
+                launch(Dispatchers.Main) { onDone(-1, "error: $msg") }
             }
         }
     }
@@ -263,7 +267,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         focusManager.clearFocus(force = true)
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
         // Tabs
         TabRow(selectedTabIndex = selectedTab) {
             Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Chat") })
@@ -314,7 +318,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 val cmd = "$gitBin --version"
                                 appendGitLog("$ $cmd")
                                 runGitCommand(gitProjectPath.value, cmd) { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
-                            }) { Text("Test Git") }
+                            }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Text("Test Git") }
                         }
                         OutlinedTextField(
                             value = gitCommitMsg.value,
@@ -329,14 +333,14 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                 val path = gitProjectPath.value
                                 appendGitLog("$ $gitBin init")
                                 runGitCommand(path, "$gitBin init") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
-                            }) { Text("Init Repo") }
+                            }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Text("Init Repo") }
                             Button(onClick = {
                                 sanitizeGitSettings()
                                 val path = gitProjectPath.value
                                 val msg = gitCommitMsg.value.ifBlank { "save" }
                                 appendGitLog("$ $gitBin add . && $gitBin commit -m \"$msg\"")
                                 runGitCommand(path, "$gitBin add . && $gitBin commit -m \"$msg\"") { code, out -> appendGitLog(out.ifBlank { "exit=$code" }) }
-                            }) { Text("Save Version") }
+                            }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Text("Save Version") }
                         }
                     }
                 }
@@ -399,7 +403,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
 
         LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp).navigationBarsPadding().imePadding(),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             reverseLayout = false,
             state = listState
@@ -477,7 +481,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                         scope.launch(Dispatchers.Main) { postStatus("Agent error: ${e.message}"); saveHistory() }
                                     }
                                 }
-                            }) { Text(if (st == "pending") "Run" else "Re-run") }
+                            }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Text(if (st == "pending") "Run" else "Re-run") }
                         }
                     }
                 }
@@ -486,7 +490,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
         // Row 1: Chat session selector + Input + Send
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).navigationBarsPadding().imePadding(),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -626,10 +630,19 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
         // Row 2: Agent controls
         Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp).navigationBarsPadding().imePadding(),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            AssistChip(
+                onClick = {
+                    searchAssist = !searchAssist
+                    Settings.helper_agent_enabled = searchAssist
+                    Settings.researcher_agent_enabled = searchAssist
+                    postStatus("Search assist ${if (searchAssist) "enabled" else "disabled"}.")
+                },
+                label = { Text(if (searchAssist) "Search: ON" else "Search: OFF") }
+            )
             Button(
                 onClick = {
                     val prompt = input.trim()
@@ -657,7 +670,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         }
                     }
                 },
-                enabled = input.isNotBlank() && !isPlanning.value
+                enabled = input.isNotBlank() && !isPlanning.value,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) { Text("Think") }
 
             Button(
@@ -685,7 +699,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         }
                     }
                 },
-                enabled = input.isNotBlank() && !isPlanning.value
+                enabled = input.isNotBlank() && !isPlanning.value,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) { Text("Plan") }
 
             Button(
@@ -715,7 +730,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         }
                     }
                 },
-                enabled = canProceed
+                enabled = canProceed,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) { Text("Proceed") }
 
             Button(
@@ -737,7 +753,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         }
                     }
                 },
-                enabled = hasPlan
+                enabled = hasPlan,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) { Text("Update Plan") }
         }
 
