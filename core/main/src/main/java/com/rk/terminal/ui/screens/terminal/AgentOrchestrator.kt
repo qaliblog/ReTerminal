@@ -1328,9 +1328,16 @@ class AgentOrchestrator(
                         exit = fb.second
                     }
                 } else {
-                    val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
-                    output = fb.first
-                    exit = fb.second
+                    // Prefer running inside the visible main terminal session if available
+                    val mainOut = runCatching { MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs) }.getOrNull()
+                    if (mainOut != null && !mainOut.first.contains("Main session not available")) {
+                        output = mainOut.first
+                        exit = mainOut.second
+                    } else {
+                        val fb = runCommandWithProcessBuilder(command, wd, envObj, timeoutMs)
+                        output = fb.first
+                        exit = fb.second
+                    }
                 }
                 val obs = output.ifBlank { null }
                 val payload = JSONObject()
@@ -2641,5 +2648,40 @@ object HiddenShell {
         }
         runCatching { outFile.delete() }
         return content
+    }
+}
+
+object MainShell {
+    fun execInMainSession(activity: MainActivity?, wd: String, command: String, timeoutMs: Long): Pair<String, Int> {
+        if (activity == null || activity.sessionBinder == null) return Pair("Main session not available", -1)
+        val binder = activity.sessionBinder!!
+        val service = binder.getService()
+        val currentId = service.currentSession.value.first
+        val session = service.getSession(currentId) ?: return Pair("Main session not available", -1)
+        // Prepare output file and sentinel
+        val preferredOut = runCatching { File(wd).takeIf { it.exists() && it.isDirectory && it.canWrite() } }.getOrNull()
+        val outFile = runCatching { File(preferredOut ?: activity.cacheDir, ".main-${System.currentTimeMillis()}.out") }.getOrNull()
+            ?: File(activity.cacheDir, ".main-${System.currentTimeMillis()}.out")
+        runCatching { if (outFile.exists()) outFile.delete() }
+        val outPath = outFile.absolutePath.replace("'", "'\\''")
+        val sentinel = "__MAIN_DONE_${System.currentTimeMillis()}__"
+        // Build command line to execute in the visible terminal session
+        val cmdLine = "cd \"$wd\"; umask 022; ( $command ); code=$?; printf '%s\\n' ${sentinel} >> '$outPath'; printf 'EXIT_CODE=%s\\n' $code >> '$outPath'\n"
+        // Write to the session PTY
+        runCatching { session.write(cmdLine) }.onFailure { return Pair("write failed: ${it.message}", -1) }
+        // Poll
+        val start = System.currentTimeMillis()
+        var content = ""
+        var saw = false
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            if (outFile.exists()) {
+                content = runCatching { outFile.readText() }.getOrElse { "" }
+                if (content.contains(sentinel)) { saw = true; break }
+            }
+            try { Thread.sleep(100) } catch (_: InterruptedException) {}
+        }
+        val exit = Regex("(?m)^EXIT_CODE=(\\-?\\d+)").find(content)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: (if (saw) 0 else -1)
+        runCatching { outFile.delete() }
+        return Pair(content, exit)
     }
 }
