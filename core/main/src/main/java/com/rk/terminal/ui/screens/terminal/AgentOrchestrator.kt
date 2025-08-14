@@ -933,9 +933,10 @@ class AgentOrchestrator(
                 }
             }
             // Writer agent may refine write tool selections for modifying actions
-            val effectiveToolCall = if (isModifyingTool(toolCall.type) && Settings.writer_agent_enabled) {
-                runCatching { writerSuggestTool(plan.goal, task, toolCall) }.getOrNull() ?: toolCall
-            } else toolCall
+            val coerced = coerceToolCallForTaskCategory(task, toolCall)
+            val effectiveToolCall = if (isModifyingTool(coerced.type) && Settings.writer_agent_enabled) {
+                runCatching { writerSuggestTool(plan.goal, task, coerced) }.getOrNull() ?: coerced
+            } else coerced
             val result = runCatching { executeToolCall(effectiveToolCall) }.getOrElse { e ->
                 val err = e.message ?: e.toString()
                 observations[task.id] = "error: ${err}"
@@ -2370,5 +2371,31 @@ class AgentOrchestrator(
         sugg.put("ts", System.currentTimeMillis())
         arr.put(sugg)
         writerToolsFile.writeText(root.toString(2))
+    }
+
+    private fun coerceToolCallForTaskCategory(task: Task, proposed: ToolCall): ToolCall {
+        val wd = workingDirProvider()
+        val cat = (task.category ?: "").lowercase()
+        return when (cat) {
+            "list_dir" -> {
+                val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
+                val t = proposed.type.lowercase().trim()
+                if (t == "list_dir" || t == "listdir" || t == "ls" || t == "dir") proposed
+                else ToolCall("list_dir", JSONObject().put("path", target))
+            }
+            "read_file" -> {
+                // If the tool isn't a read*, coerce to stat first to avoid failure
+                val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
+                val t = proposed.type.lowercase().trim()
+                if (t.startsWith("read_")) proposed else ToolCall("stat_file", JSONObject().put("path", target))
+            }
+            "grep" -> {
+                val target = task.targets?.firstOrNull()?.takeIf { it.isNotBlank() } ?: wd
+                val pattern = task.search?.firstOrNull()?.ifBlank { null } ?: "."
+                val t = proposed.type.lowercase().trim()
+                if (t == "grep") proposed else ToolCall("grep", JSONObject().put("path", target).put("pattern", pattern).put("max_results", 200))
+            }
+            else -> proposed
+        }
     }
 }
