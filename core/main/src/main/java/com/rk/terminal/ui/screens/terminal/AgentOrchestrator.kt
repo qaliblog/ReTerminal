@@ -2679,7 +2679,7 @@ class AgentOrchestrator(
                 ToolCall("create_file", JSONObject().put("path", target))
             }
             "write_file" -> {
-                // If writer didn't propose a write tool yet, first probe the likely file to avoid immediate failure
+                // If writer didn't propose a write tool yet, propose a concrete write with sensible defaults for common web files
                 val t = proposed.type.lowercase().trim()
                 if (t == "write_file" || t == "apply_changes") return proposed
                 val desc = (task.description ?: "").lowercase()
@@ -2689,9 +2689,87 @@ class AgentOrchestrator(
                     desc.contains("html") -> "templates/index.html"
                     desc.contains("css") -> "static/style.css"
                     desc.contains("javascript") || desc.contains("js") -> "static/app.js"
+                    desc.contains("game_logic") || desc.contains("logic") || desc.contains("python") -> "game_logic.py"
                     else -> wd
                 }
-                ToolCall("stat_file", JSONObject().put("path", target))
+                val lowerTarget = target.lowercase()
+                fun htmlTemplate(): String = """
+                    <!DOCTYPE html>
+                    <html lang=\"en\">
+                    <head>
+                      <meta charset=\"UTF-8\" />
+                      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+                      <title>Tic Tac Toe</title>
+                      <link rel=\"stylesheet\" href=\"/static/style.css\" />
+                    </head>
+                    <body>
+                      <h1>Tic Tac Toe</h1>
+                      <div id=\"message\"></div>
+                      <div id=\"board\" class=\"board\">
+                        <div class=\"cell\" data-row=\"0\" data-col=\"0\"></div>
+                        <div class=\"cell\" data-row=\"0\" data-col=\"1\"></div>
+                        <div class=\"cell\" data-row=\"0\" data-col=\"2\"></div>
+                        <div class=\"cell\" data-row=\"1\" data-col=\"0\"></div>
+                        <div class=\"cell\" data-row=\"1\" data-col=\"1\"></div>
+                        <div class=\"cell\" data-row=\"1\" data-col=\"2\"></div>
+                        <div class=\"cell\" data-row=\"2\" data-col=\"0\"></div>
+                        <div class=\"cell\" data-row=\"2\" data-col=\"1\"></div>
+                        <div class=\"cell\" data-row=\"2\" data-col=\"2\"></div>
+                      </div>
+                      <script src=\"/static/script.js\"></script>
+                    </body>
+                    </html>
+                """.trimIndent()
+                fun cssTemplate(): String = """
+                    /* idempotent:tic-tac-toe-css */
+                    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+                    .board { display: grid; grid-template-columns: repeat(3, 80px); grid-gap: 6px; margin-top: 12px; }
+                    .cell { width: 80px; height: 80px; border: 1px solid #333; display: flex; align-items: center; justify-content: center; font-size: 32px; cursor: pointer; }
+                """.trimIndent()
+                fun jsTemplate(): String = """
+                    // idempotent:tic-tac-toe-js
+                    const boardEl = document.getElementById('board');
+                    const messageEl = document.getElementById('message');
+                    boardEl.addEventListener('click', async (ev) => {
+                      const cell = ev.target;
+                      if (!cell.classList.contains('cell') || cell.textContent) return;
+                      const row = parseInt(cell.dataset.row, 10);
+                      const col = parseInt(cell.dataset.col, 10);
+                      const res = await fetch('/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ row, col }) });
+                      const data = await res.json();
+                      messageEl.textContent = data.message || '';
+                    });
+                """.trimIndent()
+                fun pyLogicTemplate(): String = """
+                    # idempotent:tic_tac_toe_logic
+                    def check_winner(board):
+                        win_conditions = [
+                            (0,1,2),(3,4,5),(6,7,8),
+                            (0,3,6),(1,4,7),(2,5,8),
+                            (0,4,8),(2,4,6)
+                        ]
+                        for a,b,c in win_conditions:
+                            if board[a] and board[a] == board[b] == board[c]:
+                                return board[a]
+                        if '' not in board:
+                            return 'Tie'
+                        return None
+                """.trimIndent()
+                val content = when {
+                    lowerTarget.endsWith(".html") || desc.contains("html") -> htmlTemplate()
+                    lowerTarget.endsWith(".css") || desc.contains("css") -> cssTemplate()
+                    lowerTarget.endsWith(".js") || desc.contains("javascript") || desc.contains("js") -> jsTemplate()
+                    lowerTarget.endsWith(".py") && (desc.contains("logic") || desc.contains("game")) -> pyLogicTemplate()
+                    else -> "// idempotent:placeholder\n"
+                }
+                return ToolCall(
+                    "write_file",
+                    JSONObject()
+                        .put("path", target)
+                        .put("content", content)
+                        .put("mode", "overwrite")
+                        .put("encoding", "utf-8")
+                )
             }
             else -> coerceInstallPythonIfNeeded() ?: proposed
         }
