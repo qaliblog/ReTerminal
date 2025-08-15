@@ -2906,7 +2906,9 @@ if (exit != 0) {
 					// Handle app.py modifications - preserve existing game logic
 					(derived.contains(".py") && desc.contains("modify")) || 
 					(derived.contains(".py") && desc.contains("update")) ||
-					(derived.contains(".py") && desc.contains("change")) -> {
+					(derived.contains(".py") && desc.contains("change")) ||
+					(derived.contains(".py") && desc.contains("color")) ||
+					(derived.contains(".py") && desc.contains("colorful")) -> {
 						// Read existing app.py content and preserve it
 						val appFile = File(workingDirProvider(), "app.py")
 						val webappAppFile = File(workingDirProvider(), "webapp/app.py")
@@ -2933,7 +2935,8 @@ if __name__ == '__main__':
 					(derived.contains(".js") && desc.contains("modify")) ||
 					(derived.contains(".js") && desc.contains("update")) ||
 					(derived.contains(".js") && desc.contains("change")) ||
-					(derived.contains(".js") && desc.contains("color")) -> {
+					(derived.contains(".js") && desc.contains("color")) ||
+					(derived.contains(".js") && desc.contains("colorful")) -> {
 						// Read existing script.js content and preserve it
 						val scriptFile = File(workingDirProvider(), "static/script.js")
 						val webappScriptFile = File(workingDirProvider(), "webapp/static/script.js")
@@ -2946,11 +2949,37 @@ if __name__ == '__main__':
 							}
 						}
 					}
+					// Handle CSS modifications - preserve existing content
+					(derived.contains(".css") && desc.contains("modify")) ||
+					(derived.contains(".css") && desc.contains("update")) ||
+					(derived.contains(".css") && desc.contains("change")) ||
+					(derived.contains(".css") && desc.contains("color")) ||
+					(derived.contains(".css") && desc.contains("colorful")) -> {
+						// Read existing CSS content and preserve it
+						val cssFile = File(workingDirProvider(), "static/style.css")
+						val webappCssFile = File(workingDirProvider(), "webapp/static/style.css")
+						when {
+							cssFile.exists() -> cssFile.readText()
+							webappCssFile.exists() -> webappCssFile.readText()
+							else -> {
+								// Fallback to basic CSS if file doesn't exist
+								"""/* Basic CSS styles */
+body {
+    margin: 0;
+    padding: 0;
+    font-family: Arial, sans-serif;
+    background-color: #222;
+    color: white;
+}"""
+							}
+						}
+					}
 					// Handle HTML modifications - preserve existing content
 					(derived.contains(".html") && desc.contains("modify")) ||
 					(derived.contains(".html") && desc.contains("update")) ||
 					(derived.contains(".html") && desc.contains("change")) ||
-					(derived.contains(".html") && desc.contains("color")) -> {
+					(derived.contains(".html") && desc.contains("color")) ||
+					(derived.contains(".html") && desc.contains("colorful")) -> {
 						// Read existing HTML content and preserve it
 						val htmlFile = File(workingDirProvider(), "templates/index.html")
 						val webappHtmlFile = File(workingDirProvider(), "webapp/templates/index.html")
