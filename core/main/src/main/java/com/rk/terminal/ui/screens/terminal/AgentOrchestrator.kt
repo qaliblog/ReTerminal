@@ -1234,6 +1234,19 @@ class AgentOrchestrator(
                     return true
                 }
                 
+                // For reading empty files when should be writing content (especially for web templates), mark as done
+                val isWebTemplate = isEmptyFile && shouldBeWriting && 
+                                  (task.description.lowercase().contains("html") || 
+                                   task.description.lowercase().contains("template") ||
+                                   task.description.lowercase().contains("interface"))
+                if (isWebTemplate && repeatedObservationCount <= 1) {
+                    onStatus("Task ${task.id}: detected reading empty web template when should be writing content, marking task complete")
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                
                 // For listing directories when should be creating directories, mark as done
                 if (isListDir && shouldBeCreatingDir && repeatedObservationCount <= 1) {
                     onStatus("Task ${task.id}: detected listing directory when should be creating directory, marking task complete")
@@ -1316,11 +1329,11 @@ class AgentOrchestrator(
                 if (effectiveToolCall.type == "run_shell" && obs.contains("externally-managed-environment")) {
                     val cmd = effectiveToolCall.args.optString("command").lowercase()
                     if (cmd.contains("pip") && cmd.contains("install")) {
-                        onStatus("Task ${task.id}: Python package installation attempted (PEP 668 environment detected) - marking as done")
-                        markTaskDone(task.id)
-                        persistPlanWithStatuses(plan)
+                        onStatus("Task ${task.id}: Python package installation attempted (PEP 668 environment detected) - suggesting virtual environment")
+                        // Don't mark as done - let the agent try virtual environment approach
+                        markTaskFailed(task.id, "pep668_externally_managed_env")
                         endRunStatsAndReport(onStatus, verb = "thought")
-                        return true
+                        return false
                     }
                 }
                 
@@ -1488,6 +1501,9 @@ class AgentOrchestrator(
              - Use get_cached_command_output before re-running heavy run_shell.
              - Keep reads targeted; keep modifications idempotent.
              - If user goal involves installing packages, prefer native package manager on Alpine (apk add py3-<pkg>) over pip when PEP 668 is present.
+             - For Python projects, create and activate a virtual environment first: python3 -m venv venv && . venv/bin/activate
+             - When writing Flask applications, include proper game logic, API endpoints, and complete HTML/CSS/JS for interactive features.
+             - For web applications, ensure all template files have complete content, not just empty files.
              - Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
