@@ -2867,6 +2867,16 @@ if (exit != 0) {
 						// Return the static directory path for this call
 						staticDir.absolutePath
 					}
+					// Handle directory creation for templates
+					desc.contains("templates") && desc.contains("directory") -> {
+						// Create both static and templates directories
+						val staticDir = File(workingDirProvider(), "static")
+						val templatesDir = File(workingDirProvider(), "templates")
+						if (!staticDir.exists()) staticDir.mkdirs()
+						if (!templatesDir.exists()) templatesDir.mkdirs()
+						// Return the templates directory path for this call
+						templatesDir.absolutePath
+					}
 					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "static/script.js").absolutePath
 					desc.contains("html") -> File(workingDirProvider(), "templates/index.html").absolutePath
 					desc.contains("css") -> File(workingDirProvider(), "static/style.css").absolutePath
@@ -2879,6 +2889,8 @@ if (exit != 0) {
 				val content = when {
 					// Handle directory creation - create a placeholder file
 					derived.contains("static") && desc.contains("directory") -> "# Static files directory created"
+					// Handle templates directory creation - create a placeholder file
+					derived.contains("templates") && desc.contains("directory") -> "# Templates directory created"
 					// Handle requirements.txt - include Flask-SocketIO if needed
 					derived.contains("requirements.txt") -> {
 						val hasSocketIO = requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time") ||
