@@ -2810,6 +2810,23 @@ if (exit != 0) {
 			"list_dir" -> ToolCall("list_dir", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
 			"read_file" -> ToolCall("read_file", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
 			"grep" -> ToolCall("grep", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()).put("pattern", task.search?.firstOrNull() ?: ".").put("max_results", 200))
+			"make_dir" -> {
+				val desc = (task.description ?: "").lowercase()
+				val suggested = proposed.args.optString("path")
+				val derived = when {
+					suggested.isNotBlank() -> suggested
+					!task.targets.isNullOrEmpty() -> task.targets!!.first()
+					desc.contains("template") || desc.contains("web") || desc.contains("flask") -> {
+						// Create proper Flask directory structure
+						val baseDir = workingDirProvider()
+						File(baseDir, "templates").mkdirs()
+						File(baseDir, "static").mkdirs()
+						File(baseDir, "templates").absolutePath
+					}
+					else -> workingDirProvider()
+				}
+				ToolCall("make_dir", JSONObject().put("path", derived))
+			}
 			"create_file" -> {
 				// For create_file tasks, prefer write_file with content instead of empty files
 				val desc = (task.description ?: "").lowercase()
@@ -3117,9 +3134,16 @@ if __name__ == '__main__':
 					suggested.isNotBlank() -> suggested
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
 					desc.contains("requirements") -> File(workingDirProvider(), "requirements.txt").absolutePath
-					desc.contains("html") -> File(workingDirProvider(), "index.html").absolutePath
-					desc.contains("css") -> File(workingDirProvider(), "style.css").absolutePath
-					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "app.js").absolutePath
+					desc.contains("html") -> {
+						// Check if it's a template file for Flask
+						if (desc.contains("template") || desc.contains("game")) {
+							File(workingDirProvider(), "templates/index.html").absolutePath
+						} else {
+							File(workingDirProvider(), "index.html").absolutePath
+						}
+					}
+					desc.contains("css") -> File(workingDirProvider(), "static/style.css").absolutePath
+					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "static/script.js").absolutePath
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
 				val f = resolvePath(derived)
