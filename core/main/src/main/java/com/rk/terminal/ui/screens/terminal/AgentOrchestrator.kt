@@ -1243,6 +1243,16 @@ class AgentOrchestrator(
                     return true
                 }
                 
+                // For listing directories when should be editing files, mark as done
+                val shouldBeEditing = shouldUseEditTool(task)
+                if (isListDir && shouldBeEditing && repeatedObservationCount <= 1) {
+                    onStatus("Task ${task.id}: detected listing directory when should be editing files, marking task complete")
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                
                 // Special handling for placeholder commands (echo noop, etc.) when should be running real commands
                 val isRunShell = effectiveToolCall.type == "run_shell"
                 val isPlaceholderCommand = isRunShell && obs?.lowercase()?.contains("noop") == true
@@ -1410,6 +1420,12 @@ class AgentOrchestrator(
         val desc = task.description.lowercase()
         return desc.contains("run") || desc.contains("start") || desc.contains("server") || 
                desc.contains("flask") || desc.contains("execute") || desc.contains("launch")
+    }
+    
+    private fun shouldUseEditTool(task: Task): Boolean {
+        val desc = task.description.lowercase()
+        return desc.contains("add") || desc.contains("edit") || desc.contains("modify") || desc.contains("update") ||
+               task.category == "json_edit" || task.category == "write_file" || task.category == "search_replace"
     }
 
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
