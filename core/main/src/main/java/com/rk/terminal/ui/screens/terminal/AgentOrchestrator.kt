@@ -1622,6 +1622,8 @@ class AgentOrchestrator(
              - On Alpine Linux, use 'apk add python3' and then create virtual environment with 'python3 -m venv venv'
              - If pip is not available, use 'python3 -m ensurepip' or install via virtual environment.
              - For package installation failures, try virtual environment approach: python3 -m venv venv && . venv/bin/activate && pip install <package>
+             - CRITICAL: When you see "externally-managed-environment" or "PEP 668" errors, IMMEDIATELY use virtual environment: python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt
+             - ALWAYS create virtual environment BEFORE installing Python packages on Alpine Linux
              - After creating files, always write meaningful content to them using write_file.
              - For Flask applications, write complete server startup commands: python3 app.py or python3 -m flask run
              - Never use placeholder commands like 'echo noop' for real tasks - always execute the actual command.
@@ -2811,7 +2813,18 @@ if (exit != 0) {
 					}
 				}
 			}
-			"run_shell" -> if (proposed.type.isNotBlank()) proposed else ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
+			            			"run_shell" -> {
+                // Special handling for package installation tasks
+                val desc = (task.description ?: "").lowercase()
+                if (desc.contains("install") || desc.contains("dependencies") || desc.contains("packages")) {
+                    // Always use virtual environment for package installation
+                    ToolCall("run_shell", JSONObject().put("command", "python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt").put("timeout_ms", 60000))
+                } else if (proposed.type.isNotBlank()) {
+                    proposed
+                } else {
+                    ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
+                }
+            }
 			else -> if (proposed.type.isNotBlank()) proposed else ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
 		}
 	}
