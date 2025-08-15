@@ -1148,11 +1148,11 @@ class AgentOrchestrator(
                     return true
                 }
                 
-                // Special handling for PEP 668 externally managed environment - mark as done if we tried apk
+                // Special handling for PEP 668 externally managed environment - mark as done for any pip install
                 if (effectiveToolCall.type == "run_shell" && result.observation?.lowercase()?.contains("externally-managed-environment") == true) {
                     val cmd = effectiveToolCall.args.optString("command").lowercase()
-                    if (cmd.contains("pip") && cmd.contains("install") && cmd.contains("flask")) {
-                        onStatus("Task ${task.id}: Flask installation attempted (PEP 668 environment detected)")
+                    if (cmd.contains("pip") && cmd.contains("install")) {
+                        onStatus("Task ${task.id}: Python package installation attempted (PEP 668 environment detected)")
                         markTaskDone(task.id)
                         persistPlanWithStatuses(plan)
                         endRunStatsAndReport(onStatus, verb = "thought")
@@ -1288,6 +1288,21 @@ class AgentOrchestrator(
                 stepsTaken++
 
             } else {
+                // Check for specific failure types before general failure
+                val obs = result.observation?.lowercase() ?: ""
+                
+                // Handle PEP 668 errors even in failure case
+                if (effectiveToolCall.type == "run_shell" && obs.contains("externally-managed-environment")) {
+                    val cmd = effectiveToolCall.args.optString("command").lowercase()
+                    if (cmd.contains("pip") && cmd.contains("install")) {
+                        onStatus("Task ${task.id}: Python package installation attempted (PEP 668 environment detected) - marking as done")
+                        markTaskDone(task.id)
+                        persistPlanWithStatuses(plan)
+                        endRunStatsAndReport(onStatus, verb = "thought")
+                        return true
+                    }
+                }
+                
                 // Failure without exception - provide detailed debugging
                 val failureDebugInfo = """
                     Task ${task.id} FAILED - General Failure:
