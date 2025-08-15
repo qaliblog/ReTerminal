@@ -2879,9 +2879,101 @@ if (exit != 0) {
 						// Return the templates directory path for this call
 						templatesDir.absolutePath
 					}
-					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "static/script.js").absolutePath
-					desc.contains("html") -> File(workingDirProvider(), "templates/index.html").absolutePath
-					desc.contains("css") -> File(workingDirProvider(), "static/style.css").absolutePath
+					desc.contains("javascript") || desc.contains("js") -> {
+						// Dynamic JS path detection - works for any framework
+						val possiblePaths = listOf(
+							File(workingDirProvider(), "static/script.js"),
+							File(workingDirProvider(), "webapp/static/script.js"),
+							File(workingDirProvider(), "src/static/script.js"),
+							File(workingDirProvider(), "public/script.js"),
+							File(workingDirProvider(), "dist/script.js"),
+							File(workingDirProvider(), "build/script.js"),
+							File(workingDirProvider(), "script.js")
+						)
+						
+						val existingPath = possiblePaths.find { it.exists() }
+						when {
+							existingPath != null -> existingPath.absolutePath
+							else -> {
+								val hasStatic = File(workingDirProvider(), "static").exists()
+								val hasWebapp = File(workingDirProvider(), "webapp").exists()
+								val hasSrc = File(workingDirProvider(), "src").exists()
+								val hasPublic = File(workingDirProvider(), "public").exists()
+								
+								when {
+									hasStatic -> File(workingDirProvider(), "static/script.js").absolutePath
+									hasWebapp -> File(workingDirProvider(), "webapp/static/script.js").absolutePath
+									hasSrc -> File(workingDirProvider(), "src/static/script.js").absolutePath
+									hasPublic -> File(workingDirProvider(), "public/script.js").absolutePath
+									else -> File(workingDirProvider(), "script.js").absolutePath
+								}
+							}
+						}
+					}
+					desc.contains("html") -> {
+						// Dynamic HTML path detection - works for any framework or project structure
+						val possiblePaths = listOf(
+							File(workingDirProvider(), "templates/index.html"),
+							File(workingDirProvider(), "webapp/templates/index.html"),
+							File(workingDirProvider(), "src/templates/index.html"),
+							File(workingDirProvider(), "public/index.html"),
+							File(workingDirProvider(), "dist/index.html"),
+							File(workingDirProvider(), "build/index.html"),
+							File(workingDirProvider(), "index.html")
+						)
+						
+						// Find the first existing path or use the most common one
+						val existingPath = possiblePaths.find { it.exists() }
+						when {
+							existingPath != null -> existingPath.absolutePath
+							else -> {
+								// Check project structure to determine the best path
+								val hasTemplates = File(workingDirProvider(), "templates").exists()
+								val hasWebapp = File(workingDirProvider(), "webapp").exists()
+								val hasSrc = File(workingDirProvider(), "src").exists()
+								val hasPublic = File(workingDirProvider(), "public").exists()
+								
+								when {
+									hasTemplates -> File(workingDirProvider(), "templates/index.html").absolutePath
+									hasWebapp -> File(workingDirProvider(), "webapp/templates/index.html").absolutePath
+									hasSrc -> File(workingDirProvider(), "src/templates/index.html").absolutePath
+									hasPublic -> File(workingDirProvider(), "public/index.html").absolutePath
+									else -> File(workingDirProvider(), "index.html").absolutePath
+								}
+							}
+						}
+					}
+					desc.contains("css") -> {
+						// Dynamic CSS path detection - works for any framework
+						val possiblePaths = listOf(
+							File(workingDirProvider(), "static/style.css"),
+							File(workingDirProvider(), "webapp/static/style.css"),
+							File(workingDirProvider(), "src/static/style.css"),
+							File(workingDirProvider(), "public/style.css"),
+							File(workingDirProvider(), "dist/style.css"),
+							File(workingDirProvider(), "build/style.css"),
+							File(workingDirProvider(), "style.css")
+						)
+						
+						val existingPath = possiblePaths.find { it.exists() }
+						when {
+							existingPath != null -> existingPath.absolutePath
+							else -> {
+								val hasStatic = File(workingDirProvider(), "static").exists()
+								val hasWebapp = File(workingDirProvider(), "webapp").exists()
+								val hasSrc = File(workingDirProvider(), "src").exists()
+								val hasPublic = File(workingDirProvider(), "public").exists()
+								
+								when {
+									hasStatic -> File(workingDirProvider(), "static/style.css").absolutePath
+									hasWebapp -> File(workingDirProvider(), "webapp/static/style.css").absolutePath
+									hasSrc -> File(workingDirProvider(), "src/static/style.css").absolutePath
+									hasPublic -> File(workingDirProvider(), "public/style.css").absolutePath
+									else -> File(workingDirProvider(), "style.css").absolutePath
+								}
+							}
+						}
+					}
 					desc.contains("python") || desc.contains("py") -> File(workingDirProvider(), "app.py").absolutePath
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
@@ -2903,12 +2995,8 @@ if (exit != 0) {
 							"Flask==3.1.1\nWerkzeug==3.1.3"
 						}
 					}
-					// Handle app.py modifications - preserve existing game logic
-					(derived.contains(".py") && desc.contains("modify")) || 
-					(derived.contains(".py") && desc.contains("update")) ||
-					(derived.contains(".py") && desc.contains("change")) ||
-					(derived.contains(".py") && desc.contains("color")) ||
-					(derived.contains(".py") && desc.contains("colorful")) -> {
+					// Handle any Python file modifications - preserve existing content
+					derived.contains(".py") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
 						// Read existing app.py content and preserve it
 						val appFile = File(workingDirProvider(), "app.py")
 						val webappAppFile = File(workingDirProvider(), "webapp/app.py")
@@ -2931,12 +3019,8 @@ if __name__ == '__main__':
 							}
 						}
 					}
-					// Handle script.js modifications - preserve existing game logic
-					(derived.contains(".js") && desc.contains("modify")) ||
-					(derived.contains(".js") && desc.contains("update")) ||
-					(derived.contains(".js") && desc.contains("change")) ||
-					(derived.contains(".js") && desc.contains("color")) ||
-					(derived.contains(".js") && desc.contains("colorful")) -> {
+					// Handle any JavaScript file modifications - preserve existing content
+					derived.contains(".js") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
 						// Read existing script.js content and preserve it
 						val scriptFile = File(workingDirProvider(), "static/script.js")
 						val webappScriptFile = File(workingDirProvider(), "webapp/static/script.js")
@@ -2949,12 +3033,8 @@ if __name__ == '__main__':
 							}
 						}
 					}
-					// Handle CSS modifications - preserve existing content
-					(derived.contains(".css") && desc.contains("modify")) ||
-					(derived.contains(".css") && desc.contains("update")) ||
-					(derived.contains(".css") && desc.contains("change")) ||
-					(derived.contains(".css") && desc.contains("color")) ||
-					(derived.contains(".css") && desc.contains("colorful")) -> {
+					// Handle any CSS file modifications - preserve existing content
+					derived.contains(".css") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
 						// Read existing CSS content and preserve it
 						val cssFile = File(workingDirProvider(), "static/style.css")
 						val webappCssFile = File(workingDirProvider(), "webapp/static/style.css")
@@ -2974,12 +3054,8 @@ body {
 							}
 						}
 					}
-					// Handle HTML modifications - preserve existing content
-					(derived.contains(".html") && desc.contains("modify")) ||
-					(derived.contains(".html") && desc.contains("update")) ||
-					(derived.contains(".html") && desc.contains("change")) ||
-					(derived.contains(".html") && desc.contains("color")) ||
-					(derived.contains(".html") && desc.contains("colorful")) -> {
+					// Handle any HTML file modifications - preserve existing content
+					derived.contains(".html") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
 						// Read existing HTML content and preserve it
 						val htmlFile = File(workingDirProvider(), "templates/index.html")
 						val webappHtmlFile = File(workingDirProvider(), "webapp/templates/index.html")
@@ -3001,6 +3077,51 @@ body {
     <div id="score">Score: 0</div>
 </body>
 </html>"""
+							}
+						}
+					}
+					// Handle ANY file modifications - universal preservation logic
+					(derived.contains(".") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit"))) -> {
+						// Universal file preservation - works for any file type and any modification
+						val fileExtension = derived.substringAfterLast(".")
+						val fileName = derived.substringAfterLast("/").substringBeforeLast(".")
+						
+						// Try to find the file in common locations
+						val possiblePaths = listOf(
+							File(workingDirProvider(), derived),
+							File(workingDirProvider(), fileName + "." + fileExtension),
+							File(workingDirProvider(), "static/" + fileName + "." + fileExtension),
+							File(workingDirProvider(), "templates/" + fileName + "." + fileExtension),
+							File(workingDirProvider(), "webapp/" + derived),
+							File(workingDirProvider(), "webapp/static/" + fileName + "." + fileExtension),
+							File(workingDirProvider(), "webapp/templates/" + fileName + "." + fileExtension)
+						)
+						
+						val existingFile = possiblePaths.find { it.exists() }
+						when {
+							existingFile != null -> existingFile.readText()
+							else -> {
+								// Generate appropriate fallback content based on file type
+								when (fileExtension.lowercase()) {
+									"py" -> """# Python file
+# Generated fallback content
+"""
+									"js" -> """// JavaScript file
+// Generated fallback content
+"""
+									"html" -> """<!DOCTYPE html>
+<html>
+<head><title>Generated</title></head>
+<body></body>
+</html>"""
+									"css" -> """/* CSS file */
+/* Generated fallback content */"""
+									"json" -> """{}"""
+									"txt" -> """# Text file
+# Generated fallback content"""
+									else -> """# ${fileExtension.uppercase()} file
+# Generated fallback content"""
+								}
 							}
 						}
 					}
@@ -3691,22 +3812,36 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 						File(projectDir, "requirements.txt").absolutePath
 					}
 					desc.contains("html") -> {
-						// Always use templates/index.html for Flask applications
-						// Check if this is a Flask project by looking at requirements or existing files
-						val requirementsFile = File(workingDirProvider(), "requirements.txt")
-						val appFile = File(workingDirProvider(), "app.py")
-						val webappAppFile = File(workingDirProvider(), "webapp/app.py")
-						val isFlaskProject = requirementsFile.exists() || appFile.exists() || webappAppFile.exists() || desc.contains("template") || desc.contains("game") || desc.contains("flask") || desc.contains("html")
+						// Dynamic HTML path detection - works for any framework or project structure
+						val possiblePaths = listOf(
+							File(workingDirProvider(), "templates/index.html"),
+							File(workingDirProvider(), "webapp/templates/index.html"),
+							File(workingDirProvider(), "src/templates/index.html"),
+							File(workingDirProvider(), "public/index.html"),
+							File(workingDirProvider(), "dist/index.html"),
+							File(workingDirProvider(), "build/index.html"),
+							File(workingDirProvider(), "index.html")
+						)
 						
-						if (isFlaskProject) {
-							// Check if we're in a webapp subdirectory
-							if (webappAppFile.exists()) {
-								File(workingDirProvider(), "webapp/templates/index.html").absolutePath
-							} else {
-								File(workingDirProvider(), "templates/index.html").absolutePath
+						// Find the first existing path or use the most common one
+						val existingPath = possiblePaths.find { it.exists() }
+						when {
+							existingPath != null -> existingPath.absolutePath
+							else -> {
+								// Check project structure to determine the best path
+								val hasTemplates = File(workingDirProvider(), "templates").exists()
+								val hasWebapp = File(workingDirProvider(), "webapp").exists()
+								val hasSrc = File(workingDirProvider(), "src").exists()
+								val hasPublic = File(workingDirProvider(), "public").exists()
+								
+								when {
+									hasTemplates -> File(workingDirProvider(), "templates/index.html").absolutePath
+									hasWebapp -> File(workingDirProvider(), "webapp/templates/index.html").absolutePath
+									hasSrc -> File(workingDirProvider(), "src/templates/index.html").absolutePath
+									hasPublic -> File(workingDirProvider(), "public/index.html").absolutePath
+									else -> File(workingDirProvider(), "index.html").absolutePath
+								}
 							}
-						} else {
-							File(workingDirProvider(), "index.html").absolutePath
 						}
 					}
 					desc.contains("css") -> File(workingDirProvider(), "static/style.css").absolutePath
