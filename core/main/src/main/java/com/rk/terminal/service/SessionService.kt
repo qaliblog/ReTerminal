@@ -46,7 +46,12 @@ class SessionService : Service() {
                 sessionList[id] = workingMode
                 // Initialize File Manager working directory per session
                 val defaultPath = if (workingMode == com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE) {
-                    com.rk.libcommons.alpineDir().absolutePath
+                    // Use a more suitable development directory instead of the root alpine dir
+                    val devDir = File(com.rk.libcommons.alpineDir(), "home/milad/projects")
+                    if (!devDir.exists()) {
+                        devDir.mkdirs()
+                    }
+                    devDir.absolutePath
                 } else {
                     "/sdcard"
                 }

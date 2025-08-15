@@ -1,94 +1,151 @@
-# ReTerminal
-**ReTerminal** is a sleek, Material 3-inspired terminal emulator designed as a modern alternative to the legacy [Jackpal Terminal](https://github.com/jackpal/Android-Terminal-Emulator). Built on [Termux's](https://github.com/termux/termux-app) robust TerminalView
+# 🎹 Piano Tiles Game
 
-Download the latest APK from the [Releases Section](https://github.com/RohitKushvaha01/ReTerminal/releases/latest).
+A beautiful and modern web-based piano tiles game built with Python Flask and HTML5/CSS3/JavaScript.
 
-# Features
-- [x] Basic Terminal
-- [x] Virtual Keys
-- [x] Multiple Sessions
-- [x] Alpine Linux support
+## Features
 
-# Screenshots
-<div>
-  <img src="/fastlane/metadata/android/en-US/images/phoneScreenshots/01.png" width="32%" />
-  <img src="/fastlane/metadata/android/en-US/images/phoneScreenshots/02.jpg" width="32%" />
-  <img src="/fastlane/metadata/android/en-US/images/phoneScreenshots/03.jpg" width="32%" />
-</div>
+- 🎵 **Piano Tiles Gameplay**: Tap falling tiles to play piano notes
+- 📱 **Responsive Design**: Works on desktop and mobile devices
+- 🎨 **Modern UI**: Beautiful gradient backgrounds and smooth animations
+- 🔊 **Sound Effects**: Audio feedback when tapping tiles
+- 📊 **Score Tracking**: Real-time score and lives display
+- 🎮 **Touch Support**: Full touch support for mobile devices
 
-## Community
-> [!TIP]
-Join the reTerminal community to stay updated and engage with other users:
-- [Telegram](https://t.me/reTerminal)
+## How to Play
 
+1. **Objective**: Tap the tiles as they fall from the top of the screen
+2. **Scoring**: Each successful tap earns 10 points
+3. **Lives**: You start with 3 lives. Missing a tile costs 1 life
+4. **Difficulty**: The game speeds up as you progress
+5. **Game Over**: When you lose all lives, the game ends
 
-# FAQ
+## Installation
 
-### **Q: Why do I get a "Permission Denied" error when trying to execute a binary or script?**
-**A:** This happens because ReTerminal runs on the latest Android API, which enforces **W^X restrictions**. Since files in `$PREFIX` or regular storage directories can't be executed directly, you need to use one of the following workarounds:
+### Prerequisites
+
+- Python 3.7 or higher
+- pip (Python package installer)
+
+### Setup
+
+1. **Clone or download the project files**
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Run the application**:
+   ```bash
+   python main.py
+   ```
+
+4. **Open your browser** and navigate to:
+   ```
+   http://localhost:5000
+   ```
+
+## Project Structure
+
+```
+piano-tiles-game/
+├── main.py              # Flask application and game logic
+├── requirements.txt     # Python dependencies
+├── README.md           # This file
+└── templates/
+    └── index.html      # Game UI and frontend logic
+```
+
+## Game Controls
+
+- **Mouse**: Click on tiles to tap them
+- **Touch**: Tap tiles on mobile devices
+- **Keyboard**: Not required (touch/mouse only)
+
+## Technical Details
+
+### Backend (Python/Flask)
+- **Flask**: Web framework for the server
+- **Game Logic**: Python class managing game state
+- **API Endpoints**: RESTful API for game interactions
+
+### Frontend (HTML/CSS/JavaScript)
+- **HTML5**: Semantic markup structure
+- **CSS3**: Modern styling with gradients and animations
+- **JavaScript**: Game loop and user interaction handling
+- **Web Audio API**: Sound effects for tile taps
+
+## API Endpoints
+
+- `GET /` - Main game page
+- `GET /api/game-state` - Get current game state
+- `POST /api/tap` - Handle tile tap (x, y coordinates)
+- `POST /api/reset` - Reset game state
+- `POST /api/update` - Update game state and generate new tiles
+
+## Customization
+
+### Changing Game Speed
+Edit the `speed` variable in the `PianoTilesGame` class in `main.py`:
+```python
+self.speed = 2.0  # Initial speed in seconds
+```
+
+### Modifying Visual Style
+Edit the CSS in `templates/index.html` to customize:
+- Colors and gradients
+- Tile appearance
+- Animations
+- Layout and sizing
+
+### Adding Sound Effects
+Modify the `playTapSound()` method in the JavaScript to add different audio effects.
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Port already in use**:
+   - Change the port in `main.py`: `app.run(debug=True, host='0.0.0.0', port=5001)`
+
+2. **Dependencies not found**:
+   - Ensure you're using the correct Python environment
+   - Run: `pip install -r requirements.txt`
+
+3. **Game not responding**:
+   - Check browser console for JavaScript errors
+   - Ensure Flask server is running
+
+### Browser Compatibility
+
+- **Chrome/Edge**: Full support
+- **Firefox**: Full support
+- **Safari**: Full support
+- **Mobile browsers**: Full touch support
+
+## Development
+
+### Running in Development Mode
+The Flask app runs in debug mode by default, which provides:
+- Auto-reload on code changes
+- Detailed error messages
+- Debug console
+
+### Adding Features
+1. **New Game Modes**: Extend the `PianoTilesGame` class
+2. **Power-ups**: Add new tile types and effects
+3. **Multiplayer**: Implement WebSocket support
+4. **Leaderboards**: Add database integration
+
+## License
+
+This project is open source and available under the MIT License.
+
+## Contributing
+
+Feel free to submit issues, feature requests, or pull requests to improve the game!
 
 ---
 
-### **Option 1: Use the Dynamic Linker (for Binaries)**
-If you're trying to run a binary (not a script), you can use the dynamic linker to execute it:
-
-```bash
-$LINKER /absolute/path/to/binary
-```
-
-✅ **Note:** This method won't work for **statically linked binaries** (binaries without external dependencies).
-
----
-
-### **Option 2: Use `sh` for Scripts**
-If you're trying to execute a shell script, simply use `sh` to run it:
-
-```bash
-sh /path/to/script
-```
-
-This bypasses the need for execute permissions since the script is interpreted by the shell.
-
----
-
-### **Option 3: Use Shizuku for Full Shell Access (Recommended)**
-If you have **Shizuku** installed, you can gain shell access to `/data/local/tmp`, which has executable permissions. This is the easiest way to run binaries without restrictions.
-
-## Compile an MLC model module (.so) for Android arm64
-
-If your selected model folder is missing the compiled module (e.g. `model-...-cpu.so`), build it locally and copy to the device.
-
-1) Run the helper script:
-
-```bash
-scripts/mlc_compile_android.sh \
-  --model-id Qwen/Qwen2.5-Coder-7B-Instruct \
-  --quant q4f16_1 \
-  --device cpu \
-  --out dist/Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC
-```
-
-- For Vulkan GPUs, pass `--vulkan` or `--device vulkan`.
-- Outputs `model-...-(cpu|vulkan).so` under the `--out` directory.
-
-2) Push to device and place in your model folder root:
-
-```bash
-adb push dist/Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC/*.so \
-  /sdcard/reterminalAssets/Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC/
-```
-
-3) Ensure TVM runtime is present in the same folder tree:
-
-```
-/sdcard/reterminalAssets/<YourModel>/libs/arm64-v8a/libtvm4j_runtime_packed.so
-```
-
-4) Select the model folder in app settings and start a chat.
-
-The app will detect the backend (vulkan/cpu) from the module filename and run the model.
-
-## Found this app useful? :heart:
-Support it by giving a star :star: <br>
-Also, **__[follow](https://github.com/Rohitkushvaha01)__** me for my next creations!
+**Enjoy playing Piano Tiles!** 🎹✨
 

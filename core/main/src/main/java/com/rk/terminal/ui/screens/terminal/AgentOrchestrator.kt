@@ -611,8 +611,18 @@ class AgentOrchestrator(
             // Fallback minimal discovery plan to avoid zero-task output
             val fallback = mutableListOf<Task>()
             fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
-            fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
-            fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+            
+            // Check if workspace is empty and suggest file creation instead of recursive listing
+            val wd = File(wdPath)
+            if (wd.exists() && wd.isDirectory && wd.listFiles()?.isEmpty() != false) {
+                // Empty workspace - suggest creating files instead of recursive listing
+                fallback.add(Task("t2", "Create initial project structure", "create_file", listOf("README.md"), null, null))
+                fallback.add(Task("t3", "Create main application file", "create_file", listOf("main.py"), null, null))
+            } else {
+                // Non-empty workspace - do normal discovery
+                fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
+                fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+            }
             tasks.addAll(fallback)
         }
         val plan = Plan(goal, tasks)
@@ -992,6 +1002,8 @@ class AgentOrchestrator(
         val maxSteps = 5
         var lastObservation: String? = null
         var lastToolType: String? = null
+        var repeatedObservationCount = 0
+        val maxRepeatedObservations = 3
         while (stepsTaken < maxSteps) {
             val toolCall = requestSingleToolCall(plan.goal, task)
             if (toolCall == null) {
@@ -1121,27 +1133,51 @@ class AgentOrchestrator(
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
                 if (lastToolType == effectiveToolCall.type && obs != null && lastObservation == obs) {
-                    markTaskFailed(task.id, "repeated_non_modifying_observation")
-                    onStatus("Task ${task.id}: repeated observation; revising plan…")
-                    val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
-                    if (revised != null) {
-                        persistPlanWithStatuses(revised)
-                        endRunStatsAndReport(onStatus, verb = "thought")
-                        return true
+                    repeatedObservationCount++
+                    
+                    // Special handling for empty directory listings - don't fail immediately
+                    val isListDir = effectiveToolCall.type == "list_dir" || effectiveToolCall.type == "list_dir_recursive"
+                    val isEmptyDir = isListDir && obs.contains("\"empty\":true")
+                    
+                    if (isEmptyDir && repeatedObservationCount <= 2) {
+                        // Allow a couple of attempts for empty directories before failing
+                        onStatus("Task ${task.id}: empty directory detected (attempt ${repeatedObservationCount}/2), continuing...")
+                        lastObservation = obs
+                        lastToolType = effectiveToolCall.type
+                        stepsTaken++
+                        continue
                     }
-                    onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                    val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
-                    when (decision) {
-                        "mini_plan" -> {
-                            val ok = executeMiniPlanForTask(plan, task, onStatus)
-                            if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                    
+                    if (repeatedObservationCount >= maxRepeatedObservations) {
+                        markTaskFailed(task.id, "repeated_non_modifying_observation")
+                        onStatus("Task ${task.id}: too many repeated observations; revising plan…")
+                        val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
+                        if (revised != null) {
+                            persistPlanWithStatuses(revised)
+                            endRunStatsAndReport(onStatus, verb = "thought")
+                            return true
                         }
-                        "revise_plan" -> {
-                            val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
-                            if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
+                        onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
+                        val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
+                        when (decision) {
+                            "mini_plan" -> {
+                                val ok = executeMiniPlanForTask(plan, task, onStatus)
+                                if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
+                            }
+                            "revise_plan" -> {
+                                val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
+                                if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
+                            }
+                            "retry" -> { stepsTaken++; continue }
+                            else -> { return false }
                         }
-                        "retry" -> { stepsTaken++; continue }
-                        else -> { return false }
+                    } else {
+                        // Allow a few more attempts before failing
+                        onStatus("Task ${task.id}: repeated observation (${repeatedObservationCount}/${maxRepeatedObservations}), continuing...")
+                        lastObservation = obs
+                        lastToolType = effectiveToolCall.type
+                        stepsTaken++
+                        continue
                     }
                 }
                 lastObservation = result.observation ?: lastObservation
@@ -1577,7 +1613,14 @@ if (exit != 0) {
                 }
                 val listing = JSONObject().put("path", d.absolutePath).put("items", arr).toString()
                 currentRunStats?.dirsListed?.add(d.absolutePath)
-                ToolResult(true, listing)
+                
+                // Add special handling for empty directories to prevent loops
+                if (items.isEmpty() && d.exists() && d.isDirectory) {
+                    val emptyListing = JSONObject().put("path", d.absolutePath).put("items", arr).put("empty", true).put("message", "Directory is empty - ready for new files").toString()
+                    ToolResult(true, emptyListing)
+                } else {
+                    ToolResult(true, listing)
+                }
             }
             "list_dir_recursive" -> {
                 val raw = call.args.optString("path")
