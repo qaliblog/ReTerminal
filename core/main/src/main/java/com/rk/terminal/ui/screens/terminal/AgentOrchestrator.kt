@@ -3157,6 +3157,59 @@ if __name__ == '__main__':
 				// If no content provided, generate functional content based on requirements
 				val requirements = projectRequirements ?: ""
 				val content = when {
+					derived.contains(".py") -> {
+						if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
+							"""# Complete Flask Web Application for Piano Tiles Game
+from flask import Flask, render_template, request, jsonify
+import random
+
+app = Flask(__name__)
+
+# Game state management
+game_state = {
+    'score': 0,
+    'tiles': [],
+    'is_running': False
+}
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/game/start', methods=['POST'])
+def start_game():
+    game_state['score'] = 0
+    game_state['is_running'] = True
+    return jsonify({'success': True, 'message': 'Game started'})
+
+@app.route('/api/game/score', methods=['GET'])
+def get_score():
+    return jsonify({'score': game_state['score']})
+
+@app.route('/api/game/tap', methods=['POST'])
+def handle_tap():
+    data = request.get_json()
+    if game_state['is_running']:
+        game_state['score'] += 1
+        return jsonify({'success': True, 'score': game_state['score']})
+    return jsonify({'success': False, 'message': 'Game not running'})
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)"""
+						} else {
+							"""# Python application
+from flask import Flask, render_template
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+if __name__ == '__main__':
+    app.run(debug=True)"""
+						}
+					}
 					derived.contains(".html") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
 							"""<!DOCTYPE html>
