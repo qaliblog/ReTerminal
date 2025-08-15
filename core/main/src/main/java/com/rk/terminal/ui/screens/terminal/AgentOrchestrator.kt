@@ -1292,6 +1292,29 @@ class AgentOrchestrator(
                     return true
                 }
 
+                // If this is a development server task that started successfully, complete the task
+                val isDevServerTask = effectiveToolCall.type == "run_shell" && 
+                                     (task.description.lowercase().contains("server") || 
+                                      task.description.lowercase().contains("run") ||
+                                      task.description.lowercase().contains("start") ||
+                                      task.description.lowercase().contains("development"))
+                val serverStartedSuccessfully = !result.observation.isNullOrBlank() && 
+                                              (result.observation.lowercase().contains("running") ||
+                                               result.observation.lowercase().contains("serving") ||
+                                               result.observation.lowercase().contains("debug") ||
+                                               result.observation.lowercase().contains("localhost") ||
+                                               result.observation.lowercase().contains("127.0.0.1") ||
+                                               result.observation.lowercase().contains("0.0.0.0") ||
+                                               !result.observation.lowercase().contains("error"))
+                
+                if (isDevServerTask && serverStartedSuccessfully) {
+                    markTaskDone(task.id)
+                    onStatus("Task ${task.id}: development server started successfully")
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+
                 // Prevent loops on repeated identical non-modifying observations
                 val obs = result.observation
                 if (lastToolType == effectiveToolCall.type && obs != null && lastObservation == obs) {
