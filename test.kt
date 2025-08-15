@@ -1,1 +1,1 @@
-fun main() {}
+package test; fun main() { println("Hello") }
