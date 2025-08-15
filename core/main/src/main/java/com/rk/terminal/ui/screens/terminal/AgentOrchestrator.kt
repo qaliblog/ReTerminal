@@ -1102,11 +1102,20 @@ class AgentOrchestrator(
                     val cmdStr = if (effectiveToolCall.type == "run_shell") effectiveToolCall.args.optString("command").lowercase() else ""
                     val outLower = result.observation?.lowercase().orEmpty()
                     val isPyCheckTask = task.description.lowercase().let { it.contains("python") || it.contains("pip") } &&
-                            (task.description.lowercase().contains("check") || task.description.lowercase().contains("installed") || task.description.lowercase().contains("accessible"))
-                    val versionSignals = outLower.contains("python ") && outLower.contains("pip ")
+                            (task.description.lowercase().contains("check") || task.description.lowercase().contains("installed") || task.description.lowercase().contains("accessible") || task.description.lowercase().contains("version") || task.description.lowercase().contains("discover"))
+                    
+                    // Check for Python version output (e.g., "Python 3.12.11")
+                    val pythonVersionSignal = outLower.contains("python ") && outLower.matches(Regex(".*python\\s+\\d+\\.\\d+\\.\\d+.*"))
+                    
+                    // Check for pip version output (e.g., "pip 23.x.x")
+                    val pipVersionSignal = outLower.contains("pip ") && outLower.matches(Regex(".*pip\\s+\\d+.*"))
+                    
+                    // Check for successful version discovery
+                    val versionSignals = pythonVersionSignal || pipVersionSignal
+                    
                     if (effectiveToolCall.type == "run_shell" && isPyCheckTask && versionSignals) {
                         markTaskDone(task.id)
-                        onStatus("Task ${task.id}: done")
+                        onStatus("Task ${task.id}: Python version discovered successfully")
                         persistPlanWithStatuses(plan)
                         endRunStatsAndReport(onStatus, verb = "thought")
                         return true
@@ -1155,8 +1164,26 @@ class AgentOrchestrator(
                 val envPreflight = effectiveToolCall.type == "run_shell" && isEnvPreflightCommand(effectiveToolCall.args.optString("command"))
                 if ((isDiscoveryTool(effectiveToolCall.type) && isDiscoveryCategory(task.category)) || envPreflight) {
                     markTaskDone(task.id)
-                    onStatus("Task ${task.id}: done")
+                    onStatus("Task ${task.id}: discovery completed successfully")
                     // Ensure UI sees latest statuses
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                
+                // If this is a successful discovery command that returned useful information, complete the task
+                val isDiscoveryCommand = effectiveToolCall.type == "run_shell" && 
+                                        (task.description.lowercase().contains("discover") || 
+                                         task.description.lowercase().contains("check") ||
+                                         task.description.lowercase().contains("version"))
+                val hasUsefulOutput = !result.observation.isNullOrBlank() && 
+                                     result.observation.length > 10 && 
+                                     !result.observation.lowercase().contains("error") &&
+                                     !result.observation.lowercase().contains("not found")
+                
+                if (isDiscoveryCommand && hasUsefulOutput) {
+                    markTaskDone(task.id)
+                    onStatus("Task ${task.id}: discovery completed successfully")
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
