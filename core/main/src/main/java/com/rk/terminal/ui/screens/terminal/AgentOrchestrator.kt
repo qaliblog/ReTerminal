@@ -1002,13 +1002,25 @@ class AgentOrchestrator(
         var lastToolType: String? = null
         var repeatedObservationCount = 0
         val maxRepeatedObservations = 3
-        val startTime = System.currentTimeMillis()
+                val startTime = System.currentTimeMillis()
         val maxExecutionTime = 30000L // 30 seconds timeout
-        
+
         while (stepsTaken < maxSteps) {
-            // Check for timeout to prevent infinite loops
+            // Check for timeout to prevent infinite loops with detailed debugging
             if (System.currentTimeMillis() - startTime > maxExecutionTime) {
-                onStatus("Task ${task.id}: execution timeout reached; marking failed")
+                val timeoutDebugInfo = """
+                    Task ${task.id} FAILED - Execution Timeout:
+                    - Task: ${task.description}
+                    - Category: ${task.category}
+                    - Steps Taken: $stepsTaken
+                    - Max Steps: $maxSteps
+                    - Execution Time: ${System.currentTimeMillis() - startTime}ms
+                    - Max Execution Time: ${maxExecutionTime}ms
+                    - Last Tool: ${lastToolType ?: "none"}
+                    - Reason: execution_timeout
+                """.trimIndent()
+                
+                onStatus(timeoutDebugInfo)
                 markTaskFailed(task.id, "execution_timeout")
                 endRunStatsAndReport(onStatus, verb = "thought")
                 return false
@@ -1208,16 +1220,27 @@ class AgentOrchestrator(
                     return true
                 }
                     
-                    // For other repeated observations, fail after 2 attempts
+                    // For other repeated observations, fail after 2 attempts with detailed debugging
                     if (repeatedObservationCount >= 2) {
+                        val debugInfo = """
+                            Task ${task.id} FAILED - Debug Info:
+                            - Task: ${task.description}
+                            - Category: ${task.category}
+                            - Tool Type: ${effectiveToolCall.type}
+                            - Tool Args: ${effectiveToolCall.args}
+                            - Observation: ${obs?.take(200)}...
+                            - Repeated Count: $repeatedObservationCount
+                            - Reason: repeated_non_modifying_observation
+                        """.trimIndent()
+                        
+                        onStatus(debugInfo)
                         markTaskFailed(task.id, "repeated_non_modifying_observation")
-                        onStatus("Task ${task.id}: repeated observation limit reached; marking failed")
                         endRunStatsAndReport(onStatus, verb = "thought")
                         return false
                     }
                     
-                    // Allow one more attempt
-                    onStatus("Task ${task.id}: repeated observation (${repeatedObservationCount}/2), retrying...")
+                    // Allow one more attempt with debugging info
+                    onStatus("Task ${task.id}: repeated observation (${repeatedObservationCount}/2), retrying... Tool: ${effectiveToolCall.type}")
                     lastObservation = obs
                     lastToolType = effectiveToolCall.type
                     stepsTaken++
@@ -1228,40 +1251,41 @@ class AgentOrchestrator(
                 stepsTaken++
 
             } else {
-                // Failure without exception; note and break
-                if (!observations.containsKey(task.id)) {
-                    observations[task.id] = "failed without exception"
-                    saveObservations()
-                }
-                onStatus("Task ${task.id}: failed")
+                // Failure without exception - provide detailed debugging
+                val failureDebugInfo = """
+                    Task ${task.id} FAILED - General Failure:
+                    - Task: ${task.description}
+                    - Category: ${task.category}
+                    - Tool Type: ${effectiveToolCall.type}
+                    - Tool Args: ${effectiveToolCall.args}
+                    - Result OK: ${result.ok}
+                    - Observation: ${result.observation?.take(200)}...
+                    - Reason: general_failure
+                """.trimIndent()
+                
+                onStatus(failureDebugInfo)
+                markTaskFailed(task.id, "general_failure")
                 endRunStatsAndReport(onStatus, verb = "thought")
                 return false
             }
         }
 
-        onStatus("Task ${task.id}: reached step limit without completion; revising plan…")
-        val revised = revisePlanBasedOnHistoryAndError(plan.goal, "step_limit")
-        if (revised != null) {
-            persistPlanWithStatuses(revised)
-            endRunStatsAndReport(onStatus, verb = "thought")
-            return true
-        }
-        onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-        val decision = decideRemediationAction(plan.goal, task, "step_limit")
-        val r = when (decision) {
-            "mini_plan" -> executeMiniPlanForTask(plan, task, onStatus)
-            "revise_plan" -> {
-                val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "step_limit")
-                if (revised2 != null) {
-                    persistPlanWithStatuses(revised2)
-                    true
-                } else false
-            }
-            "retry" -> false
-            else -> false
-        }
+        // Step limit reached - provide detailed debugging and fail gracefully
+        val stepLimitDebugInfo = """
+            Task ${task.id} FAILED - Step Limit Reached:
+            - Task: ${task.description}
+            - Category: ${task.category}
+            - Steps Taken: $stepsTaken
+            - Max Steps: $maxSteps
+            - Last Tool: ${lastToolType ?: "none"}
+            - Last Observation: ${lastObservation?.take(200)}...
+            - Reason: step_limit_exceeded
+        """.trimIndent()
+        
+        onStatus(stepLimitDebugInfo)
+        markTaskFailed(task.id, "step_limit_exceeded")
         endRunStatsAndReport(onStatus, verb = "thought")
-        return r
+        return false
     }
 
     private suspend fun informativeForTask(planGoal: String, task: Task, lastObservation: String?): JSONObject? = withContext(Dispatchers.IO) {
