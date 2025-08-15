@@ -18,6 +18,7 @@ import com.rk.terminal.ui.screens.terminal.MkSession
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import okhttp3.internal.wait
+import java.io.File
 
 class SessionService : Service() {
     private val sessions = hashMapOf<String, TerminalSession>()
