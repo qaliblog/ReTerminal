@@ -2858,14 +2858,63 @@ if (exit != 0) {
 					derived.contains("static") && desc.contains("directory") -> "# Static files directory created"
 					// Handle requirements.txt - include Flask-SocketIO if needed
 					derived.contains("requirements.txt") -> {
-						if (requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time")) {
+						val hasSocketIO = requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time") ||
+							desc.contains("SocketIO") || desc.contains("socket") || desc.contains("real-time")
+						if (hasSocketIO) {
 							"Flask==3.1.1\nFlask-SocketIO==5.3.6\nWerkzeug==3.1.3"
 						} else {
 							"Flask==3.1.1\nWerkzeug==3.1.3"
 						}
 					}
 					derived.contains(".py") -> {
-						if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
+						val hasSocketIO = requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time") ||
+							desc.contains("SocketIO") || desc.contains("socket") || desc.contains("real-time")
+						if (hasSocketIO) {
+							"""# Complete Flask-SocketIO Web Application for Piano Tiles Game
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, emit, join_room, leave_room
+import random
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app)
+
+# Game state management
+game_state = {
+    'score': 0,
+    'tiles': [],
+    'is_running': False
+}
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+
+@socketio.on('start_game')
+def handle_start_game():
+    game_state['score'] = 0
+    game_state['is_running'] = True
+    emit('game_started', {'success': True, 'message': 'Game started'})
+
+@socketio.on('tap_tile')
+def handle_tap_tile(data):
+    if game_state['is_running']:
+        game_state['score'] += 1
+        emit('score_updated', {'score': game_state['score']})
+    else:
+        emit('error', {'message': 'Game not running'})
+
+if __name__ == '__main__':
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000)"""
+						} else if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
 							"""# Complete Flask Web Application for Piano Tiles Game
 from flask import Flask, render_template, request, jsonify
 import random
