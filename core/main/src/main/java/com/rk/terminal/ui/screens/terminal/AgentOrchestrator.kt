@@ -1234,17 +1234,18 @@ class AgentOrchestrator(
                     return true
                 }
                 
-                // For reading empty files when should be writing content (especially for web templates), mark as done
+                // For reading empty files when should be writing content, don't mark as done - let the agent write content
                 val isWebTemplate = isEmptyFile && shouldBeWriting && 
                                   (task.description.lowercase().contains("html") || 
                                    task.description.lowercase().contains("template") ||
                                    task.description.lowercase().contains("interface"))
                 if (isWebTemplate && repeatedObservationCount <= 1) {
-                    onStatus("Task ${task.id}: detected reading empty web template when should be writing content, marking task complete")
-                    markTaskDone(task.id)
-                    persistPlanWithStatuses(plan)
-                    endRunStatsAndReport(onStatus, verb = "thought")
-                    return true
+                    onStatus("Task ${task.id}: detected reading empty file when should be writing content - allowing agent to write content")
+                    // Don't mark as done - let the agent actually write content
+                    lastObservation = obs
+                    lastToolType = effectiveToolCall.type
+                    stepsTaken++
+                    continue
                 }
                 
                 // For listing directories when should be creating directories, mark as done
@@ -1504,6 +1505,9 @@ class AgentOrchestrator(
              - For Python projects, create and activate a virtual environment first: python3 -m venv venv && . venv/bin/activate
              - When writing Flask applications, include proper game logic, API endpoints, and complete HTML/CSS/JS for interactive features.
              - For web applications, ensure all template files have complete content, not just empty files.
+             - When using write_file, always provide meaningful content - never write empty files.
+             - For Flask apps, write complete application code with routes, game logic, and proper structure.
+             - For HTML templates, write complete HTML with embedded CSS and JavaScript for full functionality.
              - Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
@@ -2606,8 +2610,14 @@ if (exit != 0) {
 				return if (f.exists() && f.isFile) {
 					ToolCall("read_file", JSONObject().put("path", derived).put("max_bytes", 200_000))
 				} else {
-					// For write_file tasks, always use write_file, not create_file
-					ToolCall("write_file", JSONObject().put("path", derived).put("content", "").put("mode", "overwrite"))
+					// For write_file tasks, let the agent provide content - don't create empty files
+					// Return the proposed tool call if it has content, otherwise let the agent decide
+					if (proposed.type == "write_file" && proposed.args.optString("content").isNotBlank()) {
+						proposed
+					} else {
+						// Let the agent provide content - don't coerce to empty content
+						ToolCall("write_file", JSONObject().put("path", derived).put("mode", "overwrite"))
+					}
 				}
 			}
 			"run_shell" -> if (proposed.type.isNotBlank()) proposed else ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
