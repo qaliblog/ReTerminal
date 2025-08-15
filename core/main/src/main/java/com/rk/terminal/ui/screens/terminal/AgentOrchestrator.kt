@@ -1159,14 +1159,28 @@ class AgentOrchestrator(
                     val isListDir = effectiveToolCall.type == "list_dir" || effectiveToolCall.type == "list_dir_recursive"
                     val isEmptyDir = isListDir && obs.contains("\"empty\":true")
                     
-                    // For empty directories, allow only 1 retry then fail gracefully
-                    if (isEmptyDir && repeatedObservationCount <= 1) {
-                        onStatus("Task ${task.id}: empty directory detected, marking task complete")
-                        markTaskDone(task.id)
-                        persistPlanWithStatuses(plan)
-                        endRunStatsAndReport(onStatus, verb = "thought")
-                        return true
-                    }
+                                    // Special handling for reading empty files - likely should be writing instead
+                val isReadFile = effectiveToolCall.type == "read_file"
+                val isEmptyFile = isReadFile && obs.contains("\"bytes\":0") && obs.contains("\"content\":\"\"")
+                val shouldBeWriting = shouldUseWriteFile(task)
+                
+                // For empty directories, allow only 1 retry then fail gracefully
+                if (isEmptyDir && repeatedObservationCount <= 1) {
+                    onStatus("Task ${task.id}: empty directory detected, marking task complete")
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                
+                // For reading empty files when should be writing, mark as done and suggest correction
+                if (isEmptyFile && shouldBeWriting && repeatedObservationCount <= 1) {
+                    onStatus("Task ${task.id}: detected reading empty file when should be writing, marking task complete")
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
                     
                     // For other repeated observations, fail after 2 attempts
                     if (repeatedObservationCount >= 2) {
@@ -1269,6 +1283,19 @@ class AgentOrchestrator(
             "read_file", "list_dir", "grep", "analyze" -> true
             else -> false
         }
+    }
+    
+    private fun isWriteCategory(category: String?): Boolean {
+        return when (category) {
+            "write_file", "create_file" -> true
+            else -> false
+        }
+    }
+    
+    private fun shouldUseWriteFile(task: Task): Boolean {
+        val desc = task.description.lowercase()
+        return desc.contains("write") || desc.contains("create") || desc.contains("add") || 
+               desc.contains("generate") || desc.contains("build") || desc.contains("make")
     }
 
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
