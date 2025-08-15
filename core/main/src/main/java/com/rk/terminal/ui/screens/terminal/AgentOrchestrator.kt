@@ -1198,13 +1198,14 @@ class AgentOrchestrator(
                     val isListDir = effectiveToolCall.type == "list_dir" || effectiveToolCall.type == "list_dir_recursive"
                     val isEmptyDir = isListDir && obs.contains("\"empty\":true")
                     
-                    // Special handling for reading empty files - likely should be writing instead
-                    val isReadFile = effectiveToolCall.type == "read_file"
-                    val isEmptyFile = isReadFile && obs.contains("\"bytes\":0") && obs.contains("\"content\":\"\"")
-                    val shouldBeWriting = shouldUseWriteFile(task)
-                    
-                    // Special handling for listing directories when should be creating directories
-                    val shouldBeCreatingDir = shouldUseMakeDir(task)
+                                    // Special handling for reading files when should be writing instead
+                val isReadFile = effectiveToolCall.type == "read_file"
+                val isEmptyFile = isReadFile && obs.contains("\"bytes\":0") && obs.contains("\"content\":\"\"")
+                val hasContent = isReadFile && obs.contains("\"bytes\":") && !obs.contains("\"bytes\":0")
+                val shouldBeWriting = shouldUseWriteFile(task)
+                
+                // Special handling for listing directories when should be creating directories
+                val shouldBeCreatingDir = shouldUseMakeDir(task)
                 
                 // For empty directories, allow only 1 retry then fail gracefully
                 if (isEmptyDir && repeatedObservationCount <= 1) {
@@ -1218,6 +1219,15 @@ class AgentOrchestrator(
                 // For reading empty files when should be writing, mark as done and suggest correction
                 if (isEmptyFile && shouldBeWriting && repeatedObservationCount <= 1) {
                     onStatus("Task ${task.id}: detected reading empty file when should be writing, marking task complete")
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                
+                // For reading files with content when should be writing, mark as done
+                if (hasContent && shouldBeWriting && repeatedObservationCount <= 1) {
+                    onStatus("Task ${task.id}: detected reading file with content when should be writing, marking task complete")
                     markTaskDone(task.id)
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
