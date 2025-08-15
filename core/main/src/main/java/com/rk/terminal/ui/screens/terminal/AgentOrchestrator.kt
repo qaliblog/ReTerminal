@@ -1292,20 +1292,22 @@ class AgentOrchestrator(
                     return true
                 }
 
-                // If this is a development server task that started successfully, complete the task
-                val isDevServerTask = effectiveToolCall.type == "run_shell" && 
-                                     (task.description.lowercase().contains("server") || 
-                                      task.description.lowercase().contains("run") ||
-                                      task.description.lowercase().contains("start") ||
-                                      task.description.lowercase().contains("development"))
-                val serverStartedSuccessfully = !result.observation.isNullOrBlank() && 
-                                              (result.observation.lowercase().contains("running") ||
-                                               result.observation.lowercase().contains("serving") ||
-                                               result.observation.lowercase().contains("debug") ||
-                                               result.observation.lowercase().contains("localhost") ||
-                                               result.observation.lowercase().contains("127.0.0.1") ||
-                                               result.observation.lowercase().contains("0.0.0.0") ||
-                                               !result.observation.lowercase().contains("error"))
+                			// If this is a development server task that started successfully, complete the task
+			val isDevServerTask = effectiveToolCall.type == "run_shell" && 
+								 (task.description.lowercase().contains("server") || 
+								  task.description.lowercase().contains("run") ||
+								  task.description.lowercase().contains("start") ||
+								  task.description.lowercase().contains("development") ||
+								  task.description.lowercase().contains("flask"))
+			val serverStartedSuccessfully = !result.observation.isNullOrBlank() && 
+										  (result.observation.lowercase().contains("running") ||
+										   result.observation.lowercase().contains("serving") ||
+										   result.observation.lowercase().contains("debug") ||
+										   result.observation.lowercase().contains("localhost") ||
+										   result.observation.lowercase().contains("127.0.0.1") ||
+										   result.observation.lowercase().contains("0.0.0.0") ||
+										   result.observation.lowercase().contains("flask") ||
+										   !result.observation.lowercase().contains("error"))
                 
                 if (isDevServerTask && serverStartedSuccessfully) {
                     markTaskDone(task.id)
@@ -2899,6 +2901,38 @@ if (exit != 0) {
 							"Flask==3.1.1\nFlask-SocketIO==5.3.6\nWerkzeug==3.1.3"
 						} else {
 							"Flask==3.1.1\nWerkzeug==3.1.3"
+						}
+					}
+					// Handle app.py modifications - preserve existing game logic
+					derived.contains(".py") && desc.contains("modify") -> {
+						// Read existing app.py content and preserve it
+						val appFile = File(workingDirProvider(), "app.py")
+						if (appFile.exists()) {
+							appFile.readText()
+						} else {
+							// Fallback to basic Flask app if file doesn't exist
+							"""# Python application
+from flask import Flask, render_template
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+if __name__ == '__main__':
+    app.run(debug=True)"""
+						}
+					}
+					// Handle script.js modifications - preserve existing game logic
+					derived.contains(".js") && desc.contains("modify") -> {
+						// Read existing script.js content and preserve it
+						val scriptFile = File(workingDirProvider(), "static/script.js")
+						if (scriptFile.exists()) {
+							scriptFile.readText()
+						} else {
+							// Fallback to basic script if file doesn't exist
+							"// Basic JavaScript file"
 						}
 					}
 					derived.contains(".py") -> {
