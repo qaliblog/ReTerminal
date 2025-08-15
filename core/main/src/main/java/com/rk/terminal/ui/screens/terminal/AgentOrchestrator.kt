@@ -3133,7 +3133,19 @@ if __name__ == '__main__':
 				val derived = when {
 					suggested.isNotBlank() -> suggested
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
-					desc.contains("requirements") -> File(workingDirProvider(), "requirements.txt").absolutePath
+					desc.contains("requirements") -> {
+						// Check if we're in a project subdirectory
+						val appFile = File(workingDirProvider(), "app.py")
+						val projectDir = if (appFile.exists()) {
+							workingDirProvider()
+						} else {
+							// Look for app.py in subdirectories
+							val subdirs = File(workingDirProvider()).listFiles()?.filter { it.isDirectory } ?: emptyList()
+							val projectSubdir = subdirs.find { File(it, "app.py").exists() }
+							projectSubdir?.absolutePath ?: workingDirProvider()
+						}
+						File(projectDir, "requirements.txt").absolutePath
+					}
 					desc.contains("html") -> {
 						// Always use templates/index.html for Flask applications
 						// Check if this is a Flask project by looking at requirements or existing files
@@ -3506,14 +3518,25 @@ h1 {
 				
 				// If this is an HTML file for a game, automatically create the missing CSS and JS files
 				if (derived.contains(".html") && (requirements.contains("Piano Tiles") || requirements.contains("game"))) {
-					// Create static directory if it doesn't exist
-					val staticDir = File(workingDirProvider(), "static")
+					// Determine the correct project directory
+					val appFile = File(workingDirProvider(), "app.py")
+					val projectDir = if (appFile.exists()) {
+						workingDirProvider()
+					} else {
+						// Look for app.py in subdirectories
+						val subdirs = File(workingDirProvider()).listFiles()?.filter { it.isDirectory } ?: emptyList()
+						val projectSubdir = subdirs.find { File(it, "app.py").exists() }
+						projectSubdir?.absolutePath ?: workingDirProvider()
+					}
+					
+					// Create static directory in the project directory if it doesn't exist
+					val staticDir = File(projectDir, "static")
 					if (!staticDir.exists()) {
 						staticDir.mkdirs()
 					}
 					
 					// Create CSS file automatically
-					val cssPath = File(workingDirProvider(), "static/style.css").absolutePath
+					val cssPath = File(projectDir, "static/style.css").absolutePath
 					val cssFile = File(cssPath)
 					if (!cssFile.exists()) {
 						val cssContent = """/* Complete Piano Tiles Game Styles */
@@ -3610,7 +3633,7 @@ h1 {
 					}
 					
 					// Create JS file automatically
-					val jsPath = File(workingDirProvider(), "static/script.js").absolutePath
+					val jsPath = File(projectDir, "static/script.js").absolutePath
 					val jsFile = File(jsPath)
 					if (!jsFile.exists()) {
 						val jsContent = """// Complete Piano Tiles Game Logic
