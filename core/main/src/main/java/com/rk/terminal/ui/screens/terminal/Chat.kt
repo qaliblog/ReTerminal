@@ -66,6 +66,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.platform.LocalFocusManager
 import com.rk.settings.Settings
 import androidx.compose.foundation.layout.PaddingValues
+import com.rk.terminal.ui.screens.terminal.AgentOrchestrator.MainShell
 
 private data class ChatMessage(val role: String, val content: String)
 

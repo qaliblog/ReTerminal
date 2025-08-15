@@ -3012,17 +3012,7 @@ if (exit != 0) {
 							webappAppFile.exists() -> webappAppFile.readText()
 							else -> {
 								// Fallback to basic Flask app if file doesn't exist
-								"""# Python application
-from flask import Flask, render_template
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)"""
+								"# Python application"
 							}
 						}
 					}
@@ -3050,14 +3040,7 @@ if __name__ == '__main__':
 							webappCssFile.exists() -> webappCssFile.readText()
 							else -> {
 								// Fallback to basic CSS if file doesn't exist
-								"""/* Basic CSS styles */
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background-color: #222;
-    color: white;
-}"""
+								"/* Basic CSS styles */"
 							}
 						}
 					}
@@ -3071,19 +3054,7 @@ body {
 							webappHtmlFile.exists() -> webappHtmlFile.readText()
 							else -> {
 								// Fallback to basic HTML if file doesn't exist
-								"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Piano Tiles Game</title>
-</head>
-<body>
-    <h1>Piano Tiles</h1>
-    <div id="game-container"></div>
-    <div id="score">Score: 0</div>
-</body>
-</html>"""
+								"<!-- HTML file -->"
 							}
 						}
 					}
@@ -3110,24 +3081,13 @@ body {
 							else -> {
 								// Generate appropriate fallback content based on file type
 								when (fileExtension.lowercase()) {
-									"py" -> """# Python file
-# Generated fallback content
-"""
-									"js" -> """// JavaScript file
-// Generated fallback content
-"""
-									"html" -> """<!DOCTYPE html>
-<html>
-<head><title>Generated</title></head>
-<body></body>
-</html>"""
-									"css" -> """/* CSS file */
-/* Generated fallback content */"""
-									"json" -> """{}"""
-									"txt" -> """# Text file
-# Generated fallback content"""
-									else -> """# ${fileExtension.uppercase()} file
-# Generated fallback content"""
+									"py" -> "# Python file"
+									"js" -> "// JavaScript file"
+									"html" -> "<!-- HTML file -->"
+									"css" -> "/* CSS file */"
+									"json" -> "{}"
+									"txt" -> "# Text file"
+									else -> "# ${fileExtension.uppercase()} file"
 								}
 							}
 						}
@@ -3142,290 +3102,28 @@ body {
 						
 						when {
 							hasSocketIO -> {
-							"""# Complete Flask-SocketIO Web Application for Piano Tiles Game
-from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO, emit, join_room, leave_room
-import random
-
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret!'
-socketio = SocketIO(app)
-
-# Game state management
-game_state = {
-    'score': 0,
-    'tiles': [],
-    'is_running': False
-}
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@socketio.on('connect')
-def handle_connect():
-    print('Client connected')
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    print('Client disconnected')
-
-@socketio.on('start_game')
-def handle_start_game():
-    game_state['score'] = 0
-    game_state['is_running'] = True
-    emit('game_started', {'success': True, 'message': 'Game started'})
-
-@socketio.on('tap_tile')
-def handle_tap_tile(data):
-    if game_state['is_running']:
-        game_state['score'] += 1
-        emit('score_updated', {'score': game_state['score']})
-    else:
-        emit('error', {'message': 'Game not running'})
-
-if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)"""
-						}
-						isCalculator -> {
-							"""# Complete Flask Calculator Web Application
-from flask import Flask, render_template, request, jsonify
-import math
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/calculate', methods=['POST'])
-def calculate():
-    try:
-        data = request.get_json()
-        expression = data.get('expression', '')
-        
-        # Safe evaluation of mathematical expressions
-        allowed_chars = set('0123456789+-*/.() ')
-        if not all(c in allowed_chars for c in expression):
-            return jsonify({'error': 'Invalid characters in expression'}), 400
-        
-        # Replace mathematical functions
-        expression = expression.replace('^', '**')
-        
-        result = eval(expression)
-        return jsonify({'result': result, 'expression': expression})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
-
-@app.route('/api/calculate', methods=['POST'])
-def api_calculate():
-    try:
-        data = request.get_json()
-        expression = data.get('expression', '')
-        
-        # Safe evaluation
-        allowed_chars = set('0123456789+-*/.() ')
-        if not all(c in allowed_chars for c in expression):
-            return jsonify({'error': 'Invalid characters'}), 400
-        
-        expression = expression.replace('^', '**')
-        result = eval(expression)
-        return jsonify({'result': result})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)"""
+								"# Flask-SocketIO application"
+							}
+							isCalculator -> {
+							"# Flask Calculator application"
 						}
 						isGame -> {
-							"""# Complete Flask Web Application for Piano Tiles Game
-from flask import Flask, render_template, request, jsonify
-import random
-
-app = Flask(__name__)
-
-# Game state management
-game_state = {
-    'score': 0,
-    'tiles': [],
-    'is_running': False
-}
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/api/game/start', methods=['POST'])
-def start_game():
-    game_state['score'] = 0
-    game_state['is_running'] = True
-    return jsonify({'success': True, 'message': 'Game started'})
-
-@app.route('/api/game/score', methods=['GET'])
-def get_score():
-    return jsonify({'score': game_state['score']})
-
-@app.route('/api/game/tap', methods=['POST'])
-def handle_tap():
-    data = request.get_json()
-    if game_state['is_running']:
-        game_state['score'] += 1
-        return jsonify({'success': True, 'score': game_state['score']})
-    return jsonify({'success': False, 'message': 'Game not running'})
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)"""
+							"# Flask Game application"
 						}
 						isWebApp -> {
-							"""# Complete Flask Web Application
-from flask import Flask, render_template, request, jsonify
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/api/data', methods=['GET'])
-def get_data():
-    return jsonify({'message': 'Hello from Flask API'})
-
-@app.route('/api/submit', methods=['POST'])
-def submit_data():
-    data = request.get_json()
-    return jsonify({'received': data, 'status': 'success'})
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)"""
+							"# Flask Web application"
 						}
 						else -> {
-							"""# Python application
-from flask import Flask, render_template
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)"""
+							"# Python application"
 						}
 					}
 					derived.contains(".js") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""// Complete Piano Tiles Game Logic
-const gameState = {
-    score: 0,
-    tiles: [],
-    gameSpeed: 1,
-    isGameRunning: false
-};
-
-const gameConfig = {
-    tileWidth: 75,
-    tileHeight: 100,
-    gameWidth: 300,
-    gameHeight: 600,
-    numCols: 4
-};
-
-function createTile(colIndex, isBlack = false) {
-    const tile = document.createElement('div');
-    tile.className = 'tile' + (isBlack ? ' black' : '');
-    tile.style.left = colIndex * gameConfig.tileWidth + 'px';
-    tile.style.width = gameConfig.tileWidth + 'px';
-    tile.style.height = gameConfig.tileHeight + 'px';
-    tile.dataset.col = colIndex;
-    tile.dataset.isBlack = isBlack;
-    return tile;
-}
-
-function generateRow() {
-    const blackCol = Math.floor(Math.random() * gameConfig.numCols);
-    for (let i = 0; i < gameConfig.numCols; i++) {
-        const tile = createTile(i, i === blackCol);
-        tile.style.top = '-100px';
-        document.getElementById('game-container').appendChild(tile);
-        gameState.tiles.push(tile);
-    }
-}
-
-function moveTiles() {
-    gameState.tiles.forEach(tile => {
-        const currentTop = parseInt(tile.style.top) || -100;
-        tile.style.top = (currentTop + gameState.gameSpeed) + 'px';
-        
-        if (currentTop > gameConfig.gameHeight) {
-            tile.remove();
-            gameState.tiles = gameState.tiles.filter(t => t !== tile);
-        }
-    });
-}
-
-function handleTileClick(event) {
-    if (!gameState.isGameRunning) return;
-    
-    const tile = event.target;
-    if (tile.classList.contains('tile')) {
-        const isBlack = tile.dataset.isBlack === 'true';
-        if (isBlack) {
-            gameState.score++;
-            updateScore();
-            tile.remove();
-            gameState.tiles = gameState.tiles.filter(t => t !== tile);
-        } else {
-            endGame();
-        }
-    }
-}
-
-function updateScore() {
-    document.getElementById('score').textContent = 'Score: ' + gameState.score;
-    if (gameState.score % 10 === 0) {
-        gameState.gameSpeed += 0.5;
-    }
-}
-
-function endGame() {
-    gameState.isGameRunning = false;
-    alert('Game Over! Final Score: ' + gameState.score);
-    resetGame();
-}
-
-function resetGame() {
-    gameState.score = 0;
-    gameState.gameSpeed = 1;
-    gameState.tiles = [];
-    gameState.isGameRunning = true;
-    updateScore();
-    document.getElementById('game-container').innerHTML = '';
-    startGame();
-}
-
-function startGame() {
-    resetGame();
-    setInterval(() => {
-        if (gameState.isGameRunning) {
-            moveTiles();
-            if (gameState.tiles.length < 20) {
-                generateRow();
-            }
-        }
-    }, 50);
-}
-
-// Initialize when DOM is loaded
-document.addEventListener('DOMContentLoaded', startGame);"""
+							"// Game JavaScript file"
 						} else {
-							"""// JavaScript file for application logic
-console.log('Application script loaded');
-
-function initApp() {
-    console.log('Application initialized');
-}
-
-document.addEventListener('DOMContentLoaded', initApp);"""
+							"// JavaScript file for application logic"
+						}
+							"// JavaScript file for application logic"
 						}
 					}
 					derived.contains(".html") -> {
@@ -3433,500 +3131,43 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 						val isGame = desc.contains("game") || requirements.contains("game") || desc.contains("piano") || desc.contains("tic") || desc.contains("chess")
 						
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Piano Tiles Game</title>
-    <style>
-        body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #222;
-            font-family: Arial, sans-serif;
-            color: white;
-            flex-direction: column;
-        }
-        #game-container {
-            position: relative;
-            width: 300px;
-            height: 600px;
-            border: 2px solid white;
-            overflow: hidden;
-            background-color: #000;
-            cursor: pointer;
-        }
-        .tile {
-            position: absolute;
-            background-color: #fff;
-            border: 1px solid #ccc;
-            transition: top 0.05s linear;
-        }
-        .tile.black {
-            background-color: #000;
-        }
-        #score {
-            margin-top: 20px;
-            font-size: 24px;
-        }
-    </style>
-</head>
-<body>
-    <h1>Piano Tiles</h1>
-    <div id="game-container"></div>
-    <div id="score">Score: 0</div>
-    <script src="game.js"></script>
-</body>
-</html>"""
+							"<!-- Game HTML file -->"
+						} else if (isCalculator) {
+							"<!-- Calculator HTML file -->"
+						} else {
+							"<!-- HTML file -->"
 						}
-						isCalculator -> {
-							"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flask Calculator</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <div class="calculator-container">
-        <h1>Flask Calculator</h1>
-        <div class="calculator">
-            <div class="display">
-                <input type="text" id="display" readonly>
-            </div>
-            <div class="buttons">
-                <button onclick="clearDisplay()">C</button>
-                <button onclick="appendToDisplay('(')">(</button>
-                <button onclick="appendToDisplay(')')">)</button>
-                <button onclick="appendToDisplay('/')">/</button>
-                
-                <button onclick="appendToDisplay('7')">7</button>
-                <button onclick="appendToDisplay('8')">8</button>
-                <button onclick="appendToDisplay('9')">9</button>
-                <button onclick="appendToDisplay('*')">*</button>
-                
-                <button onclick="appendToDisplay('4')">4</button>
-                <button onclick="appendToDisplay('5')">5</button>
-                <button onclick="appendToDisplay('6')">6</button>
-                <button onclick="appendToDisplay('-')">-</button>
-                
-                <button onclick="appendToDisplay('1')">1</button>
-                <button onclick="appendToDisplay('2')">2</button>
-                <button onclick="appendToDisplay('3')">3</button>
-                <button onclick="appendToDisplay('+')">+</button>
-                
-                <button onclick="appendToDisplay('0')">0</button>
-                <button onclick="appendToDisplay('.')">.</button>
-                <button onclick="calculate()" class="equals">=</button>
-            </div>
-        </div>
-        <div id="result"></div>
-    </div>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
-						}
-						else -> {
-							"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web Application</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <div class="app-container">
-        <h1>Web Application</h1>
-        <div id="content">
-            <p>Application content will be loaded here.</p>
-        </div>
-    </div>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
+							"<!-- HTML file -->"
 						}
 					}
-					derived.contains(".css") -> """/* Complete Game Styles */
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background-color: #222;
-    color: white;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-}
+					derived.contains(".css") -> "/* CSS styles */"
 
-#game-container {
-    width: 300px;
-    height: 600px;
-    border: 2px solid white;
-    margin: 20px auto;
-    position: relative;
-    overflow: hidden;
-    background-color: #000;
-    cursor: pointer;
-}
-
-.tile {
-    position: absolute;
-    background-color: #fff;
-    border: 1px solid #ccc;
-    transition: top 0.05s linear;
-}
-
-.tile.black {
-    background-color: #000;
-}
-
-#score {
-    font-size: 24px;
-    margin-top: 20px;
-    text-align: center;
-}"""
 					derived.contains(".py") -> {
 						if (requirements.contains("Flask") || requirements.contains("web application")) {
-							"""# Complete Flask Web Application
-from flask import Flask, render_template, request, jsonify
-import random
-
-app = Flask(__name__)
-
-# Game state management
-game_state = {
-    'score': 0,
-    'tiles': [],
-    'is_running': False
-}
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/api/game/start', methods=['POST'])
-def start_game():
-    game_state['score'] = 0
-    game_state['is_running'] = True
-    return jsonify({'success': True, 'message': 'Game started'})
-
-@app.route('/api/game/score', methods=['GET'])
-def get_score():
-    return jsonify({'score': game_state['score']})
-
-@app.route('/api/game/tap', methods=['POST'])
-def handle_tap():
-    data = request.get_json()
-    if game_state['is_running']:
-        game_state['score'] += 1
-        return jsonify({'success': True, 'score': game_state['score']})
-    return jsonify({'success': False, 'message': 'Game not running'})
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)"""
+							"# Flask application"
 						} else {
-							"""# Python application
-from flask import Flask, render_template
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)"""
+							"# Python application"
 						}
 					}
 					derived.contains(".html") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Piano Tiles Game</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <div class="game-container">
-        <h1>Piano Tiles</h1>
-        <div id="game-board">
-            <div class="tile-row" id="row-1"></div>
-            <div class="tile-row" id="row-2"></div>
-            <div class="tile-row" id="row-3"></div>
-            <div class="tile-row" id="row-4"></div>
-        </div>
-        <div class="score-container">
-            <span>Score: </span><span id="score">0</span>
-        </div>
-        <button id="start-btn">Start Game</button>
-    </div>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
+							"<!-- Game HTML file -->"
 						} else {
-							"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web Application</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <div class="app-container">
-        <h1>Web Application</h1>
-        <div id="content">
-            <p>Application content will be loaded here.</p>
-        </div>
-    </div>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
+							"<!-- HTML file -->"
 						}
 					}
 					derived.contains(".css") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""/* Complete Piano Tiles Game Styles */
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-}
-
-.game-container {
-    text-align: center;
-    background: rgba(0, 0, 0, 0.8);
-    padding: 30px;
-    border-radius: 15px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-}
-
-h1 {
-    margin-bottom: 30px;
-    font-size: 2.5em;
-    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-#game-board {
-    position: relative;
-    width: 300px;
-    height: 400px;
-    margin: 0 auto 20px;
-    border: 3px solid #fff;
-    border-radius: 10px;
-    overflow: hidden;
-    background: #000;
-}
-
-.tile-row {
-    position: absolute;
-    width: 100%;
-    height: 100px;
-    display: flex;
-    transition: top 0.3s ease;
-}
-
-.tile {
-    flex: 1;
-    height: 100%;
-    border: 1px solid #333;
-    cursor: pointer;
-    transition: background-color 0.2s ease;
-}
-
-.tile:hover {
-    background-color: #444 !important;
-}
-
-.tile.black {
-    background-color: #000;
-}
-
-.tile:not(.black) {
-    background-color: #fff;
-}
-
-.score-container {
-    font-size: 1.5em;
-    margin: 20px 0;
-}
-
-#score {
-    font-weight: bold;
-    color: #ffd700;
-}
-
-#start-btn {
-    background: linear-gradient(45deg, #ff6b6b, #ee5a24);
-    color: white;
-    border: none;
-    padding: 15px 30px;
-    font-size: 1.2em;
-    border-radius: 25px;
-    cursor: pointer;
-    transition: transform 0.2s ease;
-}
-
-#start-btn:hover {
-    transform: scale(1.05);
-}"""
+							"/* Game CSS styles */"
 						} else {
-							"""/* Application Styles */
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background-color: #f5f5f5;
-    color: #333;
-}
-
-.app-container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 20px;
-}
-
-h1 {
-    color: #2c3e50;
-    text-align: center;
-}
-
-#content {
-    background: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-}"""
+							"/* Application CSS styles */"
 						}
 					}
 					derived.contains(".js") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""// Complete Piano Tiles Game Logic
-let gameState = {
-    score: 0,
-    isRunning: false,
-    currentRow: 0,
-    gameSpeed: 1000
-};
-
-const gameBoard = document.getElementById('game-board');
-const scoreElement = document.getElementById('score');
-const startBtn = document.getElementById('start-btn');
-
-function createTile(isBlack = false) {
-    const tile = document.createElement('div');
-    tile.className = 'tile' + (isBlack ? ' black' : '');
-    tile.addEventListener('click', () => handleTileClick(tile, isBlack));
-    return tile;
-}
-
-function generateRow() {
-    const row = document.createElement('div');
-    row.className = 'tile-row';
-    
-    const blackIndex = Math.floor(Math.random() * 4);
-    for (let i = 0; i < 4; i++) {
-        const tile = createTile(i === blackIndex);
-        row.appendChild(tile);
-    }
-    
-    return row;
-}
-
-function handleTileClick(tile, isBlack) {
-    if (!gameState.isRunning) return;
-    
-    if (isBlack) {
-        gameState.score++;
-        scoreElement.textContent = gameState.score;
-        tile.remove();
-        
-        // Increase speed every 10 points
-        if (gameState.score % 10 === 0) {
-            gameState.gameSpeed = Math.max(200, gameState.gameSpeed - 100);
-        }
-    } else {
-        endGame();
-    }
-}
-
-function startGame() {
-    gameState.score = 0;
-    gameState.isRunning = true;
-    gameState.gameSpeed = 1000;
-    scoreElement.textContent = '0';
-    gameBoard.innerHTML = '';
-    
-    // Generate initial rows
-    for (let i = 0; i < 4; i++) {
-        const row = generateRow();
-        row.style.top = (i * 100) + 'px';
-        gameBoard.appendChild(row);
-    }
-    
-    // Start game loop
-    gameLoop();
-}
-
-function gameLoop() {
-    if (!gameState.isRunning) return;
-    
-    // Move existing rows down
-    const rows = document.querySelectorAll('.tile-row');
-    rows.forEach(row => {
-        const currentTop = parseInt(row.style.top) || 0;
-        row.style.top = (currentTop + 100) + 'px';
-        
-        // Remove rows that are off-screen
-        if (currentTop > 400) {
-            row.remove();
-        }
-    });
-    
-    // Add new row at top
-    const newRow = generateRow();
-    newRow.style.top = '-100px';
-    gameBoard.appendChild(newRow);
-    
-    setTimeout(gameLoop, gameState.gameSpeed);
-}
-
-function endGame() {
-    gameState.isRunning = false;
-    alert('Game Over! Final Score: ' + gameState.score);
-}
-
-startBtn.addEventListener('click', startGame);
-
-// Initialize game
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Piano Tiles game loaded');
-});"""
+							"// Game JavaScript file"
 						} else {
-							"""// Application JavaScript
-console.log('Application script loaded');
-
-function initApp() {
-    console.log('Application initialized');
-    // Add your application logic here
-}
-
-document.addEventListener('DOMContentLoaded', initApp);"""
+							"// Application JavaScript file"
 						}
 					}
 					else -> "# File content"
@@ -3934,6 +3175,7 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 				
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
 			}
+			else -> proposed
 			"write_file" -> {
 				val desc = (task.description ?: "").lowercase()
 				val suggested = proposed.args.optString("path")
@@ -4002,339 +3244,33 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 					val content = when {
 					derived.contains(".py") -> {
 						if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
-							"""# Complete Flask Web Application for Piano Tiles Game
-from flask import Flask, render_template, request, jsonify
-import random
-
-app = Flask(__name__)
-
-# Game state management
-game_state = {
-    'score': 0,
-    'tiles': [],
-    'is_running': False
-}
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/api/game/start', methods=['POST'])
-def start_game():
-    game_state['score'] = 0
-    game_state['is_running'] = True
-    return jsonify({'success': True, 'message': 'Game started'})
-
-@app.route('/api/game/score', methods=['GET'])
-def get_score():
-    return jsonify({'score': game_state['score']})
-
-@app.route('/api/game/tap', methods=['POST'])
-def handle_tap():
-    data = request.get_json()
-    if game_state['is_running']:
-        game_state['score'] += 1
-        return jsonify({'success': True, 'score': game_state['score']})
-    return jsonify({'success': False, 'message': 'Game not running'})
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)"""
+							"# Flask application"
 						} else {
-							"""# Python application
-from flask import Flask, render_template
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)"""
+							"# Python application"
 						}
 					}
 					derived.contains(".html") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Piano Tiles Game</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <div class="game-container">
-        <h1>Piano Tiles</h1>
-        <div id="game-board">
-            <div class="tile-row" id="row-1"></div>
-            <div class="tile-row" id="row-2"></div>
-            <div class="tile-row" id="row-3"></div>
-            <div class="tile-row" id="row-4"></div>
-        </div>
-        <div class="score-container">
-            <span>Score: </span><span id="score">0</span>
-        </div>
-        <button id="start-btn">Start Game</button>
-    </div>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
+							"<!-- Game HTML file -->"
 						} else {
-							"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web Application</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <div class="app-container">
-        <h1>Web Application</h1>
-        <div id="content">
-            <p>Application content will be loaded here.</p>
-        </div>
-    </div>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
+							"<!-- HTML file -->"
 						}
 					}
 					derived.contains(".js") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""// Complete Piano Tiles Game Logic
-let gameState = {
-    score: 0,
-    isRunning: false,
-    currentRow: 0,
-    gameSpeed: 1000
-};
-
-const gameBoard = document.getElementById('game-board');
-const scoreElement = document.getElementById('score');
-const startBtn = document.getElementById('start-btn');
-
-function createTile(isBlack = false) {
-    const tile = document.createElement('div');
-    tile.className = 'tile' + (isBlack ? ' black' : '');
-    tile.addEventListener('click', () => handleTileClick(tile, isBlack));
-    return tile;
-}
-
-function generateRow() {
-    const row = document.createElement('div');
-    row.className = 'tile-row';
-    
-    const blackIndex = Math.floor(Math.random() * 4);
-    for (let i = 0; i < 4; i++) {
-        const tile = createTile(i === blackIndex);
-        row.appendChild(tile);
-    }
-    
-    return row;
-}
-
-function handleTileClick(tile, isBlack) {
-    if (!gameState.isRunning) return;
-    
-    if (isBlack) {
-        gameState.score++;
-        scoreElement.textContent = gameState.score;
-        tile.remove();
-        
-        // Increase speed every 10 points
-        if (gameState.score % 10 === 0) {
-            gameState.gameSpeed = Math.max(200, gameState.gameSpeed - 100);
-        }
-    } else {
-        endGame();
-    }
-}
-
-function startGame() {
-    gameState.score = 0;
-    gameState.isRunning = true;
-    gameState.gameSpeed = 1000;
-    scoreElement.textContent = '0';
-    gameBoard.innerHTML = '';
-    
-    // Generate initial rows
-    for (let i = 0; i < 4; i++) {
-        const row = generateRow();
-        row.style.top = (i * 100) + 'px';
-        gameBoard.appendChild(row);
-    }
-    
-    // Start game loop
-    gameLoop();
-}
-
-function gameLoop() {
-    if (!gameState.isRunning) return;
-    
-    // Move existing rows down
-    const rows = document.querySelectorAll('.tile-row');
-    rows.forEach(row => {
-        const currentTop = parseInt(row.style.top) || 0;
-        row.style.top = (currentTop + 100) + 'px';
-        
-        // Remove rows that are off-screen
-        if (currentTop > 400) {
-            row.remove();
-        }
-    });
-    
-    // Add new row at top
-    const newRow = generateRow();
-    newRow.style.top = '-100px';
-    gameBoard.appendChild(newRow);
-    
-    setTimeout(gameLoop, gameState.gameSpeed);
-}
-
-function endGame() {
-    gameState.isRunning = false;
-    alert('Game Over! Final Score: ' + gameState.score);
-}
-
-startBtn.addEventListener('click', startGame);
-
-// Initialize game
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Piano Tiles game loaded');
-});"""
+							"// Game JavaScript file"
+							"// Game JavaScript file"
 						} else {
-							"""// Application JavaScript
-console.log('Application script loaded');
-
-function initApp() {
-    console.log('Application initialized');
-    // Add your application logic here
-}
-
-document.addEventListener('DOMContentLoaded', initApp);"""
+							"// Application JavaScript file"
 						}
 					}
 					derived.contains(".css") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""/* Complete Piano Tiles Game Styles */
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-}
+							"/* Game CSS styles */"
 
-.game-container {
-    text-align: center;
-    background: rgba(0, 0, 0, 0.8);
-    padding: 30px;
-    border-radius: 15px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-}
-
-h1 {
-    margin-bottom: 30px;
-    font-size: 2.5em;
-    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-#game-board {
-    position: relative;
-    width: 300px;
-    height: 400px;
-    margin: 0 auto 20px;
-    border: 3px solid #fff;
-    border-radius: 10px;
-    overflow: hidden;
-    background: #000;
-}
-
-.tile-row {
-    position: absolute;
-    width: 100%;
-    height: 100px;
-    display: flex;
-    transition: top 0.3s ease;
-}
-
-.tile {
-    flex: 1;
-    height: 100%;
-    border: 1px solid #333;
-    cursor: pointer;
-    transition: background-color 0.2s ease;
-}
-
-.tile:hover {
-    background-color: #444 !important;
-}
-
-.tile.black {
-    background-color: #000;
-}
-
-.tile:not(.black) {
-    background-color: #fff;
-}
-
-.score-container {
-    font-size: 1.5em;
-    margin: 20px 0;
-}
-
-#score {
-    font-weight: bold;
-    color: #ffd700;
-}
-
-#start-btn {
-    background: linear-gradient(45deg, #ff6b6b, #ee5a24);
-    color: white;
-    border: none;
-    padding: 15px 30px;
-    font-size: 1.2em;
-    border-radius: 25px;
-    cursor: pointer;
-    transition: transform 0.2s ease;
-}
-
-#start-btn:hover {
-    transform: scale(1.05);
-}"""
+							"/* Game CSS styles */"
 						} else {
-							"""/* Application Styles */
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background-color: #f5f5f5;
-    color: #333;
-}
-
-.app-container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 20px;
-}
-
-h1 {
-    color: #2c3e50;
-    text-align: center;
-}
-
-#content {
-    background: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-}"""
+							"/* Application CSS styles */"
 						}
 					}
 					else -> "# File content"
@@ -4365,96 +3301,7 @@ h1 {
 					val cssPath = File(projectDir, "static/style.css").absolutePath
 					val cssFile = File(cssPath)
 					if (!cssFile.exists()) {
-						val cssContent = """/* Complete Piano Tiles Game Styles */
-body {
-    margin: 0;
-    padding: 0;
-    font-family: Arial, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-}
-
-.game-container {
-    text-align: center;
-    background: rgba(0, 0, 0, 0.8);
-    padding: 30px;
-    border-radius: 15px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-}
-
-h1 {
-    margin-bottom: 30px;
-    font-size: 2.5em;
-    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-#game-board {
-    position: relative;
-    width: 300px;
-    height: 400px;
-    margin: 0 auto 20px;
-    border: 3px solid #fff;
-    border-radius: 10px;
-    overflow: hidden;
-    background: #000;
-}
-
-.tile-row {
-    position: absolute;
-    width: 100%;
-    height: 100px;
-    display: flex;
-    transition: top 0.3s ease;
-}
-
-.tile {
-    flex: 1;
-    height: 100%;
-    border: 1px solid #333;
-    cursor: pointer;
-    transition: background-color 0.2s ease;
-}
-
-.tile:hover {
-    background-color: #444 !important;
-}
-
-.tile.black {
-    background-color: #000;
-}
-
-.tile:not(.black) {
-    background-color: #fff;
-}
-
-.score-container {
-    font-size: 1.5em;
-    margin: 20px 0;
-}
-
-#score {
-    font-weight: bold;
-    color: #ffd700;
-}
-
-#start-btn {
-    background: linear-gradient(45deg, #ff6b6b, #ee5a24);
-    color: white;
-    border: none;
-    padding: 15px 30px;
-    font-size: 1.2em;
-    border-radius: 25px;
-    cursor: pointer;
-    transition: transform 0.2s ease;
-}
-
-#start-btn:hover {
-    transform: scale(1.05);
-}"""
+						val cssContent = "/* Game CSS styles */"
 						cssFile.writeText(cssContent)
 					}
 					
@@ -4462,113 +3309,14 @@ h1 {
 					val jsPath = File(projectDir, "static/script.js").absolutePath
 					val jsFile = File(jsPath)
 					if (!jsFile.exists()) {
-						val jsContent = """// Complete Piano Tiles Game Logic
-let gameState = {
-    score: 0,
-    isRunning: false,
-    currentRow: 0,
-    gameSpeed: 1000
-};
-
-const gameBoard = document.getElementById('game-board');
-const scoreElement = document.getElementById('score');
-const startBtn = document.getElementById('start-btn');
-
-function createTile(isBlack = false) {
-    const tile = document.createElement('div');
-    tile.className = 'tile' + (isBlack ? ' black' : '');
-    tile.addEventListener('click', () => handleTileClick(tile, isBlack));
-    return tile;
-}
-
-function generateRow() {
-    const row = document.createElement('div');
-    row.className = 'tile-row';
-    
-    const blackIndex = Math.floor(Math.random() * 4);
-    for (let i = 0; i < 4; i++) {
-        const tile = createTile(i === blackIndex);
-        row.appendChild(tile);
-    }
-    
-    return row;
-}
-
-function handleTileClick(tile, isBlack) {
-    if (!gameState.isRunning) return;
-    
-    if (isBlack) {
-        gameState.score++;
-        scoreElement.textContent = gameState.score;
-        tile.remove();
-        
-        // Increase speed every 10 points
-        if (gameState.score % 10 === 0) {
-            gameState.gameSpeed = Math.max(200, gameState.gameSpeed - 100);
-        }
-    } else {
-        endGame();
-    }
-}
-
-function startGame() {
-    gameState.score = 0;
-    gameState.isRunning = true;
-    gameState.gameSpeed = 1000;
-    scoreElement.textContent = '0';
-    gameBoard.innerHTML = '';
-    
-    // Generate initial rows
-    for (let i = 0; i < 4; i++) {
-        const row = generateRow();
-        row.style.top = (i * 100) + 'px';
-        gameBoard.appendChild(row);
-    }
-    
-    // Start game loop
-    gameLoop();
-}
-
-function gameLoop() {
-    if (!gameState.isRunning) return;
-    
-    // Move existing rows down
-    const rows = document.querySelectorAll('.tile-row');
-    rows.forEach(row => {
-        const currentTop = parseInt(row.style.top) || 0;
-        row.style.top = (currentTop + 100) + 'px';
-        
-        // Remove rows that are off-screen
-        if (currentTop > 400) {
-            row.remove();
-        }
-    });
-    
-    // Add new row at top
-    const newRow = generateRow();
-    newRow.style.top = '-100px';
-    gameBoard.appendChild(newRow);
-    
-    setTimeout(gameLoop, gameState.gameSpeed);
-}
-
-function endGame() {
-    gameState.isRunning = false;
-    alert('Game Over! Final Score: ' + gameState.score);
-}
-
-startBtn.addEventListener('click', startGame);
-
-// Initialize game
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Piano Tiles game loaded');
-});"""
+						val jsContent = "// Game JavaScript file"
 						jsFile.writeText(jsContent)
 					}
 				}
 				
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
 				}
+			else -> proposed
 			}
 			"run_shell" -> {
                 // Special handling for different types of shell tasks
