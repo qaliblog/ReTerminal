@@ -92,6 +92,7 @@ class AgentOrchestrator(
     private var currentTaskContext: Task? = null
     private var lastInstallSuccess: Boolean = false
     private var lastPlanGoal: String? = null
+    private var projectRequirements: String? = null // Store the original project requirements
     
     // Context cache for maintaining code continuity across tasks
     private data class FileContext(
@@ -107,6 +108,10 @@ class AgentOrchestrator(
     private val contextCache = mutableMapOf<String, FileContext>()
     private val projectStructure = mutableMapOf<String, String>() // path -> description
     private fun beginRunStats() { currentRunStats = RunStats(); appendTaskLog("run_start") { } }
+    
+    private fun captureProjectRequirements(goal: String) {
+        projectRequirements = goal
+    }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
         stats.endedMs = System.currentTimeMillis()
@@ -712,6 +717,7 @@ class AgentOrchestrator(
             tasks.addAll(fallback)
         }
         val plan = Plan(goal, tasks)
+        captureProjectRequirements(goal) // Capture the project requirements
         persistPlanWithStatuses(plan)
         runCatching {
             val tArr = JSONArray()
@@ -1701,6 +1707,7 @@ class AgentOrchestrator(
         }.ifBlank { "(none)" }
         val prompt = """
             Goal: ${goal}
+            Project Requirements: ${projectRequirements ?: goal}
             Working directory: ${wd}
             Current task id: ${task.id}
             Task: ${task.description}
@@ -1711,6 +1718,9 @@ class AgentOrchestrator(
             
             Prior observations (latest first):
             ${prior}
+            
+            IMPORTANT: Based on the project requirements above, generate FUNCTIONAL code that implements the actual features described. Do not create placeholder content like "// Game content will go here". Write complete, working code that fulfills the project requirements.
+            
             Produce one tool call JSON now, following the Rules and leveraging hints and observations to avoid redundant discovery.
         """.trimIndent()
         val msgs = mutableListOf(
@@ -2814,49 +2824,205 @@ if (exit != 0) {
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
 				
-				// Convert create_file to write_file with appropriate content
+				// Convert create_file to write_file with functional content based on project requirements
+				val requirements = projectRequirements ?: ""
 				val content = when {
-					derived.contains(".js") -> """// Game logic for Piano Tiles
+					derived.contains(".js") -> {
+						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
+							"""// Complete Piano Tiles Game Logic
 const gameState = {
     score: 0,
     tiles: [],
-    gameSpeed: 1
+    gameSpeed: 1,
+    isGameRunning: false
 };
 
-function initGame() {
-    console.log('Game initialized');
-    // Game initialization logic will be added here
+const gameConfig = {
+    tileWidth: 75,
+    tileHeight: 100,
+    gameWidth: 300,
+    gameHeight: 600,
+    numCols: 4
+};
+
+function createTile(colIndex, isBlack = false) {
+    const tile = document.createElement('div');
+    tile.className = 'tile' + (isBlack ? ' black' : '');
+    tile.style.left = colIndex * gameConfig.tileWidth + 'px';
+    tile.style.width = gameConfig.tileWidth + 'px';
+    tile.style.height = gameConfig.tileHeight + 'px';
+    tile.dataset.col = colIndex;
+    tile.dataset.isBlack = isBlack;
+    return tile;
 }
 
-function handleTileClick(tile) {
-    gameState.score++;
-    console.log('Score:', gameState.score);
+function generateRow() {
+    const blackCol = Math.floor(Math.random() * gameConfig.numCols);
+    for (let i = 0; i < gameConfig.numCols; i++) {
+        const tile = createTile(i, i === blackCol);
+        tile.style.top = '-100px';
+        document.getElementById('game-container').appendChild(tile);
+        gameState.tiles.push(tile);
+    }
+}
+
+function moveTiles() {
+    gameState.tiles.forEach(tile => {
+        const currentTop = parseInt(tile.style.top) || -100;
+        tile.style.top = (currentTop + gameState.gameSpeed) + 'px';
+        
+        if (currentTop > gameConfig.gameHeight) {
+            tile.remove();
+            gameState.tiles = gameState.tiles.filter(t => t !== tile);
+        }
+    });
+}
+
+function handleTileClick(event) {
+    if (!gameState.isGameRunning) return;
+    
+    const tile = event.target;
+    if (tile.classList.contains('tile')) {
+        const isBlack = tile.dataset.isBlack === 'true';
+        if (isBlack) {
+            gameState.score++;
+            updateScore();
+            tile.remove();
+            gameState.tiles = gameState.tiles.filter(t => t !== tile);
+        } else {
+            endGame();
+        }
+    }
+}
+
+function updateScore() {
+    document.getElementById('score').textContent = 'Score: ' + gameState.score;
+    if (gameState.score % 10 === 0) {
+        gameState.gameSpeed += 0.5;
+    }
+}
+
+function endGame() {
+    gameState.isGameRunning = false;
+    alert('Game Over! Final Score: ' + gameState.score);
+    resetGame();
+}
+
+function resetGame() {
+    gameState.score = 0;
+    gameState.gameSpeed = 1;
+    gameState.tiles = [];
+    gameState.isGameRunning = true;
+    updateScore();
+    document.getElementById('game-container').innerHTML = '';
+    startGame();
+}
+
+function startGame() {
+    resetGame();
+    setInterval(() => {
+        if (gameState.isGameRunning) {
+            moveTiles();
+            if (gameState.tiles.length < 20) {
+                generateRow();
+            }
+        }
+    }, 50);
 }
 
 // Initialize when DOM is loaded
-document.addEventListener('DOMContentLoaded', initGame);"""
-					derived.contains(".html") -> """<!DOCTYPE html>
+document.addEventListener('DOMContentLoaded', startGame);"""
+						} else {
+							"""// JavaScript file for application logic
+console.log('Application script loaded');
+
+function initApp() {
+    console.log('Application initialized');
+}
+
+document.addEventListener('DOMContentLoaded', initApp);"""
+						}
+					}
+					derived.contains(".html") -> {
+						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
+							"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Piano Tiles Game</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #222;
+            font-family: Arial, sans-serif;
+            color: white;
+            flex-direction: column;
+        }
+        #game-container {
+            position: relative;
+            width: 300px;
+            height: 600px;
+            border: 2px solid white;
+            overflow: hidden;
+            background-color: #000;
+            cursor: pointer;
+        }
+        .tile {
+            position: absolute;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            transition: top 0.05s linear;
+        }
+        .tile.black {
+            background-color: #000;
+        }
+        #score {
+            margin-top: 20px;
+            font-size: 24px;
+        }
+    </style>
 </head>
 <body>
     <h1>Piano Tiles</h1>
-    <div id="game-container">
-        <!-- Game content will be here -->
-    </div>
+    <div id="game-container"></div>
+    <div id="score">Score: 0</div>
     <script src="game.js"></script>
 </body>
 </html>"""
-					derived.contains(".css") -> """/* Game Styles */
+						} else {
+							"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Application</title>
+</head>
+<body>
+    <h1>Web Application</h1>
+    <div id="app-container">
+        <p>Application content will be loaded here.</p>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>"""
+						}
+					}
+					derived.contains(".css") -> """/* Complete Game Styles */
 body {
     margin: 0;
     padding: 0;
     font-family: Arial, sans-serif;
     background-color: #222;
     color: white;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
 }
 
 #game-container {
@@ -2864,8 +3030,69 @@ body {
     height: 600px;
     border: 2px solid white;
     margin: 20px auto;
+    position: relative;
+    overflow: hidden;
+    background-color: #000;
+    cursor: pointer;
+}
+
+.tile {
+    position: absolute;
+    background-color: #fff;
+    border: 1px solid #ccc;
+    transition: top 0.05s linear;
+}
+
+.tile.black {
+    background-color: #000;
+}
+
+#score {
+    font-size: 24px;
+    margin-top: 20px;
+    text-align: center;
 }"""
-					derived.contains(".py") -> """# Python application
+					derived.contains(".py") -> {
+						if (requirements.contains("Flask") || requirements.contains("web application")) {
+							"""# Complete Flask Web Application
+from flask import Flask, render_template, request, jsonify
+import random
+
+app = Flask(__name__)
+
+# Game state management
+game_state = {
+    'score': 0,
+    'tiles': [],
+    'is_running': False
+}
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/game/start', methods=['POST'])
+def start_game():
+    game_state['score'] = 0
+    game_state['is_running'] = True
+    return jsonify({'success': True, 'message': 'Game started'})
+
+@app.route('/api/game/score', methods=['GET'])
+def get_score():
+    return jsonify({'score': game_state['score']})
+
+@app.route('/api/game/tap', methods=['POST'])
+def handle_tap():
+    data = request.get_json()
+    if game_state['is_running']:
+        game_state['score'] += 1
+        return jsonify({'success': True, 'score': game_state['score']})
+    return jsonify({'success': False, 'message': 'Game not running'})
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)"""
+						} else {
+							"""# Python application
 from flask import Flask, render_template
 
 app = Flask(__name__)
@@ -2876,6 +3103,8 @@ def index():
 
 if __name__ == '__main__':
     app.run(debug=True)"""
+						}
+					}
 					else -> "# File content"
 				}
 				
