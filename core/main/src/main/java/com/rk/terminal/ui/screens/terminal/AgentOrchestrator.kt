@@ -2834,6 +2834,16 @@ if (exit != 0) {
 				val derived = when {
 					suggested.isNotBlank() -> suggested
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
+					// Handle directory creation for static files
+					desc.contains("static") && desc.contains("directory") -> {
+						// Create both static and templates directories
+						val staticDir = File(workingDirProvider(), "static")
+						val templatesDir = File(workingDirProvider(), "templates")
+						if (!staticDir.exists()) staticDir.mkdirs()
+						if (!templatesDir.exists()) templatesDir.mkdirs()
+						// Return the static directory path for this call
+						staticDir.absolutePath
+					}
 					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "static/script.js").absolutePath
 					desc.contains("html") -> File(workingDirProvider(), "templates/index.html").absolutePath
 					desc.contains("css") -> File(workingDirProvider(), "static/style.css").absolutePath
@@ -2844,6 +2854,8 @@ if (exit != 0) {
 				// Convert create_file to write_file with functional content based on project requirements
 				val requirements = projectRequirements ?: ""
 				val content = when {
+					// Handle directory creation - create a placeholder file
+					derived.contains("static") && desc.contains("directory") -> "# Static files directory created"
 					derived.contains(".py") -> {
 						if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
 							"""# Complete Flask Web Application for Piano Tiles Game
