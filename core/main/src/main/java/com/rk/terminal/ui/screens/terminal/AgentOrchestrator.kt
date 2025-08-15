@@ -2590,7 +2590,8 @@ if (exit != 0) {
 				return if (f.exists() && f.isFile) {
 					ToolCall("read_file", JSONObject().put("path", derived).put("max_bytes", 200_000))
 				} else {
-					ToolCall("create_file", JSONObject().put("path", derived))
+					// For write_file tasks, always use write_file, not create_file
+					ToolCall("write_file", JSONObject().put("path", derived).put("content", "").put("mode", "overwrite"))
 				}
 			}
 			"run_shell" -> if (proposed.type.isNotBlank()) proposed else ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
