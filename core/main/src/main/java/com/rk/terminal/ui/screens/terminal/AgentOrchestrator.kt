@@ -3992,8 +3992,8 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 				// Check if the proposed tool call has content
 				val proposedContent = proposed.args.optString("content")
 				if (proposedContent.isNotBlank()) {
-					return proposed
-				}
+					proposed
+				} else {
 				
 				// If no content provided, generate functional content based on requirements
 				val requirements = projectRequirements ?: ""
@@ -4565,9 +4565,10 @@ document.addEventListener('DOMContentLoaded', () => {
 					}
 				}
 				
-				return toolCall
+				toolCall
+				}
 			}
-			            			"run_shell" -> {
+			"run_shell" -> {
                 // Special handling for different types of shell tasks
                 val desc = (task.description ?: "").lowercase()
                 when {
