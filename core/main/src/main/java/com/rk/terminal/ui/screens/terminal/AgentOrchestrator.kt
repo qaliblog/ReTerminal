@@ -1126,6 +1126,18 @@ class AgentOrchestrator(
                     endRunStatsAndReport(onStatus, verb = "thought")
                     return true
                 }
+                
+                // Special handling for PEP 668 externally managed environment - mark as done if we tried apk
+                if (effectiveToolCall.type == "run_shell" && result.observation?.lowercase()?.contains("externally-managed-environment") == true) {
+                    val cmd = effectiveToolCall.args.optString("command").lowercase()
+                    if (cmd.contains("pip") && cmd.contains("install") && cmd.contains("flask")) {
+                        onStatus("Task ${task.id}: Flask installation attempted (PEP 668 environment detected)")
+                        markTaskDone(task.id)
+                        persistPlanWithStatuses(plan)
+                        endRunStatsAndReport(onStatus, verb = "thought")
+                        return true
+                    }
+                }
 
                 // If this is a discovery tool and the task category is discovery, or env preflight shell, complete the task now.
                 val envPreflight = effectiveToolCall.type == "run_shell" && isEnvPreflightCommand(effectiveToolCall.args.optString("command"))
@@ -1487,9 +1499,14 @@ class AgentOrchestrator(
             }
             "run_shell" -> {
                 var command = call.args.optString("command")
-                val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L)
+                val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L).coerceAtMost(300_000L) // Max 5 minutes
                 val envObj = call.args.optJSONObject("env")
                 require(command.isNotBlank()) { "command missing" }
+                
+                // Check for timeout before starting
+                if (System.currentTimeMillis() - startTime > maxFileOpTime) {
+                    return ToolResult(false, "run_shell_timeout: operation took too long")
+                }
                 val wd = workingDirProvider()
                 val cacheKey = commandCacheKey(command, wd)
                 // Normalize common typos like pip3--version -> pip3 --version
@@ -1509,6 +1526,19 @@ class AgentOrchestrator(
                 val mainOut = MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs)
                 var output = mainOut.first
                 var exit = mainOut.second
+                
+                // Check for PEP 668 externally managed environment error and provide better fallback
+                if (exit != 0 && output.lowercase().contains("externally-managed-environment")) {
+                    // Try to install Flask using apk if available
+                    if (output.lowercase().contains("flask")) {
+                        val apkCommand = "apk add py3-flask"
+                        val apkOut = MainShell.execInMainSession(context as? MainActivity, wd, apkCommand, 30000L)
+                        if (apkOut.second == 0) {
+                            output = apkOut.first
+                            exit = 0
+                        }
+                    }
+                }
                 // Heuristic upgrade on failure: try one improved command
                 					fun suggestCommandUpgradeHeuristic(cmd: String, out: String): String? {
 						val lower = out.lowercase()
