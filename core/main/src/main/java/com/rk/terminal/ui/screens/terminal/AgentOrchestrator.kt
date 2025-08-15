@@ -3135,8 +3135,13 @@ if __name__ == '__main__':
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
 					desc.contains("requirements") -> File(workingDirProvider(), "requirements.txt").absolutePath
 					desc.contains("html") -> {
-						// Check if it's a template file for Flask
-						if (desc.contains("template") || desc.contains("game")) {
+						// Always use templates/index.html for Flask applications
+						// Check if this is a Flask project by looking at requirements or existing files
+						val requirementsFile = File(workingDirProvider(), "requirements.txt")
+						val appFile = File(workingDirProvider(), "app.py")
+						val isFlaskProject = requirementsFile.exists() || appFile.exists() || desc.contains("template") || desc.contains("game") || desc.contains("flask")
+						
+						if (isFlaskProject) {
 							File(workingDirProvider(), "templates/index.html").absolutePath
 						} else {
 							File(workingDirProvider(), "index.html").absolutePath
