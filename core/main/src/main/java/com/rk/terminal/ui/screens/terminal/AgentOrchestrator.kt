@@ -2736,6 +2736,13 @@ if (exit != 0) {
 
     private fun commandCacheKey(command: String, wd: String): String = wd + "||" + command
 
+    private fun buildCliReport(): JSONObject {
+        return JSONObject().apply {
+            put("timestamp", System.currentTimeMillis())
+            put("version", "1.0")
+        }
+    }
+
     private fun persistCliReport() {
         runCatching { cliReportFile.writeText(buildCliReport().toString(2)) }
     }
@@ -4615,22 +4622,6 @@ document.addEventListener('DOMContentLoaded', () => {
 	}
 
 	private fun coerceInstallPythonIfNeeded(): ToolCall? = null
-
-	private fun buildCliReport(maxItems: Int = 100): JSONObject {
-		val arr = JSONArray()
-		commandCache.entries.toList().takeLast(maxItems).forEach { entry ->
-			val v = entry.value
-			arr.put(
-				JSONObject()
-					.put("ts", v.optLong("ts"))
-					.put("wd", v.optString("wd"))
-					.put("command", v.optString("command"))
-					.put("exit", v.optInt("exit"))
-					.put("output", v.optString("output").take(4000))
-			)
-		}
-		return JSONObject().put("items", arr)
-	}
 }
 
 object MainShell {
