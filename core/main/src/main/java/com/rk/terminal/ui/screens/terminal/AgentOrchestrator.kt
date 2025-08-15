@@ -92,6 +92,20 @@ class AgentOrchestrator(
     private var currentTaskContext: Task? = null
     private var lastInstallSuccess: Boolean = false
     private var lastPlanGoal: String? = null
+    
+    // Context cache for maintaining code continuity across tasks
+    private data class FileContext(
+        val path: String,
+        val content: String,
+        val type: String, // "python", "html", "css", "js", "config"
+        val functions: List<String> = emptyList(),
+        val classes: List<String> = emptyList(),
+        val routes: List<String> = emptyList(),
+        val dependencies: List<String> = emptyList()
+    )
+    
+    private val contextCache = mutableMapOf<String, FileContext>()
+    private val projectStructure = mutableMapOf<String, String>() // path -> description
     private fun beginRunStats() { currentRunStats = RunStats(); appendTaskLog("run_start") { } }
     private fun endRunStatsAndReport(onStatus: (String) -> Unit, verb: String = "thought") {
         val stats = currentRunStats ?: return
@@ -203,6 +217,89 @@ class AgentOrchestrator(
             val obj = JSONObject()
             commandCache.forEach { (k, v) -> obj.put(k, v) }
             commandsCacheFile.writeText(obj.toString(2))
+        }
+    }
+    
+    private fun updateContextCache(filePath: String, content: String, fileType: String = "unknown") {
+        val context = FileContext(
+            path = filePath,
+            content = content,
+            type = fileType,
+            functions = extractFunctions(content, fileType),
+            classes = extractClasses(content, fileType),
+            routes = extractRoutes(content, fileType),
+            dependencies = extractDependencies(content, fileType)
+        )
+        contextCache[filePath] = context
+        projectStructure[filePath] = getFileDescription(filePath, content)
+    }
+    
+    private fun extractFunctions(content: String, fileType: String): List<String> {
+        return when (fileType) {
+            "python" -> Regex("def\\s+(\\w+)\\s*\\(").findAll(content).map { it.groupValues[1] }.toList()
+            "javascript" -> Regex("function\\s+(\\w+)\\s*\\(").findAll(content).map { it.groupValues[1] }.toList()
+            else -> emptyList()
+        }
+    }
+    
+    private fun extractClasses(content: String, fileType: String): List<String> {
+        return when (fileType) {
+            "python" -> Regex("class\\s+(\\w+)").findAll(content).map { it.groupValues[1] }.toList()
+            "javascript" -> Regex("class\\s+(\\w+)").findAll(content).map { it.groupValues[1] }.toList()
+            else -> emptyList()
+        }
+    }
+    
+    private fun extractRoutes(content: String, fileType: String): List<String> {
+        return when (fileType) {
+            "python" -> Regex("@app\\.route\\('([^']+)'\\)").findAll(content).map { it.groupValues[1] }.toList()
+            else -> emptyList()
+        }
+    }
+    
+    private fun extractDependencies(content: String, fileType: String): List<String> {
+        return when (fileType) {
+            "python" -> Regex("import\\s+(\\w+)").findAll(content).map { it.groupValues[1] }.toList() +
+                       Regex("from\\s+(\\w+)").findAll(content).map { it.groupValues[1] }.toList()
+            "javascript" -> Regex("import\\s+.*?from\\s+['\"]([^'\"]+)['\"]").findAll(content).map { it.groupValues[1] }.toList()
+            else -> emptyList()
+        }
+    }
+    
+    private fun getFileDescription(filePath: String, content: String): String {
+        return when {
+            filePath.endsWith(".py") -> "Python file with ${extractFunctions(content, "python").size} functions"
+            filePath.endsWith(".html") -> "HTML template file"
+            filePath.endsWith(".js") -> "JavaScript file with ${extractFunctions(content, "javascript").size} functions"
+            filePath.endsWith(".css") -> "CSS stylesheet"
+            filePath.endsWith("requirements.txt") -> "Python dependencies"
+            filePath.endsWith("README.md") -> "Project documentation"
+            else -> "Configuration or data file"
+        }
+    }
+    
+    private fun getContextSummary(): String {
+        if (contextCache.isEmpty()) return "No files created yet."
+        
+        return buildString {
+            appendLine("## Project Context Summary")
+            appendLine("Created files and their key components:")
+            
+            contextCache.values.forEach { context ->
+                appendLine("- **${context.path}** (${context.type})")
+                if (context.functions.isNotEmpty()) {
+                    appendLine("  - Functions: ${context.functions.joinToString(", ")}")
+                }
+                if (context.classes.isNotEmpty()) {
+                    appendLine("  - Classes: ${context.classes.joinToString(", ")}")
+                }
+                if (context.routes.isNotEmpty()) {
+                    appendLine("  - Routes: ${context.routes.joinToString(", ")}")
+                }
+                if (context.dependencies.isNotEmpty()) {
+                    appendLine("  - Dependencies: ${context.dependencies.joinToString(", ")}")
+                }
+            }
         }
     }
 
@@ -1528,10 +1625,67 @@ class AgentOrchestrator(
              - After creating files, always write meaningful content to them using write_file.
              - For Flask applications, write complete server startup commands: python3 app.py or python3 -m flask run
              - Never use placeholder commands like 'echo noop' for real tasks - always execute the actual command.
+             
+             ## DEVELOPMENT STANDARDS & BEST PRACTICES
+             
+             ### Project Structure & Organization
+             - Create proper project directories with clear organization (src/, templates/, static/, etc.)
+             - Use standard naming conventions (snake_case for Python, camelCase for JavaScript)
+             - Separate concerns: templates, static files, configuration, tests
+             - Include README.md with setup and usage instructions
+             - Create proper Flask application structure with templates/ and static/ directories
+             
+             ### Code Quality Standards
+             - Write clean, readable, and well-documented code
+             - Include proper error handling and validation
+             - Use type hints in Python when possible
+             - Follow language-specific best practices and conventions
+             - Include comments for complex logic
+             - Handle edge cases and provide meaningful error messages
+             - Add proper HTTP status codes and error responses
+             
+             ### Python/Flask Applications
+             - Always use virtual environments: python3 -m venv venv && . venv/bin/activate
+             - Create requirements.txt with exact versions
+             - Use proper Flask application factory pattern
+             - Include proper template inheritance and static file organization
+             - Add configuration management and environment variables
+             - Include proper logging and debugging capabilities
+             - Handle CORS and security headers
+             - Create complete, functional applications with all necessary routes
+             
+             ### Web Applications
+             - Create responsive, mobile-friendly designs
+             - Use semantic HTML and accessibility features
+             - Implement proper CSS organization (BEM methodology)
+             - Add JavaScript error handling and user feedback
+             - Include loading states and progress indicators
+             - Optimize for performance (minification, compression)
+             - Add proper meta tags and SEO optimization
+             - Ensure all interactive features work properly
+             
+             ### File Creation Guidelines
+             - Use write_file for creating content, not create_file for empty files
+             - Always include complete, runnable code
+             - Create proper directory structure before files
+             - Include all necessary imports and dependencies
+             - Add proper error handling and validation
+             - Ensure files are self-contained and functional
+             - Add configuration files (package.json, requirements.txt, etc.)
+             - Create comprehensive documentation
+             
+             ### Context Awareness
+             - Maintain consistency across all files in a project
+             - Reference previously created files and functions
+             - Ensure naming conventions are consistent
+             - Build upon existing code structure and patterns
+             - Consider the overall application architecture
+             - Create complete applications, not just individual files
              - Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
         val prior = if (observations.isEmpty()) "(none)" else observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(500)}${if (v.length > 500) " …" else ""}" }
+        val contextSummary = getContextSummary()
         val hints = buildString {
             if (!task.targets.isNullOrEmpty()) append("targets: ").append(task.targets.joinToString(", ")).append('\n')
             if (!task.search.isNullOrEmpty()) append("search: ").append(task.search.joinToString(", ")).append('\n')
@@ -1544,6 +1698,9 @@ class AgentOrchestrator(
             Task: ${task.description}
             Task category: ${task.category ?: "unspecified"}
             Task hints: ${hints}
+            
+            ${contextSummary}
+            
             Prior observations (latest first):
             ${prior}
             Produce one tool call JSON now, following the Rules and leveraging hints and observations to avoid redundant discovery.
@@ -1669,7 +1826,21 @@ class AgentOrchestrator(
                     }
                     
                     val ok = f.exists() && f.length() >= 0
-                    if (ok) notifyWorkspaceChanged(f.absolutePath)
+                    if (ok) {
+                        notifyWorkspaceChanged(f.absolutePath)
+                        
+                        // Update context cache for code files
+                        val fileType = when {
+                            f.extension.lowercase() == "py" -> "python"
+                            f.extension.lowercase() == "js" -> "javascript"
+                            f.extension.lowercase() == "html" -> "html"
+                            f.extension.lowercase() == "css" -> "css"
+                            f.name.lowercase() == "requirements.txt" -> "config"
+                            f.name.lowercase() == "readme.md" -> "documentation"
+                            else -> "unknown"
+                        }
+                        updateContextCache(f.absolutePath, contentRaw, fileType)
+                    }
                     
                     // Skip hash calculation for large files to prevent freezing
                     val hash = if (f.length() < 100 * 1024) { // Only hash files smaller than 100KB
