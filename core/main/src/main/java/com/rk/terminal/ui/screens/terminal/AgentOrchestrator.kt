@@ -1285,11 +1285,11 @@ class AgentOrchestrator(
                 
                 // For placeholder commands when should be running real commands, mark as done immediately
                 if (isPlaceholderCommand && shouldBeRunningRealCommand) {
-                    onStatus("Task ${task.id}: detected placeholder command when should be running real command, marking task complete")
-                    markTaskDone(task.id)
-                    persistPlanWithStatuses(plan)
+                    onStatus("Task ${task.id}: detected placeholder command when should be running real command - forcing agent to run actual command")
+                    // Don't mark as done - force the agent to run the real command
+                    markTaskFailed(task.id, "placeholder_command_detected")
                     endRunStatsAndReport(onStatus, verb = "thought")
-                    return true
+                    return false
                 }
                     
                     // For other repeated observations, fail after 2 attempts with detailed debugging
@@ -1525,6 +1525,9 @@ class AgentOrchestrator(
              - On Alpine Linux, use 'apk add python3' and then create virtual environment with 'python3 -m venv venv'
              - If pip is not available, use 'python3 -m ensurepip' or install via virtual environment.
              - For package installation failures, try virtual environment approach: python3 -m venv venv && . venv/bin/activate && pip install <package>
+             - After creating files, always write meaningful content to them using write_file.
+             - For Flask applications, write complete server startup commands: python3 app.py or python3 -m flask run
+             - Never use placeholder commands like 'echo noop' for real tasks - always execute the actual command.
              - Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
