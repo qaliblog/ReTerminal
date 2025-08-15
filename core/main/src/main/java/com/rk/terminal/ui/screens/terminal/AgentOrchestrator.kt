@@ -1338,6 +1338,21 @@ class AgentOrchestrator(
                     }
                 }
                 
+                // Check for package installation failures and suggest virtual environment
+                val obs = result.observation?.lowercase() ?: ""
+                val isPackageInstallFailure = effectiveToolCall.type == "run_shell" && 
+                                            (obs.contains("no such package") || 
+                                             obs.contains("unable to select packages") ||
+                                             obs.contains("package not found"))
+                
+                if (isPackageInstallFailure) {
+                    onStatus("Task ${task.id}: Package installation failed - suggesting virtual environment approach")
+                    // Don't mark as failed - let the agent try virtual environment
+                    markTaskFailed(task.id, "package_installation_failed")
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return false
+                }
+                
                 // Failure without exception - provide detailed debugging
                 val failureDebugInfo = """
                     Task ${task.id} FAILED - General Failure:
@@ -1508,6 +1523,9 @@ class AgentOrchestrator(
              - When using write_file, always provide meaningful content - never write empty files.
              - For Flask apps, write complete application code with routes, game logic, and proper structure.
              - For HTML templates, write complete HTML with embedded CSS and JavaScript for full functionality.
+             - On Alpine Linux, use 'apk add python3' and then create virtual environment with 'python3 -m venv venv'
+             - If pip is not available, use 'python3 -m ensurepip' or install via virtual environment.
+             - For package installation failures, try virtual environment approach: python3 -m venv venv && . venv/bin/activate && pip install <package>
              - Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
