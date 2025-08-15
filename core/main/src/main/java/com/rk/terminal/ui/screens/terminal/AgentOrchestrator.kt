@@ -1339,7 +1339,6 @@ class AgentOrchestrator(
                 }
                 
                 // Check for package installation failures and suggest virtual environment
-                val obs = result.observation?.lowercase() ?: ""
                 val isPackageInstallFailure = effectiveToolCall.type == "run_shell" && 
                                             (obs.contains("no such package") || 
                                              obs.contains("unable to select packages") ||
