@@ -3081,7 +3081,7 @@ body {
 						}
 					}
 					// Handle ANY file modifications - universal preservation logic
-					(derived.contains(".") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit"))) -> {
+					(derived.contains(".") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) && !desc.contains("create")) -> {
 						// Universal file preservation - works for any file type and any modification
 						val fileExtension = derived.substringAfterLast(".")
 						val fileName = derived.substringAfterLast("/").substringBeforeLast(".")
@@ -3126,9 +3126,15 @@ body {
 						}
 					}
 					derived.contains(".py") -> {
+						// Dynamic Python app generation based on project requirements
 						val hasSocketIO = requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time") ||
 							desc.contains("SocketIO") || desc.contains("socket") || desc.contains("real-time")
-						if (hasSocketIO) {
+						val isCalculator = desc.contains("calculator") || requirements.contains("calculator")
+						val isGame = desc.contains("game") || requirements.contains("game") || desc.contains("piano") || desc.contains("tic") || desc.contains("chess")
+						val isWebApp = desc.contains("web") || desc.contains("flask") || desc.contains("app") || requirements.contains("flask")
+						
+						when {
+							hasSocketIO -> {
 							"""# Complete Flask-SocketIO Web Application for Piano Tiles Game
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -3173,7 +3179,58 @@ def handle_tap_tile(data):
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)"""
-						} else if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
+						}
+						isCalculator -> {
+							"""# Complete Flask Calculator Web Application
+from flask import Flask, render_template, request, jsonify
+import math
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/calculate', methods=['POST'])
+def calculate():
+    try:
+        data = request.get_json()
+        expression = data.get('expression', '')
+        
+        # Safe evaluation of mathematical expressions
+        allowed_chars = set('0123456789+-*/.() ')
+        if not all(c in allowed_chars for c in expression):
+            return jsonify({'error': 'Invalid characters in expression'}), 400
+        
+        # Replace mathematical functions
+        expression = expression.replace('^', '**')
+        
+        result = eval(expression)
+        return jsonify({'result': result, 'expression': expression})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/calculate', methods=['POST'])
+def api_calculate():
+    try:
+        data = request.get_json()
+        expression = data.get('expression', '')
+        
+        # Safe evaluation
+        allowed_chars = set('0123456789+-*/.() ')
+        if not all(c in allowed_chars for c in expression):
+            return jsonify({'error': 'Invalid characters'}), 400
+        
+        expression = expression.replace('^', '**')
+        result = eval(expression)
+        return jsonify({'result': result})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)"""
+						}
+						isGame -> {
 							"""# Complete Flask Web Application for Piano Tiles Game
 from flask import Flask, render_template, request, jsonify
 import random
@@ -3211,7 +3268,30 @@ def handle_tap():
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)"""
-						} else {
+						}
+						isWebApp -> {
+							"""# Complete Flask Web Application
+from flask import Flask, render_template, request, jsonify
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/data', methods=['GET'])
+def get_data():
+    return jsonify({'message': 'Hello from Flask API'})
+
+@app.route('/api/submit', methods=['POST'])
+def submit_data():
+    data = request.get_json()
+    return jsonify({'received': data, 'status': 'success'})
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)"""
+						}
+						else -> {
 							"""# Python application
 from flask import Flask, render_template
 
