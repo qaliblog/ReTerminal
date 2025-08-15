@@ -2856,6 +2856,14 @@ if (exit != 0) {
 				val content = when {
 					// Handle directory creation - create a placeholder file
 					derived.contains("static") && desc.contains("directory") -> "# Static files directory created"
+					// Handle requirements.txt - include Flask-SocketIO if needed
+					derived.contains("requirements.txt") -> {
+						if (requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time")) {
+							"Flask==3.1.1\nFlask-SocketIO==5.3.6\nWerkzeug==3.1.3"
+						} else {
+							"Flask==3.1.1\nWerkzeug==3.1.3"
+						}
+					}
 					derived.contains(".py") -> {
 						if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
 							"""# Complete Flask Web Application for Piano Tiles Game
