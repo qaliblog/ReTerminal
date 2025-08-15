@@ -1164,6 +1164,10 @@ class AgentOrchestrator(
                 val isEmptyFile = isReadFile && obs.contains("\"bytes\":0") && obs.contains("\"content\":\"\"")
                 val shouldBeWriting = shouldUseWriteFile(task)
                 
+                // Special handling for listing directories when should be creating directories
+                val isListDir = effectiveToolCall.type == "list_dir" || effectiveToolCall.type == "list_dir_recursive"
+                val shouldBeCreatingDir = shouldUseMakeDir(task)
+                
                 // For empty directories, allow only 1 retry then fail gracefully
                 if (isEmptyDir && repeatedObservationCount <= 1) {
                     onStatus("Task ${task.id}: empty directory detected, marking task complete")
@@ -1176,6 +1180,15 @@ class AgentOrchestrator(
                 // For reading empty files when should be writing, mark as done and suggest correction
                 if (isEmptyFile && shouldBeWriting && repeatedObservationCount <= 1) {
                     onStatus("Task ${task.id}: detected reading empty file when should be writing, marking task complete")
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                
+                // For listing directories when should be creating directories, mark as done
+                if (isListDir && shouldBeCreatingDir && repeatedObservationCount <= 1) {
+                    onStatus("Task ${task.id}: detected listing directory when should be creating directory, marking task complete")
                     markTaskDone(task.id)
                     persistPlanWithStatuses(plan)
                     endRunStatsAndReport(onStatus, verb = "thought")
@@ -1296,6 +1309,12 @@ class AgentOrchestrator(
         val desc = task.description.lowercase()
         return desc.contains("write") || desc.contains("create") || desc.contains("add") || 
                desc.contains("generate") || desc.contains("build") || desc.contains("make")
+    }
+    
+    private fun shouldUseMakeDir(task: Task): Boolean {
+        val desc = task.description.lowercase()
+        return desc.contains("create") && (desc.contains("directory") || desc.contains("dir") || desc.contains("folder")) ||
+               task.category == "make_dir"
     }
 
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
