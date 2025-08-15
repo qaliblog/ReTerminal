@@ -1624,6 +1624,8 @@ class AgentOrchestrator(
              - For package installation failures, try virtual environment approach: python3 -m venv venv && . venv/bin/activate && pip install <package>
              - CRITICAL: When you see "externally-managed-environment" or "PEP 668" errors, IMMEDIATELY use virtual environment: python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt
              - ALWAYS create virtual environment BEFORE installing Python packages on Alpine Linux
+             - IMPORTANT: Create requirements.txt BEFORE attempting to install packages
+             - TASK ORDERING: Create configuration files first, then install dependencies, then create application files
              - After creating files, always write meaningful content to them using write_file.
              - For Flask applications, write complete server startup commands: python3 app.py or python3 -m flask run
              - Never use placeholder commands like 'echo noop' for real tasks - always execute the actual command.
@@ -1737,7 +1739,10 @@ class AgentOrchestrator(
         
         // Add timeout protection for file operations
         val startTime = System.currentTimeMillis()
-        val maxFileOpTime = 10000L // 10 seconds max for file operations
+        val maxFileOpTime = 15000L // 15 seconds max for file operations
+        
+        // Add global timeout protection to prevent freezing
+        val globalTimeout = 30000L // 30 seconds max for any operation
         // Fallback: if tool type is blank, attempt to coerce from current task category
         if (tc.type.isBlank()) {
             val task = currentTaskContext
@@ -1798,10 +1803,15 @@ class AgentOrchestrator(
                     return ToolResult(false, "content_too_large: content exceeds 1MB limit")
                 }
                 
-                // Check timeout
-                if (System.currentTimeMillis() - startTime > maxFileOpTime) {
-                    return ToolResult(false, "write_file_timeout: operation took too long")
-                }
+                        // Check timeout
+        if (System.currentTimeMillis() - startTime > maxFileOpTime) {
+            return ToolResult(false, "write_file_timeout: operation took too long")
+        }
+        
+        // Check global timeout
+        if (System.currentTimeMillis() - startTime > globalTimeout) {
+            return ToolResult(false, "global_timeout: operation exceeded maximum time limit")
+        }
                 
                 try {
                     val f = resolvePath(path)
@@ -1888,6 +1898,11 @@ class AgentOrchestrator(
                 // Check for timeout before starting
                 if (System.currentTimeMillis() - startTime > maxFileOpTime) {
                     return ToolResult(false, "run_shell_timeout: operation took too long")
+                }
+                
+                // Check global timeout
+                if (System.currentTimeMillis() - startTime > globalTimeout) {
+                    return ToolResult(false, "global_timeout: operation exceeded maximum time limit")
                 }
                 val wd = workingDirProvider()
                 val cacheKey = commandCacheKey(command, wd)
@@ -2817,8 +2832,15 @@ if (exit != 0) {
                 // Special handling for package installation tasks
                 val desc = (task.description ?: "").lowercase()
                 if (desc.contains("install") || desc.contains("dependencies") || desc.contains("packages")) {
-                    // Always use virtual environment for package installation
-                    ToolCall("run_shell", JSONObject().put("command", "python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt").put("timeout_ms", 60000))
+                    // Check if requirements.txt exists first
+                    val requirementsFile = File(workingDirProvider(), "requirements.txt")
+                    if (requirementsFile.exists()) {
+                        // Use virtual environment for package installation
+                        ToolCall("run_shell", JSONObject().put("command", "python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt").put("timeout_ms", 60000))
+                    } else {
+                        // Create requirements.txt first, then install
+                        ToolCall("write_file", JSONObject().put("path", "requirements.txt").put("content", "Flask==3.1.1\nWerkzeug==3.1.3").put("mode", "overwrite"))
+                    }
                 } else if (proposed.type.isNotBlank()) {
                     proposed
                 } else {
