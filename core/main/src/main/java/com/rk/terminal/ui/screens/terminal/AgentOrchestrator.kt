@@ -608,21 +608,10 @@ class AgentOrchestrator(
             }
         }
         if (tasks.isEmpty()) {
-            // Fallback minimal discovery plan to avoid zero-task output
+            // Simple fallback plan to avoid zero-task output
             val fallback = mutableListOf<Task>()
             fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
-            
-            // Check if workspace is empty and suggest file creation instead of recursive listing
-            val wd = File(wdPath)
-            if (wd.exists() && wd.isDirectory && wd.listFiles()?.isEmpty() != false) {
-                // Empty workspace - suggest creating files instead of recursive listing
-                fallback.add(Task("t2", "Create initial project structure", "create_file", listOf("README.md"), null, null))
-                fallback.add(Task("t3", "Create main application file", "create_file", listOf("main.py"), null, null))
-            } else {
-                // Non-empty workspace - do normal discovery
-                fallback.add(Task("t2", "Recursive listing of likely source directories", "list_dir_recursive", listOf(wdPath), null, null))
-                fallback.add(Task("t3", "Search for common project entry files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
-            }
+            fallback.add(Task("t2", "Search for common project files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
             tasks.addAll(fallback)
         }
         val plan = Plan(goal, tasks)
@@ -661,7 +650,16 @@ class AgentOrchestrator(
             "error_diagnosis" -> {
                 onStatus("Diagnosing error via discovery loop…")
                 var steps = 0
+                val startTime = System.currentTimeMillis()
+                val maxTime = 15000L // 15 seconds max for discovery
+                
                 while (steps < 10) {
+                    // Check for timeout
+                    if (System.currentTimeMillis() - startTime > maxTime) {
+                        onStatus("Discovery timeout reached, proceeding with plan generation")
+                        break
+                    }
+                    
                     val tc = requestDiscoveryToolCall("error-diagnosis for: ${prompt}") ?: break
                     val result = executeToolCall(tc)
                     val key = "think:error:${steps+1}:${tc.type}"
@@ -1004,7 +1002,17 @@ class AgentOrchestrator(
         var lastToolType: String? = null
         var repeatedObservationCount = 0
         val maxRepeatedObservations = 3
+        val startTime = System.currentTimeMillis()
+        val maxExecutionTime = 30000L // 30 seconds timeout
+        
         while (stepsTaken < maxSteps) {
+            // Check for timeout to prevent infinite loops
+            if (System.currentTimeMillis() - startTime > maxExecutionTime) {
+                onStatus("Task ${task.id}: execution timeout reached; marking failed")
+                markTaskFailed(task.id, "execution_timeout")
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return false
+            }
             val toolCall = requestSingleToolCall(plan.goal, task)
             if (toolCall == null) {
                 observations[task.id] = "could not determine action for this task"
@@ -1139,46 +1147,29 @@ class AgentOrchestrator(
                     val isListDir = effectiveToolCall.type == "list_dir" || effectiveToolCall.type == "list_dir_recursive"
                     val isEmptyDir = isListDir && obs.contains("\"empty\":true")
                     
-                    if (isEmptyDir && repeatedObservationCount <= 2) {
-                        // Allow a couple of attempts for empty directories before failing
-                        onStatus("Task ${task.id}: empty directory detected (attempt ${repeatedObservationCount}/2), continuing...")
-                        lastObservation = obs
-                        lastToolType = effectiveToolCall.type
-                        stepsTaken++
-                        continue
+                    // For empty directories, allow only 1 retry then fail gracefully
+                    if (isEmptyDir && repeatedObservationCount <= 1) {
+                        onStatus("Task ${task.id}: empty directory detected, marking task complete")
+                        markTaskDone(task.id)
+                        persistPlanWithStatuses(plan)
+                        endRunStatsAndReport(onStatus, verb = "thought")
+                        return true
                     }
                     
-                    if (repeatedObservationCount >= maxRepeatedObservations) {
+                    // For other repeated observations, fail after 2 attempts
+                    if (repeatedObservationCount >= 2) {
                         markTaskFailed(task.id, "repeated_non_modifying_observation")
-                        onStatus("Task ${task.id}: too many repeated observations; revising plan…")
-                        val revised = revisePlanBasedOnHistoryAndError(plan.goal, "repeated_non_modifying_observation")
-                        if (revised != null) {
-                            persistPlanWithStatuses(revised)
-                            endRunStatsAndReport(onStatus, verb = "thought")
-                            return true
-                        }
-                        onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                        val decision = decideRemediationAction(plan.goal, task, "repeat_observation")
-                        when (decision) {
-                            "mini_plan" -> {
-                                val ok = executeMiniPlanForTask(plan, task, onStatus)
-                                if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
-                            }
-                            "revise_plan" -> {
-                                val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "repeat_observation")
-                                if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
-                            }
-                            "retry" -> { stepsTaken++; continue }
-                            else -> { return false }
-                        }
-                    } else {
-                        // Allow a few more attempts before failing
-                        onStatus("Task ${task.id}: repeated observation (${repeatedObservationCount}/${maxRepeatedObservations}), continuing...")
-                        lastObservation = obs
-                        lastToolType = effectiveToolCall.type
-                        stepsTaken++
-                        continue
+                        onStatus("Task ${task.id}: repeated observation limit reached; marking failed")
+                        endRunStatsAndReport(onStatus, verb = "thought")
+                        return false
                     }
+                    
+                    // Allow one more attempt
+                    onStatus("Task ${task.id}: repeated observation (${repeatedObservationCount}/2), retrying...")
+                    lastObservation = obs
+                    lastToolType = effectiveToolCall.type
+                    stepsTaken++
+                    continue
                 }
                 lastObservation = result.observation ?: lastObservation
                 lastToolType = effectiveToolCall.type
