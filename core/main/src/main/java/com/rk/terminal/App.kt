@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.Build
 import android.os.StrictMode
 import com.github.anrwatchdog.ANRWatchDog
+import com.rk.crashhandler.CrashHandler
 import com.rk.libcommons.application
 import com.rk.resources.Res
 import com.rk.update.UpdateManager
@@ -33,7 +34,7 @@ class App : Application() {
         application = this
         Res.application = this
 
-        //Thread.setDefaultUncaughtExceptionHandler(CrashHandler)
+        Thread.setDefaultUncaughtExceptionHandler(CrashHandler)
         ANRWatchDog().start()
 
         UpdateManager().onUpdate()

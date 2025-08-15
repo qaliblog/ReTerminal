@@ -18,6 +18,7 @@ import com.rk.terminal.ui.screens.terminal.MkSession
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import okhttp3.internal.wait
+import java.io.File
 
 class SessionService : Service() {
     private val sessions = hashMapOf<String, TerminalSession>()
@@ -46,7 +47,12 @@ class SessionService : Service() {
                 sessionList[id] = workingMode
                 // Initialize File Manager working directory per session
                 val defaultPath = if (workingMode == com.rk.terminal.ui.screens.settings.WorkingMode.ALPINE) {
-                    com.rk.libcommons.alpineDir().absolutePath
+                    // Use a more suitable development directory instead of the root alpine dir
+                    val devDir = File(com.rk.libcommons.alpineDir(), "home/milad/projects")
+                    if (!devDir.exists()) {
+                        devDir.mkdirs()
+                    }
+                    devDir.absolutePath
                 } else {
                     "/sdcard"
                 }
