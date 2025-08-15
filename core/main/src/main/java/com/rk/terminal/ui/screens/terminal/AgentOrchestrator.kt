@@ -3429,6 +3429,9 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 						}
 					}
 					derived.contains(".html") -> {
+						val isCalculator = desc.contains("calculator") || requirements.contains("calculator")
+						val isGame = desc.contains("game") || requirements.contains("game") || desc.contains("piano") || desc.contains("tic") || desc.contains("chess")
+						
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
 							"""<!DOCTYPE html>
 <html lang="en">
@@ -3992,12 +3995,11 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 				// Check if the proposed tool call has content
 				val proposedContent = proposed.args.optString("content")
 				if (proposedContent.isNotBlank()) {
-					return proposed
-				}
-				
-				// If no content provided, generate functional content based on requirements
-				val requirements = projectRequirements ?: ""
-				val content = when {
+					proposed
+				} else {
+					// If no content provided, generate functional content based on requirements
+					val requirements = projectRequirements ?: ""
+					val content = when {
 					derived.contains(".py") -> {
 						if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
 							"""# Complete Flask Web Application for Piano Tiles Game
@@ -4565,9 +4567,10 @@ document.addEventListener('DOMContentLoaded', () => {
 					}
 				}
 				
-				return toolCall
+				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
+				}
 			}
-			            			"run_shell" -> {
+			"run_shell" -> {
                 // Special handling for different types of shell tasks
                 val desc = (task.description ?: "").lowercase()
                 when {
@@ -4608,8 +4611,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     else -> ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
                 }
             }
-			else -> if (proposed.type.isNotBlank()) proposed else ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
-		}
+            else -> if (proposed.type.isNotBlank()) proposed else ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
+        }
 	}
 
 	private fun preferredPackageManager(): String? = when {
