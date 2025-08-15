@@ -1159,14 +1159,13 @@ class AgentOrchestrator(
                     val isListDir = effectiveToolCall.type == "list_dir" || effectiveToolCall.type == "list_dir_recursive"
                     val isEmptyDir = isListDir && obs.contains("\"empty\":true")
                     
-                                    // Special handling for reading empty files - likely should be writing instead
-                val isReadFile = effectiveToolCall.type == "read_file"
-                val isEmptyFile = isReadFile && obs.contains("\"bytes\":0") && obs.contains("\"content\":\"\"")
-                val shouldBeWriting = shouldUseWriteFile(task)
-                
-                // Special handling for listing directories when should be creating directories
-                val isListDir = effectiveToolCall.type == "list_dir" || effectiveToolCall.type == "list_dir_recursive"
-                val shouldBeCreatingDir = shouldUseMakeDir(task)
+                    // Special handling for reading empty files - likely should be writing instead
+                    val isReadFile = effectiveToolCall.type == "read_file"
+                    val isEmptyFile = isReadFile && obs.contains("\"bytes\":0") && obs.contains("\"content\":\"\"")
+                    val shouldBeWriting = shouldUseWriteFile(task)
+                    
+                    // Special handling for listing directories when should be creating directories
+                    val shouldBeCreatingDir = shouldUseMakeDir(task)
                 
                 // For empty directories, allow only 1 retry then fail gracefully
                 if (isEmptyDir && repeatedObservationCount <= 1) {
