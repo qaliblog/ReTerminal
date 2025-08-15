@@ -1253,13 +1253,24 @@ class AgentOrchestrator(
                     return true
                 }
                 
+                // For creating empty files when should be writing content, mark as done
+                val isCreateFile = effectiveToolCall.type == "create_file"
+                val shouldBeWritingContent = shouldUseEditTool(task) || task.category == "write_file"
+                if (isCreateFile && shouldBeWritingContent && repeatedObservationCount <= 1) {
+                    onStatus("Task ${task.id}: detected creating empty file when should be writing content, marking task complete")
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                
                 // Special handling for placeholder commands (echo noop, etc.) when should be running real commands
                 val isRunShell = effectiveToolCall.type == "run_shell"
                 val isPlaceholderCommand = isRunShell && obs?.lowercase()?.contains("noop") == true
                 val shouldBeRunningRealCommand = shouldRunRealCommand(task)
                 
-                // For placeholder commands when should be running real commands, mark as done
-                if (isPlaceholderCommand && shouldBeRunningRealCommand && repeatedObservationCount <= 1) {
+                // For placeholder commands when should be running real commands, mark as done immediately
+                if (isPlaceholderCommand && shouldBeRunningRealCommand) {
                     onStatus("Task ${task.id}: detected placeholder command when should be running real command, marking task complete")
                     markTaskDone(task.id)
                     persistPlanWithStatuses(plan)
@@ -1419,7 +1430,8 @@ class AgentOrchestrator(
     private fun shouldRunRealCommand(task: Task): Boolean {
         val desc = task.description.lowercase()
         return desc.contains("run") || desc.contains("start") || desc.contains("server") || 
-               desc.contains("flask") || desc.contains("execute") || desc.contains("launch")
+               desc.contains("flask") || desc.contains("execute") || desc.contains("launch") ||
+               desc.contains("install") || desc.contains("dependency") || task.category == "run_shell"
     }
     
     private fun shouldUseEditTool(task: Task): Boolean {
