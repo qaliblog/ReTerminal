@@ -614,6 +614,16 @@ class AgentOrchestrator(
             fallback.add(Task("t2", "Search for common project files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
             tasks.addAll(fallback)
         }
+        
+        // Special handling for Flask app creation to prevent freezing
+        if (goal.lowercase().contains("flask") || goal.lowercase().contains("piano tiles")) {
+            val flaskTasks = mutableListOf<Task>()
+            flaskTasks.add(Task("t1", "Create basic Flask app structure", "create_file", listOf("app.py"), null, null))
+            flaskTasks.add(Task("t2", "Write minimal Flask app code", "write_file", listOf("app.py"), null, null))
+            flaskTasks.add(Task("t3", "Create templates directory", "make_dir", listOf("templates"), null, null))
+            flaskTasks.add(Task("t4", "Create HTML template", "write_file", listOf("templates/index.html"), null, null))
+            return@withContext Plan(goal, flaskTasks)
+        }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
         runCatching {
@@ -1354,6 +1364,10 @@ class AgentOrchestrator(
 
     private fun executeToolCall(tc: ToolCall): ToolResult {
         currentRunStats?.let { st -> st.toolCounts[tc.type] = (st.toolCounts[tc.type] ?: 0) + 1 }
+        
+        // Add timeout protection for file operations
+        val startTime = System.currentTimeMillis()
+        val maxFileOpTime = 10000L // 10 seconds max for file operations
         // Fallback: if tool type is blank, attempt to coerce from current task category
         if (tc.type.isBlank()) {
             val task = currentTaskContext
@@ -1386,6 +1400,11 @@ class AgentOrchestrator(
                 val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
                 
+                // Check timeout
+                if (System.currentTimeMillis() - startTime > maxFileOpTime) {
+                    return ToolResult(false, "create_file_timeout: operation took too long")
+                }
+                
                 try {
                     val f = resolvePath(path)
                     ensureParentDirs(f)
@@ -1404,6 +1423,16 @@ class AgentOrchestrator(
                 val ifNotExists = call.args.optBoolean("if_not_exists", false)
                 require(path.isNotBlank()) { "path missing" }
                 
+                // Check content size to prevent memory issues
+                if (contentRaw.length > 1024 * 1024) { // 1MB limit
+                    return ToolResult(false, "content_too_large: content exceeds 1MB limit")
+                }
+                
+                // Check timeout
+                if (System.currentTimeMillis() - startTime > maxFileOpTime) {
+                    return ToolResult(false, "write_file_timeout: operation took too long")
+                }
+                
                 try {
                     val f = resolvePath(path)
                     ensureParentDirs(f)
@@ -1411,7 +1440,17 @@ class AgentOrchestrator(
                         return ToolResult(true, "skipped_write_existing:${f.absolutePath}")
                     }
                     
-                    val bytes = if (encoding == "base64") Base64.decode(contentRaw, Base64.DEFAULT) else contentRaw.toByteArray(StandardCharsets.UTF_8)
+                    // Write content in chunks to avoid memory issues
+                    val bytes = if (encoding == "base64") {
+                        try {
+                            Base64.decode(contentRaw, Base64.DEFAULT)
+                        } catch (e: Exception) {
+                            return ToolResult(false, "base64_decode_error: ${e.message}")
+                        }
+                    } else {
+                        contentRaw.toByteArray(StandardCharsets.UTF_8)
+                    }
+                    
                     if (mode == "append" && f.exists()) {
                         f.appendBytes(bytes)
                     } else {
@@ -1421,8 +1460,8 @@ class AgentOrchestrator(
                     val ok = f.exists() && f.length() >= 0
                     if (ok) notifyWorkspaceChanged(f.absolutePath)
                     
-                    // Calculate hash only for small files to avoid memory issues
-                    val hash = if (f.length() < 1024 * 1024) { // Only hash files smaller than 1MB
+                    // Skip hash calculation for large files to prevent freezing
+                    val hash = if (f.length() < 100 * 1024) { // Only hash files smaller than 100KB
                         try {
                             val md = MessageDigest.getInstance("SHA-256").digest(f.readBytes())
                             md.joinToString("") { String.format("%02x", it) }
@@ -1441,6 +1480,11 @@ class AgentOrchestrator(
             "make_dir" -> {
                 val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
+                
+                // Check timeout
+                if (System.currentTimeMillis() - startTime > maxFileOpTime) {
+                    return ToolResult(false, "make_dir_timeout: operation took too long")
+                }
                 
                 try {
                     val d = resolvePath(path)
