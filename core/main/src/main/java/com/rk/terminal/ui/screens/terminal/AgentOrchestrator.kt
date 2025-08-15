@@ -3557,7 +3557,7 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 						// Check if this is a Flask project by looking at requirements or existing files
 						val requirementsFile = File(workingDirProvider(), "requirements.txt")
 						val appFile = File(workingDirProvider(), "app.py")
-						val isFlaskProject = requirementsFile.exists() || appFile.exists() || desc.contains("template") || desc.contains("game") || desc.contains("flask")
+						val isFlaskProject = requirementsFile.exists() || appFile.exists() || desc.contains("template") || desc.contains("game") || desc.contains("flask") || desc.contains("html")
 						
 						if (isFlaskProject) {
 							File(workingDirProvider(), "templates/index.html").absolutePath
