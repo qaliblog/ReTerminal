@@ -2904,14 +2904,18 @@ if (exit != 0) {
 						}
 					}
 					// Handle app.py modifications - preserve existing game logic
-					derived.contains(".py") && desc.contains("modify") -> {
+					(derived.contains(".py") && desc.contains("modify")) || 
+					(derived.contains(".py") && desc.contains("update")) ||
+					(derived.contains(".py") && desc.contains("change")) -> {
 						// Read existing app.py content and preserve it
 						val appFile = File(workingDirProvider(), "app.py")
-						if (appFile.exists()) {
-							appFile.readText()
-						} else {
-							// Fallback to basic Flask app if file doesn't exist
-							"""# Python application
+						val webappAppFile = File(workingDirProvider(), "webapp/app.py")
+						when {
+							appFile.exists() -> appFile.readText()
+							webappAppFile.exists() -> webappAppFile.readText()
+							else -> {
+								// Fallback to basic Flask app if file doesn't exist
+								"""# Python application
 from flask import Flask, render_template
 
 app = Flask(__name__)
@@ -2922,17 +2926,53 @@ def index():
 
 if __name__ == '__main__':
     app.run(debug=True)"""
+							}
 						}
 					}
 					// Handle script.js modifications - preserve existing game logic
-					derived.contains(".js") && desc.contains("modify") -> {
+					(derived.contains(".js") && desc.contains("modify")) ||
+					(derived.contains(".js") && desc.contains("update")) ||
+					(derived.contains(".js") && desc.contains("change")) ||
+					(derived.contains(".js") && desc.contains("color")) -> {
 						// Read existing script.js content and preserve it
 						val scriptFile = File(workingDirProvider(), "static/script.js")
-						if (scriptFile.exists()) {
-							scriptFile.readText()
-						} else {
-							// Fallback to basic script if file doesn't exist
-							"// Basic JavaScript file"
+						val webappScriptFile = File(workingDirProvider(), "webapp/static/script.js")
+						when {
+							scriptFile.exists() -> scriptFile.readText()
+							webappScriptFile.exists() -> webappScriptFile.readText()
+							else -> {
+								// Fallback to basic script if file doesn't exist
+								"// Basic JavaScript file"
+							}
+						}
+					}
+					// Handle HTML modifications - preserve existing content
+					(derived.contains(".html") && desc.contains("modify")) ||
+					(derived.contains(".html") && desc.contains("update")) ||
+					(derived.contains(".html") && desc.contains("change")) ||
+					(derived.contains(".html") && desc.contains("color")) -> {
+						// Read existing HTML content and preserve it
+						val htmlFile = File(workingDirProvider(), "templates/index.html")
+						val webappHtmlFile = File(workingDirProvider(), "webapp/templates/index.html")
+						when {
+							htmlFile.exists() -> htmlFile.readText()
+							webappHtmlFile.exists() -> webappHtmlFile.readText()
+							else -> {
+								// Fallback to basic HTML if file doesn't exist
+								"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Piano Tiles Game</title>
+</head>
+<body>
+    <h1>Piano Tiles</h1>
+    <div id="game-container"></div>
+    <div id="score">Score: 0</div>
+</body>
+</html>"""
+							}
 						}
 					}
 					derived.contains(".py") -> {
@@ -3626,10 +3666,16 @@ document.addEventListener('DOMContentLoaded', initApp);"""
 						// Check if this is a Flask project by looking at requirements or existing files
 						val requirementsFile = File(workingDirProvider(), "requirements.txt")
 						val appFile = File(workingDirProvider(), "app.py")
-						val isFlaskProject = requirementsFile.exists() || appFile.exists() || desc.contains("template") || desc.contains("game") || desc.contains("flask") || desc.contains("html")
+						val webappAppFile = File(workingDirProvider(), "webapp/app.py")
+						val isFlaskProject = requirementsFile.exists() || appFile.exists() || webappAppFile.exists() || desc.contains("template") || desc.contains("game") || desc.contains("flask") || desc.contains("html")
 						
 						if (isFlaskProject) {
-							File(workingDirProvider(), "templates/index.html").absolutePath
+							// Check if we're in a webapp subdirectory
+							if (webappAppFile.exists()) {
+								File(workingDirProvider(), "webapp/templates/index.html").absolutePath
+							} else {
+								File(workingDirProvider(), "templates/index.html").absolutePath
+							}
 						} else {
 							File(workingDirProvider(), "index.html").absolutePath
 						}
