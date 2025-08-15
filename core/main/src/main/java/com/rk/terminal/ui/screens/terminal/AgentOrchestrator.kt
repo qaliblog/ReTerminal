@@ -614,16 +614,6 @@ class AgentOrchestrator(
             fallback.add(Task("t2", "Search for common project files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
             tasks.addAll(fallback)
         }
-        
-        // Special handling for Flask app creation to prevent freezing
-        if (goal.lowercase().contains("flask") || goal.lowercase().contains("piano tiles")) {
-            val flaskTasks = mutableListOf<Task>()
-            flaskTasks.add(Task("t1", "Create basic Flask app structure", "create_file", listOf("app.py"), null, null))
-            flaskTasks.add(Task("t2", "Write minimal Flask app code", "write_file", listOf("app.py"), null, null))
-            flaskTasks.add(Task("t3", "Create templates directory", "make_dir", listOf("templates"), null, null))
-            flaskTasks.add(Task("t4", "Create HTML template", "write_file", listOf("templates/index.html"), null, null))
-            return@withContext Plan(goal, flaskTasks)
-        }
         val plan = Plan(goal, tasks)
         persistPlanWithStatuses(plan)
         runCatching {
