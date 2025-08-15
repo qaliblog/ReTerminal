@@ -1385,11 +1385,16 @@ class AgentOrchestrator(
             "create_file" -> {
                 val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
-                val f = resolvePath(path)
-                ensureParentDirs(f)
-                if (!f.exists()) f.createNewFile()
-                if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
-                ToolResult(f.exists(), null)
+                
+                try {
+                    val f = resolvePath(path)
+                    ensureParentDirs(f)
+                    if (!f.exists()) f.createNewFile()
+                    if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
+                    ToolResult(f.exists(), null)
+                } catch (e: Exception) {
+                    ToolResult(false, "create_file_error: ${e.message}")
+                }
             }
             "write_file" -> {
                 val path = call.args.optString("path")
@@ -1398,30 +1403,53 @@ class AgentOrchestrator(
                 val mode = call.args.optString("mode", "overwrite")
                 val ifNotExists = call.args.optBoolean("if_not_exists", false)
                 require(path.isNotBlank()) { "path missing" }
-                val f = resolvePath(path)
-                ensureParentDirs(f)
-                if (ifNotExists && f.exists()) {
-                    return ToolResult(true, "skipped_write_existing:${'$'}{f.absolutePath}")
+                
+                try {
+                    val f = resolvePath(path)
+                    ensureParentDirs(f)
+                    if (ifNotExists && f.exists()) {
+                        return ToolResult(true, "skipped_write_existing:${f.absolutePath}")
+                    }
+                    
+                    val bytes = if (encoding == "base64") Base64.decode(contentRaw, Base64.DEFAULT) else contentRaw.toByteArray(StandardCharsets.UTF_8)
+                    if (mode == "append" && f.exists()) {
+                        f.appendBytes(bytes)
+                    } else {
+                        f.writeBytes(bytes)
+                    }
+                    
+                    val ok = f.exists() && f.length() >= 0
+                    if (ok) notifyWorkspaceChanged(f.absolutePath)
+                    
+                    // Calculate hash only for small files to avoid memory issues
+                    val hash = if (f.length() < 1024 * 1024) { // Only hash files smaller than 1MB
+                        try {
+                            val md = MessageDigest.getInstance("SHA-256").digest(f.readBytes())
+                            md.joinToString("") { String.format("%02x", it) }
+                        } catch (e: Exception) {
+                            "hash_calculation_failed"
+                        }
+                    } else {
+                        "file_too_large_for_hash"
+                    }
+                    
+                    ToolResult(ok, JSONObject().put("path", f.absolutePath).put("bytes", f.length()).put("sha256", hash).toString())
+                } catch (e: Exception) {
+                    ToolResult(false, "write_file_error: ${e.message}")
                 }
-                val bytes = if (encoding == "base64") Base64.decode(contentRaw, Base64.DEFAULT) else contentRaw.toByteArray(StandardCharsets.UTF_8)
-                if (mode == "append" && f.exists()) {
-                    f.appendBytes(bytes)
-                } else {
-                    f.writeBytes(bytes)
-                }
-                val ok = f.exists() && f.length() >= 0
-                val md = MessageDigest.getInstance("SHA-256").digest(f.readBytes())
-                val hash = md.joinToString("") { String.format("%02x", it) }
-                if (ok) notifyWorkspaceChanged(f.absolutePath)
-                ToolResult(ok, JSONObject().put("path", f.absolutePath).put("bytes", f.length()).put("sha256", hash).toString())
             }
             "make_dir" -> {
                 val path = call.args.optString("path")
                 require(path.isNotBlank()) { "path missing" }
-                val d = resolvePath(path)
-                d.mkdirs()
-                if (d.exists()) notifyWorkspaceChanged(d.absolutePath)
-                ToolResult(d.exists() && d.isDirectory, null)
+                
+                try {
+                    val d = resolvePath(path)
+                    d.mkdirs()
+                    if (d.exists()) notifyWorkspaceChanged(d.absolutePath)
+                    ToolResult(d.exists() && d.isDirectory, null)
+                } catch (e: Exception) {
+                    ToolResult(false, "make_dir_error: ${e.message}")
+                }
             }
             "run_shell" -> {
                 var command = call.args.optString("command")
