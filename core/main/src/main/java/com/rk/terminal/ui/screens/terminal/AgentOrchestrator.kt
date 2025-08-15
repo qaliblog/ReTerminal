@@ -2834,9 +2834,9 @@ if (exit != 0) {
 				val derived = when {
 					suggested.isNotBlank() -> suggested
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
-					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "script.js").absolutePath
-					desc.contains("html") -> File(workingDirProvider(), "index.html").absolutePath
-					desc.contains("css") -> File(workingDirProvider(), "style.css").absolutePath
+					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "static/script.js").absolutePath
+					desc.contains("html") -> File(workingDirProvider(), "templates/index.html").absolutePath
+					desc.contains("css") -> File(workingDirProvider(), "static/style.css").absolutePath
 					desc.contains("python") || desc.contains("py") -> File(workingDirProvider(), "app.py").absolutePath
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
@@ -3736,14 +3736,25 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                     desc.contains("server") || desc.contains("flask") || desc.contains("run") -> {
+                        // Check if we're in a project subdirectory
+                        val appFile = File(workingDirProvider(), "app.py")
+                        val projectDir = if (appFile.exists()) {
+                            workingDirProvider()
+                        } else {
+                            // Look for app.py in subdirectories
+                            val subdirs = File(workingDirProvider()).listFiles()?.filter { it.isDirectory } ?: emptyList()
+                            val projectSubdir = subdirs.find { File(it, "app.py").exists() }
+                            projectSubdir?.absolutePath ?: workingDirProvider()
+                        }
+                        
                         // Check if virtual environment exists, if not create it first
-                        val venvDir = File(workingDirProvider(), "venv")
+                        val venvDir = File(projectDir, "venv")
                         if (venvDir.exists()) {
                             // Start Flask development server
-                            ToolCall("run_shell", JSONObject().put("command", ". venv/bin/activate && python app.py").put("timeout_ms", 30000))
+                            ToolCall("run_shell", JSONObject().put("command", "cd $projectDir && . venv/bin/activate && python app.py").put("timeout_ms", 30000))
                         } else {
                             // Create virtual environment and install dependencies first
-                            ToolCall("run_shell", JSONObject().put("command", "python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt && python app.py").put("timeout_ms", 60000))
+                            ToolCall("run_shell", JSONObject().put("command", "cd $projectDir && python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt && python app.py").put("timeout_ms", 60000))
                         }
                     }
                     proposed.type.isNotBlank() -> proposed
