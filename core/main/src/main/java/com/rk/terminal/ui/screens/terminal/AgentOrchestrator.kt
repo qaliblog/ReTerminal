@@ -441,7 +441,7 @@ class AgentOrchestrator(
         val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
         val reco = helperRecommend("remediation_decision", mapOf("task" to task.description.take(300)))
         applyHelperToMessages(reco, messages)
-        val content = collectAll(LlmProvider.current().generate(messages))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(messages) })
         val jsonText = extractFirstJsonObject(content) ?: return@withContext "mini_plan"
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext "mini_plan"
         val action = obj.optString("action").ifBlank { "mini_plan" }
@@ -482,7 +482,7 @@ class AgentOrchestrator(
         val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
         val reco = helperRecommend("mini_plan", mapOf("parent_task" to task.description.take(300)))
         applyHelperToMessages(reco, messages)
-        val content = collectAll(LlmProvider.current().generate(messages))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(messages) })
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val parent = obj.optString("parent_task_id").ifBlank { task.id }
@@ -608,7 +608,7 @@ class AgentOrchestrator(
         val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
         val reco = helperRecommend("classify_intent", mapOf("prompt" to prompt.take(500)))
         applyHelperToMessages(reco, messages)
-        val content = collectAll(LlmProvider.current().generate(messages))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(messages) })
         val jsonText = extractFirstJsonObject(content) ?: "{\"intent\":\"plan_and_execute\"}"
         return@withContext runCatching { JSONObject(jsonText) }.getOrElse { JSONObject().put("intent", "plan_and_execute") }
     }
@@ -628,7 +628,7 @@ class AgentOrchestrator(
         val msgs = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
         val reco = helperRecommend("discovery", mapOf("wd" to wd, "context" to contextNote))
         applyHelperToMessages(reco, msgs)
-        val content = collectAll(LlmProvider.current().generate(msgs))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(msgs) })
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val type = obj.optString("type")
@@ -649,7 +649,7 @@ class AgentOrchestrator(
         val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
         val reco = helperRecommend("blueprint", mapOf("goal" to prompt.take(500)))
         applyHelperToMessages(reco, messages)
-        val content = collectAll(LlmProvider.current().generate(messages))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(messages) })
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         blueprintFile.writeText(jsonText)
         return@withContext blueprintFile.absolutePath
@@ -669,7 +669,7 @@ class AgentOrchestrator(
         val messages = mutableListOf(LlmMessage("system", sys), LlmMessage("user", user))
         val reco = helperRecommend("qa_answer", mapOf("obs_preview" to obs.take(800)))
         applyHelperToMessages(reco, messages)
-        val content = collectAll(LlmProvider.current().generate(messages))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(messages) })
         return@withContext content
     }
 
@@ -733,25 +733,24 @@ class AgentOrchestrator(
                     }
                 }
             }
-            val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
-             val content = collectAll(flow)
-             val jsonText = extractFirstJsonObject(content) ?: continue
-             val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: continue
-             val goal = obj.optString("goal").ifBlank { userGoal }
-             val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
-             val tasks = mutableListOf<Task>()
-             for (i in 0 until tasksArr.length()) {
-                 val t = tasksArr.optJSONObject(i) ?: continue
-                 val id = t.optString("id").ifBlank { "t${i + 1}" }
-                 val desc = t.optString("description")
-                 val cat = t.optString("category").ifBlank { null }
-                 val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                 val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                 val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                 if (desc.isNotBlank()) {
-                     tasks.add(Task(id, desc, cat, targets, search, markers))
-                 }
-             }
+            val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
+            val jsonText = extractFirstJsonObject(content) ?: continue
+            val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: continue
+            val goal = obj.optString("goal").ifBlank { userGoal }
+            val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+            val tasks = mutableListOf<Task>()
+            for (i in 0 until tasksArr.length()) {
+                val t = tasksArr.optJSONObject(i) ?: continue
+                val id = t.optString("id").ifBlank { "t${i + 1}" }
+                val desc = t.optString("description")
+                val cat = t.optString("category").ifBlank { null }
+                val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                if (desc.isNotBlank()) {
+                    tasks.add(Task(id, desc, cat, targets, search, markers))
+                }
+            }
  
              if (tasks.isEmpty()) {
                  // Simple fallback plan to avoid zero-task output
@@ -910,7 +909,7 @@ class AgentOrchestrator(
             Query: ${query}
             Prefer official docs, MDN, language/framework docs, reputable blogs.
         """.trimIndent()
-        val suggestContent = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", suggestSys), LlmMessage("user", suggestUser))))
+        val suggestContent = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", suggestSys), LlmMessage("user", suggestUser))) })
         val suggestJson = extractFirstJsonObject(suggestContent)
         val sites = if (suggestJson != null) runCatching { JSONObject(suggestJson).optJSONArray("sites") }.getOrNull() ?: JSONArray() else JSONArray()
         val fetched = JSONArray()
@@ -955,7 +954,7 @@ class AgentOrchestrator(
             Fetched pages:
             ${bundle}
         """.trimIndent()
-        val final = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", synthSys), LlmMessage("user", synthUser))))
+        val final = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", synthSys), LlmMessage("user", synthUser))) })
         return@withContext final
     }
 
@@ -974,7 +973,7 @@ class AgentOrchestrator(
             Error: ${errorNote}
             Context: ${latestObs?.take(800) ?: "(none)"}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
         val json = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@withContext null
         val q = obj.optString("query").ifBlank { null } ?: return@withContext null
@@ -1172,7 +1171,7 @@ class AgentOrchestrator(
         var repeatedObservationCount = 0
         val maxRepeatedObservations = 3
                 val startTime = System.currentTimeMillis()
-        val maxExecutionTime = 30000L // 30 seconds timeout
+        val maxExecutionTime = 120000L // 120 seconds timeout
 
         while (stepsTaken < maxSteps) {
             // Check for timeout to prevent infinite loops with detailed debugging
@@ -1610,7 +1609,7 @@ class AgentOrchestrator(
             Task: ${task.id} - ${task.description}
             Context: ${lastObservation?.take(600) ?: "(none)"}
         """.trimIndent()
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
         val json = extractFirstJsonObject(content) ?: return@withContext null
         return@withContext runCatching { JSONObject(json) }.getOrNull()
     }
@@ -1797,7 +1796,7 @@ class AgentOrchestrator(
         val reco = helperRecommend("inner_loop", mapOf("goal" to goal.take(500), "task" to "${task.id}:${task.description}"))
         applyHelperToMessages(reco, msgs)
         val flow = LlmProvider.current().generate(msgs)
-        val content = collectAll(flow)
+        val content = collectAllWithRetry(flowProvider = { flow })
         val jsonText = extractFirstJsonObject(content) ?: return@withContext null
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
         val type = obj.optString("type")
@@ -1820,10 +1819,10 @@ class AgentOrchestrator(
         
         // Add timeout protection for file operations
         val startTime = System.currentTimeMillis()
-        val maxFileOpTime = 15000L // 15 seconds max for file operations
+        val maxFileOpTime = 120000L // 120 seconds max for file operations
         
         // Add global timeout protection to prevent freezing
-        val globalTimeout = 30000L // 30 seconds max for any operation
+        val globalTimeout = 180000L // 180 seconds max for any operation
         // Fallback: if tool type is blank or unknown, attempt to coerce from current task category
         if (tc.type.isBlank() || tc.type.equals("unknown", ignoreCase = true)) {
             val task = currentTaskContext
@@ -1910,7 +1909,7 @@ class AgentOrchestrator(
                             Write the full content for the file: ${f.name}
                         """.trimIndent()
                         val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
-                        val generated = try { kotlinx.coroutines.runBlocking { collectAll(flow) } } catch (e: Exception) { "" }
+                        val generated = try { kotlinx.coroutines.runBlocking { collectAllWithRetry(flowProvider = { flow }) } } catch (e: Exception) { "" }
                         val content = stripFences(generated)
                         if (content.isNotBlank() && !content.contains("No AI API configured", ignoreCase = true)) {
                             f.writeText(content)
@@ -1964,7 +1963,7 @@ class AgentOrchestrator(
                         Write the full content for the file: ${File(path).name}
                     """.trimIndent()
                     val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
-                    val generated = try { kotlinx.coroutines.runBlocking { collectAll(flow) } } catch (e: Exception) { "" }
+                    val generated = try { kotlinx.coroutines.runBlocking { collectAllWithRetry(flowProvider = { flow }) } } catch (e: Exception) { "" }
                     val content = stripFences(generated)
                     if (content.isNotBlank() && !content.contains("No AI API configured", ignoreCase = true)) {
                         contentRaw = content
@@ -2875,6 +2874,44 @@ if (exit != 0) {
         sb.toString()
     }
 
+    private suspend fun collectAllWithRetry(timeoutMs: Long = 20_000, maxRetries: Int = 1, flowProvider: () -> Flow<String>): String = withContext(Dispatchers.IO) {
+        var attempt = 0
+        while (attempt <= maxRetries) {
+            val sb = StringBuilder()
+            var hadTokens = false
+            try {
+                val flow = flowProvider()
+                flow.collect { chunk ->
+                    if (chunk.isNotEmpty()) hadTokens = true
+                    sb.append(chunk)
+                }
+                val out = sb.toString()
+                if (out.isBlank() && attempt < maxRetries) {
+                    attempt++
+                    continue
+                }
+                return@withContext out
+            } catch (e: java.io.IOException) {
+                if (hadTokens) {
+                    return@withContext sb.toString()
+                }
+                if (attempt < maxRetries) {
+                    attempt++
+                    continue
+                }
+                return@withContext ""
+            } catch (e: Exception) {
+                val out = sb.toString()
+                if (out.isBlank() && attempt < maxRetries) {
+                    attempt++
+                    continue
+                }
+                return@withContext out
+            }
+        }
+        return@withContext ""
+    }
+
     private fun extractFirstJsonObject(text: String): String? {
         var depth = 0
         var start = -1
@@ -2999,7 +3036,7 @@ if (exit != 0) {
     private suspend fun helperRecommend(kind: String, contextMap: Map<String,String>): JSONObject? = withContext(Dispatchers.IO) {
         if (!Settings.helper_agent_enabled) return@withContext null
         val (sys, user) = buildHelperRecommendationPrompt(kind, contextMap)
-        val content = collectAll(LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))))
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
         val json = extractFirstJsonObject(content) ?: return@withContext null
         return@withContext runCatching { JSONObject(json) }.getOrNull()
     }

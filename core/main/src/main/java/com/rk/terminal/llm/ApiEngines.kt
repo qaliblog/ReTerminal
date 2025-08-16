@@ -19,7 +19,8 @@ private object ApiHttp {
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
             .build()
     }
 }
@@ -100,6 +101,8 @@ object OpenAIEngine : LlmEngine {
                     }
                 }
             }
+        } catch (e: java.io.IOException) {
+            throw e
         } catch (e: Exception) {
             emit("[OpenAI] ${e::class.simpleName}: ${e.message}\n")
         }
@@ -159,6 +162,8 @@ object AnthropicEngine : LlmEngine {
                 val out = sb.toString()
                 if (out.isEmpty()) emit("[Anthropic] Empty response\n") else out.chunked(64).forEach { emit(it) }
             }
+        } catch (e: java.io.IOException) {
+            throw e
         } catch (e: Exception) {
             emit("[Anthropic] ${e::class.simpleName}: ${e.message}\n")
         }
@@ -212,8 +217,64 @@ object GeminiEngine : LlmEngine {
                 val out = sb.toString()
                 if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
             }
+        } catch (e: java.io.IOException) {
+            throw e
         } catch (e: Exception) {
             emit("[Gemini] ${e::class.simpleName}: ${e.message}\n")
+        }
+    }.flowOn(Dispatchers.IO)
+}
+
+object OllamaEngine : LlmEngine {
+    override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
+        try {
+            val base = Settings.api_base_url.trim().ifBlank { "http://127.0.0.1:11434" }.removeSuffix("/")
+            val url = "$base/api/chat"
+            val model = Settings.api_model.ifBlank { "llama3.1" }
+            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+            val body = JSONObject().apply {
+                put("model", model)
+                put("stream", true)
+                put("messages", buildChatHistoryArray(messages))
+                if (forceJson) put("format", "json_object")
+            }
+            val req = Request.Builder()
+                .url(url)
+                .addHeader("content-type", "application/json")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            ApiHttp.client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    emit("[Ollama] HTTP ${resp.code}: ${resp.message}\n")
+                    val err = resp.body?.string()
+                    if (!err.isNullOrBlank()) emit(err.take(2000))
+                    return@use
+                }
+                val rb = resp.body ?: return@use
+                val source = rb.source()
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    if (line.isBlank()) continue
+                    // Ollama streams JSON lines like {"message":{"content":"...","role":"assistant"},"done":false}
+                    var shouldBreak = false
+                    try {
+                        val obj = JSONObject(line)
+                        val done = obj.optBoolean("done", false)
+                        val msgObj = obj.optJSONObject("message")
+                        val content = msgObj?.optString("content").orEmpty()
+                        if (content.isNotEmpty()) emit(content)
+                        if (done) shouldBreak = true
+                    } catch (_: Exception) {
+                        // tolerate occasional non-JSON lines
+                    }
+                    if (shouldBreak) break
+                }
+            }
+        } catch (e: java.io.IOException) {
+            throw e
+        } catch (e: Exception) {
+            emit("[Ollama] ${e::class.simpleName}: ${e.message}\n")
         }
     }.flowOn(Dispatchers.IO)
 }
