@@ -1784,11 +1784,12 @@ class AgentOrchestrator(
         
         // Add global timeout protection to prevent freezing
         val globalTimeout = 30000L // 30 seconds max for any operation
-        // Fallback: if tool type is blank, attempt to coerce from current task category
-        if (tc.type.isBlank()) {
+        // Fallback: if tool type is blank or unknown, attempt to coerce from current task category
+        if (tc.type.isBlank() || tc.type.equals("unknown", ignoreCase = true)) {
             val task = currentTaskContext
             if (task != null) {
-                val coerced = coerceToolCallForTaskCategory(task, ToolCall("unknown", tc.args))
+                val fallbackType = (task.category ?: "unknown").lowercase()
+                val coerced = coerceToolCallForTaskCategory(task, ToolCall(fallbackType, tc.args))
                 return executeToolCall(coerced)
             }
         }
@@ -1934,6 +1935,12 @@ class AgentOrchestrator(
                 var command = call.args.optString("command")
                 val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L).coerceAtMost(300_000L) // Max 5 minutes
                 val envObj = call.args.optJSONObject("env")
+                if (command.isBlank()) {
+                    val derived = deriveDefaultCommandForRunShell(currentTaskContext)
+                    if (!derived.isNullOrBlank()) {
+                        command = derived
+                    }
+                }
                 require(command.isNotBlank()) { "command missing" }
                 
                 // Check for timeout before starting
@@ -2877,14 +2884,7 @@ if (exit != 0) {
 
 				// Convert create_file to write_file with functional content based on project requirements
 				val requirements = projectRequirements ?: ""
-				val content = when {
-					derived.endsWith(".py") -> "print('Hello, World!')"
-					derived.endsWith(".html") -> "<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>"
-					derived.endsWith(".css") -> "body { font-family: sans-serif; }"
-					derived.endsWith(".js") -> "console.log('Hello, World!');"
-					derived.endsWith("requirements.txt") -> "Flask==3.1.1\nWerkzeug==3.1.3"
-					else -> "# New file created by the agent."
-				}
+				val content = generateInitialContentForFile(derived, requirements)
 
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
 			}
@@ -2899,14 +2899,7 @@ if (exit != 0) {
 				}
 
 				val requirements = projectRequirements ?: ""
-				val content = when {
-					derived.endsWith(".py") -> "print('Hello, World!')"
-					derived.endsWith(".html") -> "<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>"
-					derived.endsWith(".css") -> "body { font-family: sans-serif; }"
-					derived.endsWith(".js") -> "console.log('Hello, World!');"
-					derived.endsWith("requirements.txt") -> "Flask==3.1.1\nWerkzeug==3.1.3"
-					else -> "# New file created by the agent."
-				}
+				val content = generateInitialContentForFile(derived, requirements)
 
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
 			}
@@ -2924,6 +2917,111 @@ if (exit != 0) {
 	}
 
 	private fun coerceInstallPythonIfNeeded(): ToolCall? = null
+
+	private fun deriveDefaultCommandForRunShell(task: Task?): String? {
+		val desc = (task?.description ?: "").lowercase()
+		// Prefer discovered files in project structure
+		fun findRequirements(): String? {
+			val hit = projectStructure.keys.firstOrNull { it.endsWith("/requirements.txt") || it.endsWith("\\requirements.txt") || it.endsWith("requirements.txt") }
+			return hit
+		}
+		if (desc.contains("install") && (desc.contains("pip") || desc.contains("python") || desc.contains("requirements"))) {
+			val reqPath = findRequirements() ?: listOf("requirements.txt", "app/requirements.txt", "backend/requirements.txt").firstOrNull { resolvePath(it).exists() } ?: "requirements.txt"
+			return "(command -v python3 >/dev/null 2>&1 && python3 -m pip install -r \"$reqPath\") || (command -v pip3 >/dev/null 2>&1 && pip3 install -r \"$reqPath\") || (command -v pip >/dev/null 2>&1 && pip install -r \"$reqPath\")"
+		}
+		if (desc.contains("run") || desc.contains("server") || desc.contains("start")) {
+			val mainHit = projectStructure.keys.firstOrNull { it.endsWith("/main.py") && it.contains("/app/") } ?: listOf("app/main.py", "main.py", "app.py").firstOrNull { resolvePath(it).exists() }
+			val mainPath = mainHit ?: "app/main.py"
+			return "python3 \"$mainPath\""
+		}
+		return null
+	}
+
+	private fun generateInitialContentForFile(path: String, requirements: String): String {
+		val lowerReq = requirements.lowercase()
+		val isFlask = lowerReq.contains("flask")
+		val isCalculator = lowerReq.contains("calculator")
+		return when {
+			path.endsWith("requirements.txt") -> if (isFlask) "Flask\n" else ""
+			path.endsWith(".py") && isFlask -> """
+from flask import Flask, render_template, request, jsonify
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+@app.route("/api/calc", methods=["POST"])
+def api_calc():
+    data = request.get_json(force=True) or {}
+    a = float(data.get("a", 0))
+    b = float(data.get("b", 0))
+    op = str(data.get("op", "+"))
+    if op == "+":
+        res = a + b
+    elif op == "-":
+        res = a - b
+    elif op == "*":
+        res = a * b
+    elif op == "/":
+        res = a / b if b != 0 else float("inf")
+    else:
+        return jsonify({"error": "unknown op"}), 400
+    return jsonify({"result": res})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+""".trimIndent()
+			path.endsWith(".html") && isFlask && isCalculator -> """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Calculator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+    <script defer src="{{ url_for('static', filename='script.js') }}"></script>
+    <style>body{font-family:sans-serif}</style>
+    <script>window.__USE_API__=true;</script>
+    </head>
+<body>
+    <main class="calc">
+        <h1>Calculator</h1>
+        <div class="row"><input id="a" type="number" value="0"/> <select id="op"><option>+</option><option>-</option><option>*</option><option>/</option></select> <input id="b" type="number" value="0"/></div>
+        <button id="compute">Compute</button>
+        <div id="result"></div>
+    </main>
+</body>
+</html>
+""".trimIndent()
+			path.endsWith(".js") && isCalculator -> """
+document.addEventListener('DOMContentLoaded', () => {
+  const a = document.getElementById('a');
+  const b = document.getElementById('b');
+  const op = document.getElementById('op');
+  const result = document.getElementById('result');
+  document.getElementById('compute').addEventListener('click', async () => {
+    const payload = { a: parseFloat(a.value || '0'), b: parseFloat(b.value || '0'), op: op.value };
+    try {
+      const res = await fetch('/api/calc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await res.json();
+      result.textContent = data.result !== undefined ? String(data.result) : (data.error || 'Error');
+    } catch (e) {
+      result.textContent = 'Network error';
+    }
+  });
+});
+""".trimIndent()
+			path.endsWith(".css") && isCalculator -> ".calc{max-width:420px;margin:2rem auto;padding:1rem;border:1px solid #ccc;border-radius:8px} .row{display:flex;gap:.5rem;margin:.5rem 0} input,select,button{font-size:1rem;padding:.5rem} #result{margin-top:1rem;font-weight:bold}"
+			path.endsWith(".html") && isFlask -> "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"/><title>App</title></head><body><h1>Hello from Flask</h1></body></html>"
+			path.endsWith(".py") -> "print('App ready')"
+			path.endsWith(".html") -> "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>App</title></head><body><h1>App</h1></body></html>"
+			path.endsWith(".js") -> "console.log('app ready');"
+			path.endsWith(".css") -> "body{font-family:sans-serif}"
+			else -> "# Generated file"
+		}
+	}
 }
 
 object MainShell {
