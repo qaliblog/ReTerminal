@@ -2917,7 +2917,17 @@ if (exit != 0) {
 		}
 
 
-		return when (cat) {
+				return when (cat) {
+			"make_dir" -> {
+				// Ensure directory creation even if model proposed a file tool
+				val suggested = proposed.args.optString("path")
+				val derived = when {
+					suggested.isNotBlank() -> suggested
+					!task.targets.isNullOrEmpty() -> task.targets!!.first()
+					else -> File(workingDirProvider(), "NEW_DIR").absolutePath
+				}
+				ToolCall("make_dir", JSONObject().put("path", derived))
+			}
 			"create_file" -> {
 				// For create_file tasks, prefer write_file with content instead of empty files
 				val desc = (task.description ?: "").lowercase()
@@ -2927,7 +2937,7 @@ if (exit != 0) {
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
-
+				
 				// Convert create_file to write_file with content provided by the LLM at the time of the write_file tool call.
 				// Here we only ensure a valid path; content must come from the model, not a template.
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", "").put("mode", "overwrite"))
@@ -2941,13 +2951,13 @@ if (exit != 0) {
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
-
+				
 				// Content must be provided by the model based on the current codebase and expectations, not a premade template.
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", "").put("mode", "overwrite"))
 			}
 			else -> proposed
 		}
-	}
+}
 
 	private fun preferredPackageManager(): String? = when {
 		lastDetectedManagers.contains("apk") -> "apk"
