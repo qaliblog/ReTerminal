@@ -257,16 +257,18 @@ object OllamaEngine : LlmEngine {
                     val line = source.readUtf8Line() ?: break
                     if (line.isBlank()) continue
                     // Ollama streams JSON lines like {"message":{"content":"...","role":"assistant"},"done":false}
-                    runCatching {
+                    var shouldBreak = false
+                    try {
                         val obj = JSONObject(line)
                         val done = obj.optBoolean("done", false)
                         val msgObj = obj.optJSONObject("message")
                         val content = msgObj?.optString("content").orEmpty()
                         if (content.isNotEmpty()) emit(content)
-                        if (done) break
-                    }.onFailure {
+                        if (done) shouldBreak = true
+                    } catch (_: Exception) {
                         // tolerate occasional non-JSON lines
                     }
+                    if (shouldBreak) break
                 }
             }
         } catch (e: java.io.IOException) {
