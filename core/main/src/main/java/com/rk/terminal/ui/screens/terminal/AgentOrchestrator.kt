@@ -27,6 +27,7 @@ import com.rk.terminal.service.SessionService
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import android.util.Log
+import com.rk.terminal.agent.ControlApiClient
 
 /**
  * Minimal agent orchestrator that:
@@ -543,7 +544,11 @@ class AgentOrchestrator(
             )
             val proposed = requestSingleToolCall(plan.goal, pseudoTask)
             val toolCall = proposed ?: ToolCall("analyze", JSONObject())
-            appendTaskLog("tool_call_selected") { put("task_id", pseudoTask.id); put("type", toolCall.type); put("args", toolCall.args) }
+                        appendTaskLog("tool_call_selected") { put("task_id", pseudoTask.id); put("type", toolCall.type); put("args", toolCall.args) }
+            runCatching {
+                val kind = detectTaskKind(pseudoTask)
+                ControlApiClient.recordTaskDetection(sessionId, pseudoTask.id, kind, pseudoTask.description, pseudoTask.category)
+            }
             val result = try {
                 currentTaskContext = pseudoTask
                 executeToolCall(toolCall)
@@ -673,9 +678,14 @@ class AgentOrchestrator(
         observations.clear()
         saveObservations()
         val wdPath = workingDirProvider()
-        val wd = File(wdPath)
-                    val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
-            // If a plan requires creation, ensure codebase discovery is run first
+                val wd = File(wdPath)
+        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+        // Record initial setup (user goal + expectations) to external control API if enabled
+        runCatching {
+            val expectations = extraContext ?: ""
+            ControlApiClient.recordInitialSetup(sessionId, userGoal, expectations, workspaceInfo)
+        }
+        // If a plan requires creation, ensure codebase discovery is run first
             if (Settings.codebase_agent_enabled) runCatching { buildCodebaseCache({ }, includeRecursive = true) }
         val sys = """
             You are an expert software architect that creates concise, step-by-step plans for software projects OR codebase updates.
@@ -698,62 +708,87 @@ class AgentOrchestrator(
         var plan: Plan? = null
         var attempts = 0
         while (attempts < 3) {
-            val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
-            val content = collectAll(flow)
-            val jsonText = extractFirstJsonObject(content) ?: continue
-            val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: continue
-            val goal = obj.optString("goal").ifBlank { userGoal }
-            val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
-            val tasks = mutableListOf<Task>()
-            for (i in 0 until tasksArr.length()) {
-                val t = tasksArr.optJSONObject(i) ?: continue
-                val id = t.optString("id").ifBlank { "t${i + 1}" }
-                val desc = t.optString("description")
-                val cat = t.optString("category").ifBlank { null }
-                val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-                if (desc.isNotBlank()) {
-                    tasks.add(Task(id, desc, cat, targets, search, markers))
+            // Prefer external Control API plan if enabled
+            if (attempts == 0) {
+                val apiPlan = runCatching {
+                    ControlApiClient.requestPlan(sessionId, userGoal, extraContext ?: "", workspaceInfo)
+                }.getOrNull()
+                if (apiPlan != null) {
+                    val pGoal = apiPlan.optString("goal").ifBlank { userGoal }
+                    val tasksArr = apiPlan.optJSONArray("tasks") ?: JSONArray()
+                    val tasks = mutableListOf<Task>()
+                    for (i in 0 until tasksArr.length()) {
+                        val t = tasksArr.optJSONObject(i) ?: continue
+                        val id = t.optString("id").ifBlank { "t${i + 1}" }
+                        val desc = t.optString("description")
+                        val cat = t.optString("category").ifBlank { null }
+                        val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                        val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                        val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                        if (desc.isNotBlank()) tasks.add(Task(id, desc, cat, targets, search, markers))
+                    }
+                    if (tasks.isNotEmpty()) {
+                        plan = Plan(pGoal, tasks)
+                        break
+                    }
                 }
             }
-
-            if (tasks.isEmpty()) {
-                // Simple fallback plan to avoid zero-task output
-                val fallback = mutableListOf<Task>()
-                fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
-                fallback.add(Task("t2", "Search for common project files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
-                tasks.addAll(fallback)
-            }
-
-            val isWebAppProject = userGoal.contains("web", ignoreCase = true) ||
-                                  userGoal.contains("website", ignoreCase = true) ||
-                                  userGoal.contains("flask", ignoreCase = true) ||
-                                  userGoal.contains("html", ignoreCase = true)
-
-            val fileCreationTasks = tasks.count { it.category == "create_file" || it.category == "write_file" }
-
-            if (isWebAppProject && fileCreationTasks < 3) {
-                attempts++
-                continue // Regenerate the plan if it's too simple for a web app
-            }
-
-            plan = Plan(goal, tasks)
-            break
-        }
-
-        if (plan == null) return@withContext null
-
-
-        captureProjectRequirements(plan.goal) // Capture the project requirements
-        persistPlanWithStatuses(plan)
-        runCatching {
-            val tArr = JSONArray()
-            plan.tasks.forEach { t -> tArr.put(JSONObject().put("id", t.id).put("description", t.description).put("category", t.category ?: "")) }
-            appendTaskLog("plan_created") { put("goal", plan.goal); put("tasks", tArr) }
-        }
-        return@withContext plan
-    }
+            val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+             val content = collectAll(flow)
+             val jsonText = extractFirstJsonObject(content) ?: continue
+             val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: continue
+             val goal = obj.optString("goal").ifBlank { userGoal }
+             val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+             val tasks = mutableListOf<Task>()
+             for (i in 0 until tasksArr.length()) {
+                 val t = tasksArr.optJSONObject(i) ?: continue
+                 val id = t.optString("id").ifBlank { "t${i + 1}" }
+                 val desc = t.optString("description")
+                 val cat = t.optString("category").ifBlank { null }
+                 val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                 val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                 val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                 if (desc.isNotBlank()) {
+                     tasks.add(Task(id, desc, cat, targets, search, markers))
+                 }
+             }
+ 
+             if (tasks.isEmpty()) {
+                 // Simple fallback plan to avoid zero-task output
+                 val fallback = mutableListOf<Task>()
+                 fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
+                 fallback.add(Task("t2", "Search for common project files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+                 tasks.addAll(fallback)
+             }
+ 
+             val isWebAppProject = userGoal.contains("web", ignoreCase = true) ||
+                                   userGoal.contains("website", ignoreCase = true) ||
+                                   userGoal.contains("flask", ignoreCase = true) ||
+                                   userGoal.contains("html", ignoreCase = true)
+ 
+             val fileCreationTasks = tasks.count { it.category == "create_file" || it.category == "write_file" }
+ 
+             if (isWebAppProject && fileCreationTasks < 3) {
+                 attempts++
+                 continue // Regenerate the plan if it's too simple for a web app
+             }
+ 
+             plan = Plan(goal, tasks)
+             break
+         }
+ 
+         if (plan == null) return@withContext null
+ 
+ 
+         captureProjectRequirements(plan.goal) // Capture the project requirements
+         persistPlanWithStatuses(plan)
+         runCatching {
+             val tArr = JSONArray()
+             plan.tasks.forEach { t -> tArr.put(JSONObject().put("id", t.id).put("description", t.description).put("category", t.category ?: "")) }
+             appendTaskLog("plan_created") { put("goal", plan.goal); put("tasks", tArr) }
+         }
+         return@withContext plan
+     }
 
     suspend fun thinkAndAct(prompt: String, onStatus: (String) -> Unit): ThinkResult {
         beginRunStats()
@@ -1191,7 +1226,11 @@ class AgentOrchestrator(
             val effectiveToolCall = if (isModifyingTool(coerced.type) && Settings.writer_agent_enabled) {
                 runCatching { writerSuggestTool(plan.goal, task, coerced) }.getOrNull() ?: coerced
             } else coerced
-            appendTaskLog("tool_call_selected") { put("task_id", task.id); put("type", effectiveToolCall.type); put("args", effectiveToolCall.args) }
+                        appendTaskLog("tool_call_selected") { put("task_id", task.id); put("type", effectiveToolCall.type); put("args", effectiveToolCall.args) }
+            runCatching {
+                val kind = detectTaskKind(task)
+                ControlApiClient.recordTaskDetection(sessionId, task.id, kind, task.description, task.category)
+            }
             val result = runCatching {
                 currentTaskContext = task
                 executeToolCall(effectiveToolCall)
@@ -1875,6 +1914,8 @@ class AgentOrchestrator(
                         val content = stripFences(generated)
                         if (content.isNotBlank() && !content.contains("No AI API configured", ignoreCase = true)) {
                             f.writeText(content)
++                            // Sync new file with codebase agent
++                            runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, content, true) }
                         }
                     }
                     if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
@@ -1989,6 +2030,8 @@ class AgentOrchestrator(
                         }
                         updateContextCache(f.absolutePath, contentRaw, fileType)
                         notifyWorkspaceChanged(f.absolutePath)
+                        // Sync modified/new file with codebase agent
+                        runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, contentRaw, !f.exists()) }
                     }
                     
                     // Skip hash calculation for large files to prevent freezing
@@ -2283,7 +2326,17 @@ if (exit != 0) {
                     val encoded = if (encoding == "base64") Base64.encodeToString(slice, Base64.NO_WRAP) else String(slice)
                     JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", encoded).put("truncated", bytes.size > maxBytes).put("encoding", encoding).toString()
                 } else {
-                    JSONObject().put("path", f.absolutePath).put("missing", true).toString()
+                    // Try fetching from external codebase agent
+                    val fetched = runCatching { ControlApiClient.fetchFile(sessionId, f.absolutePath) }.getOrNull()
+                    if (!fetched.isNullOrBlank()) {
+                        val text = fetched
+                        val bytes = text.toByteArray()
+                        val slice = if (bytes.size > maxBytes) bytes.copyOf(maxBytes) else bytes
+                        val encoded = if (encoding == "base64") Base64.encodeToString(slice, Base64.NO_WRAP) else String(slice)
+                        JSONObject().put("path", f.absolutePath).put("bytes", bytes.size).put("content", encoded).put("truncated", bytes.size > maxBytes).put("encoding", encoding).toString()
+                    } else {
+                        JSONObject().put("path", f.absolutePath).put("missing", true).toString()
+                    }
                 }
                 ToolResult(true, content)
             }
@@ -2477,6 +2530,8 @@ if (exit != 0) {
                             }
                             entry.put("status", if (previewOnly) "planned_create" else "created")
                             createdAny = true
++                            // Sync newly created file
++                            if (!previewOnly) runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, e.optString("content"), true) }
                             if (includeDiffs) entry.put("diff", computeUnifiedDiff("", content, file.absolutePath))
                             outArr.put(entry)
                             continue
@@ -2620,6 +2675,8 @@ if (exit != 0) {
                                 results.add("edit[$i]: ok (${path})")
                                 notifyWorkspaceChanged(file.absolutePath)
                                 modifiedAny = true
++                                // Sync modified file
++                                runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, updated, false) }
                             }.onFailure { ex -> results.add("edit[$i]: write failed (${ex.message})") }
                         } else {
                             results.add("edit[$i]: planned_change (${path})")
@@ -3102,6 +3159,14 @@ if (exit != 0) {
 		// Deprecated: avoid premade templates. Content should always come from the model based on the goal and codebase.
 		return ""
 	}
+
+    // Task detection: determine if a task is full code generation or code update
+    private fun detectTaskKind(task: Task): String {
+        val desc = task.description.lowercase()
+        val isFull = desc.contains("create new") || desc.contains("generate") || desc.contains("scaffold") ||
+                desc.contains("new file") || isWriteCategory(task.category)
+        return if (isFull) "full_code_generation" else "code_update"
+    }
 }
 
 object MainShell {

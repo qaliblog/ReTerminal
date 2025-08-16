@@ -151,6 +151,15 @@ object Settings {
     var writer_agent_enabled
         get() = Preference.getBoolean(key = "writer_agent_enabled", default = false)
         set(value) = Preference.setBoolean(key = "writer_agent_enabled", value)
+
+    // Control workflow API
+    var control_api_enabled
+        get() = Preference.getBoolean(key = "control_api_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "control_api_enabled", value)
+
+    var control_api_base_url
+        get() = Preference.getString(key = "control_api_base_url", default = "")
+        set(value) = Preference.setString(key = "control_api_base_url", value)
 }
 
 object Preference {
