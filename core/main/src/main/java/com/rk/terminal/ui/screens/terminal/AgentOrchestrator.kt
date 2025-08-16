@@ -1501,9 +1501,17 @@ class AgentOrchestrator(
                     return false
                 }
                     
-                    // For other repeated observations, fail after 2 attempts with detailed debugging
+                    // For other repeated observations, fail after 2 attempts with detailed debugging (but be lenient during file generation/update)
+                    val isWriteOp = effectiveToolCall.type == "write_file" || effectiveToolCall.type == "create_file" || effectiveToolCall.type == "apply_changes"
                     if (repeatedObservationCount >= 2) {
-                        val debugInfo = """
+                        if (isWriteOp) {
+                            onStatus("Task ${task.id}: repeated observation during file generation/update (${repeatedObservationCount}), allowing extra attempt")
+                            lastObservation = obs
+                            lastToolType = effectiveToolCall.type
+                            stepsTaken++
+                            continue
+                        } else {
+                            val debugInfo = """
                             Task ${task.id} FAILED - Debug Info:
                             - Task: ${task.description}
                             - Category: ${task.category}
@@ -1514,10 +1522,11 @@ class AgentOrchestrator(
                             - Reason: repeated_non_modifying_observation
                         """.trimIndent()
                         
-                        onStatus(debugInfo)
-                        markTaskFailed(task.id, "repeated_non_modifying_observation")
-                        endRunStatsAndReport(onStatus, verb = "thought")
-                        return false
+                            onStatus(debugInfo)
+                            markTaskFailed(task.id, "repeated_non_modifying_observation")
+                            endRunStatsAndReport(onStatus, verb = "thought")
+                            return false
+                        }
                     }
                     
                     // Allow one more attempt with debugging info
@@ -2886,12 +2895,14 @@ if (exit != 0) {
                     sb.append(chunk)
                 }
                 val out = sb.toString()
+                // Retry only if the response is empty
                 if (out.isBlank() && attempt < maxRetries) {
                     attempt++
                     continue
                 }
                 return@withContext out
             } catch (e: java.io.IOException) {
+                // Network/connection error: retry only if we received no tokens
                 if (hadTokens) {
                     return@withContext sb.toString()
                 }
