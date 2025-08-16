@@ -1598,10 +1598,17 @@ class AgentOrchestrator(
 
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            You orchestrate a short inner loop to complete the current task using the available tools.
-            The API is stateless. Never rely on hidden memory. Use ONLY the provided goal, task, working directory, observations, and optional task hints.
-            Return ONLY a single minified JSON object describing ONE tool call to move the task forward.
-                         Allowed schemas:
+            You are a senior software engineer responsible for writing complete, functional, and high-quality code.
+            Your task is to orchestrate a short inner loop to complete the current task using the available tools.
+            You must return ONLY a single minified JSON object describing ONE tool call to move the task forward.
+
+            **CRITICAL DIRECTIVE: YOU MUST GENERATE FULL, WORKING CODE. NO PLACEHOLDERS.**
+            - When asked to create a file, you must provide the complete and functional code for that file.
+            - Do NOT use placeholder comments like "// TODO: implement", "// ...", or similar.
+            - Do NOT create empty files. Use the `write_file` tool and provide the full content.
+            - Ensure that all generated files work together to create a cohesive and functional application.
+
+            Allowed schemas:
              {"type":"create_file","args":{"path": string}}
              {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean, "encoding": "utf-8"|"base64"}}
              {"type":"make_dir","args":{"path": string}}
@@ -1636,91 +1643,41 @@ class AgentOrchestrator(
                  {"path": string, "op": "append_once", "block": string, "idempotent_marker": string},
                  {"path": string, "op": "write_if_missing", "content": string}
              ]}}
-             Tool ordering guidance:
-             - Prefer ABSOLUTE paths. Resolve relative paths against the working directory and then output absolute.
-             - Plan discovery first (list_dir_recursive, grep, read_file(s)), then precise modifications (apply_changes/search_replace/write_file), then run_shell if needed.
-             - Before modifying an existing file, first read it to get context; avoid blind overwrites. Prefer apply_changes with minimal edits.
-             - For tasks that rely on system state (package installation, runtimes), first run an environment preflight using run_shell to check OS/manager/runtime availability.
-             - Use get_cached_command_output before re-running heavy run_shell.
-             - Keep reads targeted; keep modifications idempotent.
-             - If user goal involves installing packages, prefer native package manager on Alpine (apk add py3-<pkg>) over pip when PEP 668 is present.
-             - For Python projects, create and activate a virtual environment first: python3 -m venv venv && . venv/bin/activate
-             - When writing Flask applications, include proper game logic, API endpoints, and complete HTML/CSS/JS for interactive features.
-             - For web applications, ensure all template files have complete content, not just empty files.
-             - When using write_file, always provide meaningful content - never write empty files.
-             - For Flask apps, write complete application code with routes, game logic, and proper structure.
-             - For HTML templates, write complete HTML with embedded CSS and JavaScript for full functionality.
-             - On Alpine Linux, use 'apk add python3' and then create virtual environment with 'python3 -m venv venv'
-             - If pip is not available, use 'python3 -m ensurepip' or install via virtual environment.
-             - For package installation failures, try virtual environment approach: python3 -m venv venv && . venv/bin/activate && pip install <package>
-             - CRITICAL: When you see "externally-managed-environment" or "PEP 668" errors, IMMEDIATELY use virtual environment: python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt
-             - ALWAYS create virtual environment BEFORE installing Python packages on Alpine Linux
-             - IMPORTANT: Create requirements.txt BEFORE attempting to install packages
-             - TASK ORDERING: Create configuration files first, then install dependencies, then create application files
-             - After creating files, always write meaningful content to them using write_file.
-             - For Flask applications, write complete server startup commands: python3 app.py or python3 -m flask run
-             - Never use placeholder commands like 'echo noop' for real tasks - always execute the actual command.
              
              ## DEVELOPMENT STANDARDS & BEST PRACTICES
              
              ### Project Structure & Organization
-             - Create proper project directories with clear organization (src/, templates/, static/, etc.)
-             - Use standard naming conventions (snake_case for Python, camelCase for JavaScript)
-             - Separate concerns: templates, static files, configuration, tests
-             - Include README.md with setup and usage instructions
-             - Create proper Flask application structure with templates/ and static/ directories
+             - Create proper project directories with clear organization (e.g., `src/`, `templates/`, `static/`).
+             - Use standard naming conventions (e.g., `snake_case` for Python, `camelCase` for JavaScript).
+             - Separate concerns: templates, static files, configuration, and tests should be in their own directories.
+             - Always include a `README.md` with setup and usage instructions.
+             - For Flask applications, create a proper structure with `templates/` and `static/` directories.
              
              ### Code Quality Standards
-             - Write clean, readable, and well-documented code
-             - Include proper error handling and validation
-             - Use type hints in Python when possible
-             - Follow language-specific best practices and conventions
-             - Include comments for complex logic
-             - Handle edge cases and provide meaningful error messages
-             - Add proper HTTP status codes and error responses
+             - Write clean, readable, and well-documented code.
+             - Include proper error handling and validation in all code.
+             - Use type hints in Python where appropriate.
+             - Follow language-specific best practices and conventions.
+             - Add comments for complex logic.
+             - Handle edge cases and provide meaningful error messages.
+             - Use proper HTTP status codes and error responses in web applications.
              
              ### Python/Flask Applications
-             - Always use virtual environments: python3 -m venv venv && . venv/bin/activate
-             - Create requirements.txt with exact versions
-             - Use proper Flask application factory pattern
-             - Include proper template inheritance and static file organization
-             - Add configuration management and environment variables
-             - Include proper logging and debugging capabilities
-             - Handle CORS and security headers
-             - Create complete, functional applications with all necessary routes
+             - Always use virtual environments: `python3 -m venv venv && . venv/bin/activate`.
+             - Create a `requirements.txt` file with all necessary packages and their versions.
+             - Use the Flask application factory pattern for larger applications.
+             - Implement proper template inheritance and organize static files correctly.
+             - Manage configurations and secrets using environment variables, not hardcoded values.
+             - Include comprehensive logging and debugging capabilities.
              
              ### Web Applications
-             - Create responsive, mobile-friendly designs
-             - Use semantic HTML and accessibility features
-             - Implement proper CSS organization (BEM methodology)
-             - Add JavaScript error handling and user feedback
-             - Include loading states and progress indicators
-             - Optimize for performance (minification, compression)
-             - Add proper meta tags and SEO optimization
-             - Ensure all interactive features work properly
+             - Create responsive, mobile-friendly designs.
+             - Use semantic HTML and ensure accessibility (e.g., alt tags for images).
+             - Implement a clear CSS organization methodology (e.g., BEM).
+             - Add robust JavaScript error handling and provide user feedback for all actions.
+             - Include loading states and progress indicators for long-running operations.
              
-             ### File Creation Guidelines
-             - Use write_file for creating content, not create_file for empty files
-             - Always include complete, runnable code
-             - NEVER create empty files - always write meaningful content
-             - For JavaScript files, write complete game logic and functions
-             - For HTML files, write complete page structure with embedded CSS/JS if needed
-             - For Python files, write complete application code with all necessary functions
-             - Create proper directory structure before files
-             - Include all necessary imports and dependencies
-             - Add proper error handling and validation
-             - Ensure files are self-contained and functional
-             - Add configuration files (package.json, requirements.txt, etc.)
-             - Create comprehensive documentation
-             
-             ### Context Awareness
-             - Maintain consistency across all files in a project
-             - Reference previously created files and functions
-             - Ensure naming conventions are consistent
-             - Build upon existing code structure and patterns
-             - Consider the overall application architecture
-             - Create complete applications, not just individual files
-             - Return pure JSON on a single line without explanations.
+             Return pure JSON on a single line without explanations.
          """.trimIndent()
         val wd = workingDirProvider()
         val prior = if (observations.isEmpty()) "(none)" else observations.entries.joinToString("\n") { (k, v) -> "${k}: ${v.take(500)}${if (v.length > 500) " …" else ""}" }
@@ -3102,27 +3059,87 @@ if (exit != 0) {
 						
 						when {
 							hasSocketIO -> {
-								"# Flask-SocketIO application"
+								"""from flask import Flask, render_template
+from flask_socketio import SocketIO
+
+app = Flask(__name__)
+socketio = SocketIO(app)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+if __name__ == '__main__':
+    socketio.run(app, debug=True)"""
 							}
 							isCalculator -> {
-							"# Flask Calculator application"
+							"""from flask import Flask, render_template, request
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/calculate', methods=['POST'])
+def calculate():
+    try:
+        num1 = float(request.form['num1'])
+        num2 = float(request.form['num2'])
+        operation = request.form['operation']
+        result = 0
+        if operation == 'add':
+            result = num1 + num2
+        elif operation == 'subtract':
+            result = num1 - num2
+        elif operation == 'multiply':
+            result = num1 * num2
+        elif operation == 'divide':
+            if num2 != 0:
+                result = num1 / num2
+            else:
+                return "Error: Division by zero"
+        return str(result)
+    except Exception as e:
+        return "Error: " + str(e)
+
+if __name__ == '__main__':
+    app.run(debug=True)"""
 						}
 						isGame -> {
-							"# Flask Game application"
+							"""from flask import Flask, render_template
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+if __name__ == '__main__':
+    app.run(debug=True)"""
 						}
 						isWebApp -> {
-							"# Flask Web application"
+							"""from flask import Flask, render_template
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "Hello, World!"
+
+if __name__ == '__main__':
+    app.run(debug=True)"""
 						}
 						else -> {
-							"# Python application"
+							"print('Hello, World!')"
 						}
 					}
 					}
 					derived.contains(".js") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"// Game JavaScript file"
+							"console.log('Game logic goes here');"
 						} else {
-							"// JavaScript file for application logic"
+							"console.log('Hello, World!');"
 						}
 					}
 					derived.contains(".html") -> {
@@ -3130,43 +3147,55 @@ if (exit != 0) {
 						val isGame = desc.contains("game") || requirements.contains("game") || desc.contains("piano") || desc.contains("tic") || desc.contains("chess")
 						
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"<!-- Game HTML file -->"
+							"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Game</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Game</h1>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <script src="/static/script.js"></script>
+</body>
+</html>"""
 						} else if (isCalculator) {
-							"<!-- Calculator HTML file -->"
+							"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Calculator</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Calculator</h1>
+    <form action="/calculate" method="post">
+        <input type="text" name="num1" placeholder="Number 1">
+        <input type="text" name="num2" placeholder="Number 2">
+        <select name="operation">
+            <option value="add">+</option>
+            <option value="subtract">-</option>
+            <option value="multiply">*</option>
+            <option value="divide">/</option>
+        </select>
+        <button type="submit">Calculate</button>
+    </form>
+</body>
+</html>"""
 						} else {
-							"<!-- HTML file -->"
+							"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Web App</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Hello, World!</h1>
+    <script src="/static/script.js"></script>
+</body>
+</html>"""
 						}
 					}
-					derived.contains(".css") -> "/* CSS styles */"
-
-					derived.contains(".py") -> {
-						if (requirements.contains("Flask") || requirements.contains("web application")) {
-							"# Flask application"
-						} else {
-							"# Python application"
-						}
-					}
-					derived.contains(".html") -> {
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"<!-- Game HTML file -->"
-						} else {
-							"<!-- HTML file -->"
-						}
-					}
-					derived.contains(".css") -> {
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"/* Game CSS styles */"
-						} else {
-							"/* Application CSS styles */"
-						}
-					}
-					derived.contains(".js") -> {
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"// Game JavaScript file"
-						} else {
-							"// Application JavaScript file"
-						}
-					}
+					derived.contains(".css") -> "body { font-family: sans-serif; }"
 					else -> "# File content"
 				}
 				
