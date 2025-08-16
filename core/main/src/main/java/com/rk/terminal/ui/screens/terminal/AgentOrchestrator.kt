@@ -675,14 +675,34 @@ class AgentOrchestrator(
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
         val sys = """
-            You are an autonomous software agent that plans work as structured JSON only.
-            Return ONLY a minified JSON object with the following shape and nothing else:
+            You are an expert software architect that creates comprehensive, step-by-step plans for software projects.
+            You must return ONLY a minified JSON object with the following shape and nothing else:
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
-            - ids unique short strings (e.g., t1, t2)
-            - category in: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
-            - front-load discovery; prefer precise scopes; idempotent modifications
-            - If tasks involve running commands or installing dependencies, include an initial environment discovery step (OS flavor, package manager, runtime versions) using run_shell.
-            - Do not include code in the plan
+
+            **CRITICAL DIRECTIVE: YOUR PLAN MUST BE COMPLETE AND HOLISTIC.**
+            - For any non-trivial project, your plan must include tasks to create all necessary files (e.g., HTML, CSS, JavaScript, backend code, configuration files, etc.).
+            - Do not create a plan with just a single file for a complex application.
+            - Ensure the tasks are ordered logically (e.g., create directories first, then files).
+
+            **Example of a good plan for a simple web app:**
+            {
+                "goal": "Create a simple web app with a button that changes a text.",
+                "tasks": [
+                    {"id": "t1", "category": "make_dir", "description": "Create a 'templates' directory for HTML files."},
+                    {"id": "t2", "category": "make_dir", "description": "Create a 'static' directory for CSS and JS files."},
+                    {"id": "t3", "category": "create_file", "description": "Create the main Python file for the Flask application.", "targets": ["app.py"]},
+                    {"id": "t4", "category": "create_file", "description": "Create the HTML template.", "targets": ["templates/index.html"]},
+                    {"id": "t5", "category": "create_file", "description": "Create the CSS file for styling.", "targets": ["static/style.css"]},
+                    {"id": "t6", "category": "create_file", "description": "Create the JavaScript file for interactivity.", "targets": ["static/script.js"]},
+                    {"id": "t7", "category": "create_file", "description": "Create a requirements.txt file.", "targets": ["requirements.txt"]},
+                    {"id": "t8", "category": "run_shell", "description": "Install dependencies from requirements.txt."}
+                ]
+            }
+
+            - ids must be unique short strings (e.g., t1, t2).
+            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit.
+            - Front-load discovery tasks if the existing codebase is unknown.
+            - Do not include code in the plan itself. The plan should only contain the steps to create the project.
         """.trimIndent()
         val user = """
             Goal: ${userGoal}
@@ -690,34 +710,57 @@ class AgentOrchestrator(
             Workspace snapshot (top-level): ${workspaceInfo}
             Extra context: ${extraContext ?: "(none)"}
         """.trimIndent()
-        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
-        val content = collectAll(flow)
-        val jsonText = extractFirstJsonObject(content) ?: return@withContext null
-        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext null
-        val goal = obj.optString("goal").ifBlank { userGoal }
-        val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
-        val tasks = mutableListOf<Task>()
-        for (i in 0 until tasksArr.length()) {
-            val t = tasksArr.optJSONObject(i) ?: continue
-            val id = t.optString("id").ifBlank { "t${i + 1}" }
-            val desc = t.optString("description")
-            val cat = t.optString("category").ifBlank { null }
-            val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-            val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-            val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
-            if (desc.isNotBlank()) {
-                tasks.add(Task(id, desc, cat, targets, search, markers))
+        var plan: Plan? = null
+        var attempts = 0
+        while (attempts < 3) {
+            val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+            val content = collectAll(flow)
+            val jsonText = extractFirstJsonObject(content) ?: continue
+            val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: continue
+            val goal = obj.optString("goal").ifBlank { userGoal }
+            val tasksArr = obj.optJSONArray("tasks") ?: JSONArray()
+            val tasks = mutableListOf<Task>()
+            for (i in 0 until tasksArr.length()) {
+                val t = tasksArr.optJSONObject(i) ?: continue
+                val id = t.optString("id").ifBlank { "t${i + 1}" }
+                val desc = t.optString("description")
+                val cat = t.optString("category").ifBlank { null }
+                val targets = t.optJSONArray("targets")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val search = t.optJSONArray("search")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                val markers = t.optJSONArray("markers")?.let { arr -> (0 until arr.length()).mapNotNull { idx -> arr.optString(idx) } }
+                if (desc.isNotBlank()) {
+                    tasks.add(Task(id, desc, cat, targets, search, markers))
+                }
             }
+
+            if (tasks.isEmpty()) {
+                // Simple fallback plan to avoid zero-task output
+                val fallback = mutableListOf<Task>()
+                fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
+                fallback.add(Task("t2", "Search for common project files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
+                tasks.addAll(fallback)
+            }
+
+            val isWebAppProject = userGoal.contains("web", ignoreCase = true) ||
+                                  userGoal.contains("website", ignoreCase = true) ||
+                                  userGoal.contains("flask", ignoreCase = true) ||
+                                  userGoal.contains("html", ignoreCase = true)
+
+            val fileCreationTasks = tasks.count { it.category == "create_file" || it.category == "write_file" }
+
+            if (isWebAppProject && fileCreationTasks < 3) {
+                attempts++
+                continue // Regenerate the plan if it's too simple for a web app
+            }
+
+            plan = Plan(goal, tasks)
+            break
         }
-        if (tasks.isEmpty()) {
-            // Simple fallback plan to avoid zero-task output
-            val fallback = mutableListOf<Task>()
-            fallback.add(Task("t1", "List top-level workspace", "list_dir", listOf(wdPath), null, null))
-            fallback.add(Task("t2", "Search for common project files", "grep", listOf(wdPath), listOf("build\\.gradle|settings\\.gradle|package\\.json|README|Main|AndroidManifest"), null))
-            tasks.addAll(fallback)
-        }
-        val plan = Plan(goal, tasks)
-        captureProjectRequirements(goal) // Capture the project requirements
+
+        if (plan == null) return@withContext null
+
+
+        captureProjectRequirements(plan.goal) // Capture the project requirements
         persistPlanWithStatuses(plan)
         runCatching {
             val tArr = JSONArray()
