@@ -19,7 +19,8 @@ private object ApiHttp {
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
             .build()
     }
 }
@@ -100,6 +101,8 @@ object OpenAIEngine : LlmEngine {
                     }
                 }
             }
+        } catch (e: java.io.IOException) {
+            throw e
         } catch (e: Exception) {
             emit("[OpenAI] ${e::class.simpleName}: ${e.message}\n")
         }
@@ -159,6 +162,8 @@ object AnthropicEngine : LlmEngine {
                 val out = sb.toString()
                 if (out.isEmpty()) emit("[Anthropic] Empty response\n") else out.chunked(64).forEach { emit(it) }
             }
+        } catch (e: java.io.IOException) {
+            throw e
         } catch (e: Exception) {
             emit("[Anthropic] ${e::class.simpleName}: ${e.message}\n")
         }
@@ -212,6 +217,8 @@ object GeminiEngine : LlmEngine {
                 val out = sb.toString()
                 if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
             }
+        } catch (e: java.io.IOException) {
+            throw e
         } catch (e: Exception) {
             emit("[Gemini] ${e::class.simpleName}: ${e.message}\n")
         }
