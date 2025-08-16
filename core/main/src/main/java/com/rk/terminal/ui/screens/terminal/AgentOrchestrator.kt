@@ -2946,18 +2946,7 @@ if (exit != 0) {
 				ToolCall("make_dir", JSONObject().put("path", derived))
 			}
 			"create_file" -> {
-				// For create_file tasks, prefer write_file with content instead of empty files
-				val desc = (task.description ?: "").lowercase()
-				val suggested = proposed.args.optString("path")
-				val derived = when {
-					suggested.isNotBlank() -> suggested
-					!task.targets.isNullOrEmpty() -> task.targets!!.first()
-					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
-				}
-				
-				// Convert create_file to write_file with content provided by the LLM at the time of the write_file tool call.
-				// Here we only ensure a valid path; content must come from the model, not a template.
-				ToolCall("write_file", JSONObject().put("path", derived).put("content", "").put("mode", "overwrite"))
+				proposed
 			}
 			"write_file" -> {
 				// This case is now only for when the agent wants to write to a new file but hasn't provided content.
