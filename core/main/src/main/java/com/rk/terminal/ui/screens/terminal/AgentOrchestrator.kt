@@ -1651,6 +1651,8 @@ class AgentOrchestrator(
             - Do NOT create empty files. Use the `write_file` tool and provide the full content.
             - Ensure that all generated files work together to create a cohesive and functional application.
 
+            **IMPORTANT: For any file modification, you must first read the file to understand its content and structure. Use the `read_file` tool before using `write_file` or `apply_changes` to ensure you are making the correct modifications.**
+
             Allowed schemas:
              {"type":"create_file","args":{"path": string}}
              {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean, "encoding": "utf-8"|"base64"}}
@@ -2838,27 +2840,31 @@ if (exit != 0) {
 
 	private fun coerceToolCallForTaskCategory(task: Task, proposed: ToolCall): ToolCall {
 		val cat = (task.category ?: "").lowercase().trim()
-		return when (cat) {
-			"list_dir" -> ToolCall("list_dir", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
-			"read_file" -> ToolCall("read_file", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()))
-			"grep" -> ToolCall("grep", JSONObject().put("path", task.targets?.firstOrNull() ?: workingDirProvider()).put("pattern", task.search?.firstOrNull() ?: ".").put("max_results", 200))
-			"make_dir" -> {
-				val desc = (task.description ?: "").lowercase()
-				val suggested = proposed.args.optString("path")
-				val derived = when {
-					suggested.isNotBlank() -> suggested
-					!task.targets.isNullOrEmpty() -> task.targets!!.first()
-					desc.contains("template") || desc.contains("web") || desc.contains("flask") -> {
-						// Create proper Flask directory structure
-						val baseDir = workingDirProvider()
-						File(baseDir, "templates").mkdirs()
-						File(baseDir, "static").mkdirs()
-						File(baseDir, "templates").absolutePath
-					}
-					else -> workingDirProvider()
-				}
-				ToolCall("make_dir", JSONObject().put("path", derived))
+		val isModification = task.description.contains("modify", ignoreCase = true) ||
+							 task.description.contains("update", ignoreCase = true) ||
+							 task.description.contains("change", ignoreCase = true) ||
+							 task.description.contains("edit", ignoreCase = true) ||
+							 task.description.contains("upgrade", ignoreCase = true)
+
+		if (isModification) {
+			return proposed // Don't interfere with modification tasks
+		}
+
+		// If the agent wants to write a file and has provided content, trust it.
+		if (proposed.type == "write_file" && proposed.args.has("content") && proposed.args.optString("content").isNotBlank()) {
+			return proposed
+		}
+
+		val path = proposed.args.optString("path").ifBlank { task.targets?.firstOrNull() }
+		if (path != null) {
+			val file = resolvePath(path)
+			if (file.exists()) {
+				return proposed // File already exists, so it's a modification, don't interfere.
 			}
+		}
+
+
+		return when (cat) {
 			"create_file" -> {
 				// For create_file tasks, prefer write_file with content instead of empty files
 				val desc = (task.description ?: "").lowercase()
@@ -2866,565 +2872,46 @@ if (exit != 0) {
 				val derived = when {
 					suggested.isNotBlank() -> suggested
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
-					// Handle directory creation for static files
-					desc.contains("static") && desc.contains("directory") -> {
-						// Create both static and templates directories
-						val staticDir = File(workingDirProvider(), "static")
-						val templatesDir = File(workingDirProvider(), "templates")
-						if (!staticDir.exists()) staticDir.mkdirs()
-						if (!templatesDir.exists()) templatesDir.mkdirs()
-						// Return the static directory path for this call
-						staticDir.absolutePath
-					}
-					// Handle directory creation for templates
-					desc.contains("templates") && desc.contains("directory") -> {
-						// Create both static and templates directories
-						val staticDir = File(workingDirProvider(), "static")
-						val templatesDir = File(workingDirProvider(), "templates")
-						if (!staticDir.exists()) staticDir.mkdirs()
-						if (!templatesDir.exists()) templatesDir.mkdirs()
-						// Return the templates directory path for this call
-						templatesDir.absolutePath
-					}
-					desc.contains("javascript") || desc.contains("js") -> {
-						// Dynamic JS path detection - works for any framework
-						val possiblePaths = listOf(
-							File(workingDirProvider(), "static/script.js"),
-							File(workingDirProvider(), "webapp/static/script.js"),
-							File(workingDirProvider(), "src/static/script.js"),
-							File(workingDirProvider(), "public/script.js"),
-							File(workingDirProvider(), "dist/script.js"),
-							File(workingDirProvider(), "build/script.js"),
-							File(workingDirProvider(), "script.js")
-						)
-						
-						val existingPath = possiblePaths.find { it.exists() }
-						when {
-							existingPath != null -> existingPath.absolutePath
-							else -> {
-								val hasStatic = File(workingDirProvider(), "static").exists()
-								val hasWebapp = File(workingDirProvider(), "webapp").exists()
-								val hasSrc = File(workingDirProvider(), "src").exists()
-								val hasPublic = File(workingDirProvider(), "public").exists()
-								
-								when {
-									hasStatic -> File(workingDirProvider(), "static/script.js").absolutePath
-									hasWebapp -> File(workingDirProvider(), "webapp/static/script.js").absolutePath
-									hasSrc -> File(workingDirProvider(), "src/static/script.js").absolutePath
-									hasPublic -> File(workingDirProvider(), "public/script.js").absolutePath
-									else -> File(workingDirProvider(), "script.js").absolutePath
-								}
-							}
-						}
-					}
-					desc.contains("html") -> {
-						// Dynamic HTML path detection - works for any framework or project structure
-						val possiblePaths = listOf(
-							File(workingDirProvider(), "templates/index.html"),
-							File(workingDirProvider(), "webapp/templates/index.html"),
-							File(workingDirProvider(), "src/templates/index.html"),
-							File(workingDirProvider(), "public/index.html"),
-							File(workingDirProvider(), "dist/index.html"),
-							File(workingDirProvider(), "build/index.html"),
-							File(workingDirProvider(), "index.html")
-						)
-						
-						// Find the first existing path or use the most common one
-						val existingPath = possiblePaths.find { it.exists() }
-						when {
-							existingPath != null -> existingPath.absolutePath
-							else -> {
-								// Check project structure to determine the best path
-								val hasTemplates = File(workingDirProvider(), "templates").exists()
-								val hasWebapp = File(workingDirProvider(), "webapp").exists()
-								val hasSrc = File(workingDirProvider(), "src").exists()
-								val hasPublic = File(workingDirProvider(), "public").exists()
-								
-								when {
-									hasTemplates -> File(workingDirProvider(), "templates/index.html").absolutePath
-									hasWebapp -> File(workingDirProvider(), "webapp/templates/index.html").absolutePath
-									hasSrc -> File(workingDirProvider(), "src/templates/index.html").absolutePath
-									hasPublic -> File(workingDirProvider(), "public/index.html").absolutePath
-									else -> File(workingDirProvider(), "index.html").absolutePath
-								}
-							}
-						}
-					}
-					desc.contains("css") -> {
-						// Dynamic CSS path detection - works for any framework
-						val possiblePaths = listOf(
-							File(workingDirProvider(), "static/style.css"),
-							File(workingDirProvider(), "webapp/static/style.css"),
-							File(workingDirProvider(), "src/static/style.css"),
-							File(workingDirProvider(), "public/style.css"),
-							File(workingDirProvider(), "dist/style.css"),
-							File(workingDirProvider(), "build/style.css"),
-							File(workingDirProvider(), "style.css")
-						)
-						
-						val existingPath = possiblePaths.find { it.exists() }
-						when {
-							existingPath != null -> existingPath.absolutePath
-							else -> {
-								val hasStatic = File(workingDirProvider(), "static").exists()
-								val hasWebapp = File(workingDirProvider(), "webapp").exists()
-								val hasSrc = File(workingDirProvider(), "src").exists()
-								val hasPublic = File(workingDirProvider(), "public").exists()
-								
-								when {
-									hasStatic -> File(workingDirProvider(), "static/style.css").absolutePath
-									hasWebapp -> File(workingDirProvider(), "webapp/static/style.css").absolutePath
-									hasSrc -> File(workingDirProvider(), "src/static/style.css").absolutePath
-									hasPublic -> File(workingDirProvider(), "public/style.css").absolutePath
-									else -> File(workingDirProvider(), "style.css").absolutePath
-								}
-							}
-						}
-					}
-					desc.contains("python") || desc.contains("py") -> File(workingDirProvider(), "app.py").absolutePath
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
-				
+
 				// Convert create_file to write_file with functional content based on project requirements
 				val requirements = projectRequirements ?: ""
 				val content = when {
-					// Handle directory creation - create a placeholder file
-					derived.contains("static") && desc.contains("directory") -> "# Static files directory created"
-					// Handle templates directory creation - create a placeholder file
-					derived.contains("templates") && desc.contains("directory") -> "# Templates directory created"
-					// Handle requirements.txt - include Flask-SocketIO if needed
-					derived.contains("requirements.txt") -> {
-						val hasSocketIO = requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time") ||
-							desc.contains("SocketIO") || desc.contains("socket") || desc.contains("real-time")
-						if (hasSocketIO) {
-							"Flask==3.1.1\nFlask-SocketIO==5.3.6\nWerkzeug==3.1.3"
-						} else {
-							"Flask==3.1.1\nWerkzeug==3.1.3"
-						}
-					}
-					// Handle any Python file modifications - preserve existing content
-					derived.contains(".py") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
-						// Read existing app.py content and preserve it
-						val appFile = File(workingDirProvider(), "app.py")
-						val webappAppFile = File(workingDirProvider(), "webapp/app.py")
-						when {
-							appFile.exists() -> appFile.readText()
-							webappAppFile.exists() -> webappAppFile.readText()
-							else -> {
-								// Fallback to basic Flask app if file doesn't exist
-								"# Python application"
-							}
-						}
-					}
-					// Handle any JavaScript file modifications - preserve existing content
-					derived.contains(".js") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
-						// Read existing script.js content and preserve it
-						val scriptFile = File(workingDirProvider(), "static/script.js")
-						val webappScriptFile = File(workingDirProvider(), "webapp/static/script.js")
-						when {
-							scriptFile.exists() -> scriptFile.readText()
-							webappScriptFile.exists() -> webappScriptFile.readText()
-							else -> {
-								// Fallback to basic script if file doesn't exist
-								"// Basic JavaScript file"
-							}
-						}
-					}
-					// Handle any CSS file modifications - preserve existing content
-					derived.contains(".css") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
-						// Read existing CSS content and preserve it
-						val cssFile = File(workingDirProvider(), "static/style.css")
-						val webappCssFile = File(workingDirProvider(), "webapp/static/style.css")
-						when {
-							cssFile.exists() -> cssFile.readText()
-							webappCssFile.exists() -> webappCssFile.readText()
-							else -> {
-								// Fallback to basic CSS if file doesn't exist
-								"/* Basic CSS styles */"
-							}
-						}
-					}
-					// Handle any HTML file modifications - preserve existing content
-					derived.contains(".html") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) -> {
-						// Read existing HTML content and preserve it
-						val htmlFile = File(workingDirProvider(), "templates/index.html")
-						val webappHtmlFile = File(workingDirProvider(), "webapp/templates/index.html")
-						when {
-							htmlFile.exists() -> htmlFile.readText()
-							webappHtmlFile.exists() -> webappHtmlFile.readText()
-							else -> {
-								// Fallback to basic HTML if file doesn't exist
-								"<!-- HTML file -->"
-							}
-						}
-					}
-					// Handle ANY file modifications - universal preservation logic
-					(derived.contains(".") && (desc.contains("modify") || desc.contains("update") || desc.contains("change") || desc.contains("edit")) && !desc.contains("create")) -> {
-						// Universal file preservation - works for any file type and any modification
-						val fileExtension = derived.substringAfterLast(".")
-						val fileName = derived.substringAfterLast("/").substringBeforeLast(".")
-						
-						// Try to find the file in common locations
-						val possiblePaths = listOf(
-							File(workingDirProvider(), derived),
-							File(workingDirProvider(), fileName + "." + fileExtension),
-							File(workingDirProvider(), "static/" + fileName + "." + fileExtension),
-							File(workingDirProvider(), "templates/" + fileName + "." + fileExtension),
-							File(workingDirProvider(), "webapp/" + derived),
-							File(workingDirProvider(), "webapp/static/" + fileName + "." + fileExtension),
-							File(workingDirProvider(), "webapp/templates/" + fileName + "." + fileExtension)
-						)
-						
-						val existingFile = possiblePaths.find { it.exists() }
-						when {
-							existingFile != null -> existingFile.readText()
-							else -> {
-								// Generate appropriate fallback content based on file type
-								when (fileExtension.lowercase()) {
-									"py" -> "# Python file"
-									"js" -> "// JavaScript file"
-									"html" -> "<!-- HTML file -->"
-									"css" -> "/* CSS file */"
-									"json" -> "{}"
-									"txt" -> "# Text file"
-									else -> "# ${fileExtension.uppercase()} file"
-								}
-							}
-						}
-					}
-					derived.contains(".py") -> {
-						// Dynamic Python app generation based on project requirements
-						val hasSocketIO = requirements.contains("SocketIO") || requirements.contains("socket") || requirements.contains("real-time") ||
-							desc.contains("SocketIO") || desc.contains("socket") || desc.contains("real-time")
-						val isCalculator = desc.contains("calculator") || requirements.contains("calculator")
-						val isGame = desc.contains("game") || requirements.contains("game") || desc.contains("piano") || desc.contains("tic") || desc.contains("chess")
-						val isWebApp = desc.contains("web") || desc.contains("flask") || desc.contains("app") || requirements.contains("flask")
-						
-						when {
-							hasSocketIO -> {
-								"""from flask import Flask, render_template
-from flask_socketio import SocketIO
-
-app = Flask(__name__)
-socketio = SocketIO(app)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    socketio.run(app, debug=True)"""
-							}
-							isCalculator -> {
-							"""from flask import Flask, render_template, request
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/calculate', methods=['POST'])
-def calculate():
-    try:
-        num1 = float(request.form['num1'])
-        num2 = float(request.form['num2'])
-        operation = request.form['operation']
-        result = 0
-        if operation == 'add':
-            result = num1 + num2
-        elif operation == 'subtract':
-            result = num1 - num2
-        elif operation == 'multiply':
-            result = num1 * num2
-        elif operation == 'divide':
-            if num2 != 0:
-                result = num1 / num2
-            else:
-                return "Error: Division by zero"
-        return str(result)
-    except Exception as e:
-        return "Error: " + str(e)
-
-if __name__ == '__main__':
-    app.run(debug=True)"""
-						}
-						isGame -> {
-							"""from flask import Flask, render_template
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)"""
-						}
-						isWebApp -> {
-							"""from flask import Flask, render_template
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return "Hello, World!"
-
-if __name__ == '__main__':
-    app.run(debug=True)"""
-						}
-						else -> {
-							"print('Hello, World!')"
-						}
-					}
-					}
-					derived.contains(".js") -> {
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"console.log('Game logic goes here');"
-						} else {
-							"console.log('Hello, World!');"
-						}
-					}
-					derived.contains(".html") -> {
-						val isCalculator = desc.contains("calculator") || requirements.contains("calculator")
-						val isGame = desc.contains("game") || requirements.contains("game") || desc.contains("piano") || desc.contains("tic") || desc.contains("chess")
-						
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Game</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <h1>Game</h1>
-    <canvas id="gameCanvas" width="800" height="600"></canvas>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
-						} else if (isCalculator) {
-							"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Calculator</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <h1>Calculator</h1>
-    <form action="/calculate" method="post">
-        <input type="text" name="num1" placeholder="Number 1">
-        <input type="text" name="num2" placeholder="Number 2">
-        <select name="operation">
-            <option value="add">+</option>
-            <option value="subtract">-</option>
-            <option value="multiply">*</option>
-            <option value="divide">/</option>
-        </select>
-        <button type="submit">Calculate</button>
-    </form>
-</body>
-</html>"""
-						} else {
-							"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Web App</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <h1>Hello, World!</h1>
-    <script src="/static/script.js"></script>
-</body>
-</html>"""
-						}
-					}
-					derived.contains(".css") -> "body { font-family: sans-serif; }"
-					else -> "# File content"
+					derived.endsWith(".py") -> "print('Hello, World!')"
+					derived.endsWith(".html") -> "<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>"
+					derived.endsWith(".css") -> "body { font-family: sans-serif; }"
+					derived.endsWith(".js") -> "console.log('Hello, World!');"
+					derived.endsWith("requirements.txt") -> "Flask==3.1.1\nWerkzeug==3.1.3"
+					else -> "# New file created by the agent."
 				}
-				
+
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
 			}
 			"write_file" -> {
+				// This case is now only for when the agent wants to write to a new file but hasn't provided content.
 				val desc = (task.description ?: "").lowercase()
 				val suggested = proposed.args.optString("path")
 				val derived = when {
 					suggested.isNotBlank() -> suggested
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
-					desc.contains("requirements") -> {
-						// Check if we're in a project subdirectory
-						val appFile = File(workingDirProvider(), "app.py")
-						val projectDir = if (appFile.exists()) {
-							workingDirProvider()
-						} else {
-							// Look for app.py in subdirectories
-							val subdirs = File(workingDirProvider()).listFiles()?.filter { it.isDirectory } ?: emptyList()
-							val projectSubdir = subdirs.find { File(it, "app.py").exists() }
-							projectSubdir?.absolutePath ?: workingDirProvider()
-						}
-						File(projectDir, "requirements.txt").absolutePath
-					}
-					desc.contains("html") -> {
-						// Dynamic HTML path detection - works for any framework or project structure
-						val possiblePaths = listOf(
-							File(workingDirProvider(), "templates/index.html"),
-							File(workingDirProvider(), "webapp/templates/index.html"),
-							File(workingDirProvider(), "src/templates/index.html"),
-							File(workingDirProvider(), "public/index.html"),
-							File(workingDirProvider(), "dist/index.html"),
-							File(workingDirProvider(), "build/index.html"),
-							File(workingDirProvider(), "index.html")
-						)
-						
-						// Find the first existing path or use the most common one
-						val existingPath = possiblePaths.find { it.exists() }
-						when {
-							existingPath != null -> existingPath.absolutePath
-							else -> {
-								// Check project structure to determine the best path
-								val hasTemplates = File(workingDirProvider(), "templates").exists()
-								val hasWebapp = File(workingDirProvider(), "webapp").exists()
-								val hasSrc = File(workingDirProvider(), "src").exists()
-								val hasPublic = File(workingDirProvider(), "public").exists()
-								
-								when {
-									hasTemplates -> File(workingDirProvider(), "templates/index.html").absolutePath
-									hasWebapp -> File(workingDirProvider(), "webapp/templates/index.html").absolutePath
-									hasSrc -> File(workingDirProvider(), "src/templates/index.html").absolutePath
-									hasPublic -> File(workingDirProvider(), "public/index.html").absolutePath
-									else -> File(workingDirProvider(), "index.html").absolutePath
-								}
-							}
-						}
-					}
-					desc.contains("css") -> File(workingDirProvider(), "static/style.css").absolutePath
-					desc.contains("javascript") || desc.contains("js") -> File(workingDirProvider(), "static/script.js").absolutePath
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
-				val f = resolvePath(derived)
-				
-				// Check if the proposed tool call has content
-				val proposedContent = proposed.args.optString("content")
-				if (proposedContent.isNotBlank()) {
-					proposed
-				} else {
-					// If no content provided, generate functional content based on requirements
-					val requirements = projectRequirements ?: ""
-					val content = when {
-					derived.contains(".py") -> {
-						if (requirements.contains("Flask") || requirements.contains("web application") || requirements.contains("Piano Tiles")) {
-							"# Flask application"
-						} else {
-							"# Python application"
-						}
-					}
-					derived.contains(".html") -> {
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"<!-- Game HTML file -->"
-						} else {
-							"<!-- HTML file -->"
-						}
-					}
-					derived.contains(".js") -> {
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"// Game JavaScript file"
-						} else {
-							"// Application JavaScript file"
-						}
-					}
-					derived.contains(".css") -> {
-						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"/* Game CSS styles */"
-						} else {
-							"/* Application CSS styles */"
-						}
-					}
-					else -> "# File content"
+
+				val requirements = projectRequirements ?: ""
+				val content = when {
+					derived.endsWith(".py") -> "print('Hello, World!')"
+					derived.endsWith(".html") -> "<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>"
+					derived.endsWith(".css") -> "body { font-family: sans-serif; }"
+					derived.endsWith(".js") -> "console.log('Hello, World!');"
+					derived.endsWith("requirements.txt") -> "Flask==3.1.1\nWerkzeug==3.1.3"
+					else -> "# New file created by the agent."
 				}
-				
-				val toolCall = ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
-				
-				// If this is an HTML file for a game, automatically create the missing CSS and JS files
-				if (derived.contains(".html") && (requirements.contains("Piano Tiles") || requirements.contains("game"))) {
-					// Determine the correct project directory
-					val appFile = File(workingDirProvider(), "app.py")
-					val projectDir = if (appFile.exists()) {
-						workingDirProvider()
-					} else {
-						// Look for app.py in subdirectories
-						val subdirs = File(workingDirProvider()).listFiles()?.filter { it.isDirectory } ?: emptyList()
-						val projectSubdir = subdirs.find { File(it, "app.py").exists() }
-						projectSubdir?.absolutePath ?: workingDirProvider()
-					}
-					
-					// Create static directory in the project directory if it doesn't exist
-					val staticDir = File(projectDir, "static")
-					if (!staticDir.exists()) {
-						staticDir.mkdirs()
-					}
-					
-					// Create CSS file automatically
-					val cssPath = File(projectDir, "static/style.css").absolutePath
-					val cssFile = File(cssPath)
-					if (!cssFile.exists()) {
-						val cssContent = "/* Game CSS styles */"
-						cssFile.writeText(cssContent)
-					}
-					
-					// Create JS file automatically
-					val jsPath = File(projectDir, "static/script.js").absolutePath
-					val jsFile = File(jsPath)
-					if (!jsFile.exists()) {
-						val jsContent = "// Game JavaScript file"
-						jsFile.writeText(jsContent)
-					}
-				}
-				
+
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
-				}
 			}
-			"run_shell" -> {
-                // Special handling for different types of shell tasks
-                val desc = (task.description ?: "").lowercase()
-                when {
-                    desc.contains("install") || desc.contains("dependencies") || desc.contains("packages") -> {
-                        // Check if requirements.txt exists first
-                        val requirementsFile = File(workingDirProvider(), "requirements.txt")
-                        if (requirementsFile.exists()) {
-                            // Use virtual environment for package installation
-                            ToolCall("run_shell", JSONObject().put("command", "python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt").put("timeout_ms", 60000))
-                        } else {
-                            // Create requirements.txt first, then install
-                            ToolCall("write_file", JSONObject().put("path", "requirements.txt").put("content", "Flask==3.1.1\nWerkzeug==3.1.3").put("mode", "overwrite"))
-                        }
-                    }
-                    desc.contains("server") || desc.contains("flask") || desc.contains("run") -> {
-                        // Check if we're in a project subdirectory
-                        val appFile = File(workingDirProvider(), "app.py")
-                        val projectDir = if (appFile.exists()) {
-                            workingDirProvider()
-                        } else {
-                            // Look for app.py in subdirectories
-                            val subdirs = File(workingDirProvider()).listFiles()?.filter { it.isDirectory } ?: emptyList()
-                            val projectSubdir = subdirs.find { File(it, "app.py").exists() }
-                            projectSubdir?.absolutePath ?: workingDirProvider()
-                        }
-                        
-                        // Check if virtual environment exists, if not create it first
-                        val venvDir = File(projectDir, "venv")
-                        if (venvDir.exists()) {
-                            // Start Flask development server
-                            ToolCall("run_shell", JSONObject().put("command", "cd $projectDir && . venv/bin/activate && python app.py").put("timeout_ms", 30000))
-                        } else {
-                            // Create virtual environment and install dependencies first
-                            ToolCall("run_shell", JSONObject().put("command", "cd $projectDir && python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt && python app.py").put("timeout_ms", 60000))
-                        }
-                    }
-                    proposed.type.isNotBlank() -> proposed
-                    else -> ToolCall("run_shell", JSONObject().put("command", "echo noop").put("timeout_ms", 5000))
-                }
-            }
-            else -> if (proposed.type.isNotBlank()) proposed else ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
-        }
+			else -> proposed
+		}
 	}
 
 	private fun preferredPackageManager(): String? = when {
