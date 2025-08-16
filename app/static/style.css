@@ -1,0 +1,153 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.calculator-container {
+    padding: 20px;
+}
+
+.calculator {
+    background: #1a1a1a;
+    border-radius: 20px;
+    padding: 20px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+    width: 320px;
+    max-width: 100%;
+}
+
+.display {
+    background: #2d2d2d;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    text-align: right;
+    min-height: 80px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+}
+
+.expression {
+    color: #888;
+    font-size: 16px;
+    margin-bottom: 5px;
+    min-height: 20px;
+    word-wrap: break-word;
+}
+
+.result {
+    color: #fff;
+    font-size: 32px;
+    font-weight: 300;
+    min-height: 40px;
+    word-wrap: break-word;
+}
+
+.buttons {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+.btn {
+    border: none;
+    border-radius: 10px;
+    padding: 20px;
+    font-size: 20px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    color: #fff;
+    background: #333;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.number {
+    background: #4a4a4a;
+}
+
+.number:hover {
+    background: #5a5a5a;
+}
+
+.operator {
+    background: #ff9500;
+}
+
+.operator:hover {
+    background: #ffaa33;
+}
+
+.clear {
+    background: #ff3b30;
+}
+
+.clear:hover {
+    background: #ff5252;
+}
+
+.equals {
+    background: #007aff;
+    grid-column: span 2;
+}
+
+.equals:hover {
+    background: #4da6ff;
+}
+
+.zero {
+    grid-column: span 2;
+}
+
+/* Responsive design */
+@media (max-width: 400px) {
+    .calculator {
+        width: 280px;
+        padding: 15px;
+    }
+    
+    .btn {
+        padding: 15px;
+        font-size: 18px;
+    }
+    
+    .result {
+        font-size: 28px;
+    }
+}
+
+/* Animation for button press */
+.btn:active {
+    transform: scale(0.95);
+}
+
+/* Error state */
+.error {
+    color: #ff3b30 !important;
+    animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+}
