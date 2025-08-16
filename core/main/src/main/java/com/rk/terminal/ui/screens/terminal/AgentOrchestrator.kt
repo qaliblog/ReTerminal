@@ -1422,15 +1422,14 @@ class AgentOrchestrator(
                     return true
                 }
                 
-                // For creating empty files when should be writing content, mark as done
+                // For creating empty files when should be writing content, fail and request proper content
                 val isCreateFile = effectiveToolCall.type == "create_file"
                 val shouldBeWritingContent = shouldUseEditTool(task) || task.category == "write_file"
                 if (isCreateFile && shouldBeWritingContent && repeatedObservationCount <= 1) {
-                    onStatus("Task ${task.id}: detected creating empty file when should be writing content, marking task complete")
-                    markTaskDone(task.id)
-                    persistPlanWithStatuses(plan)
+                    onStatus("Task ${task.id}: creating empty file is invalid when content is required; asking for write_file with content")
+                    markTaskFailed(task.id, "empty_create_file_when_content_required")
                     endRunStatsAndReport(onStatus, verb = "thought")
-                    return true
+                    return false
                 }
                 
                 // Special handling for placeholder commands (echo noop, etc.) when should be running real commands
@@ -1819,7 +1818,7 @@ class AgentOrchestrator(
             }
             "write_file" -> {
                 val path = call.args.optString("path")
-                val contentRaw = call.args.optString("content")
+                val contentRaw = call.args.optString("content").also { if (it.isBlank()) return ToolResult(false, "empty_content: write_file requires non-empty content") }
                 val encoding = call.args.optString("encoding", "utf-8").lowercase()
                 val mode = call.args.optString("mode", "overwrite")
                 val ifNotExists = call.args.optBoolean("if_not_exists", false)
@@ -2809,6 +2808,8 @@ if (exit != 0) {
                 .put("files", summary)
             val out = File(agentDir, Settings.codebase_cache_path)
             out.writeText(codebase.toString(2))
+            // Also persist into working directory for visibility and for LLM context
+            runCatching { File(workingDirProvider(), Settings.codebase_cache_path).writeText(codebase.toString(2)) }
             onStatus("Codebase cache updated: ${'$'}{summary.length()} files")
         } catch (_: Exception) {
             // ignore
