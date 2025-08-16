@@ -40,7 +40,9 @@ object OpenAIEngine : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
         try {
             val base = Settings.api_base_url.trim().ifBlank { "https://api.openai.com" }.removeSuffix("/")
-            val url = "$base/v1/chat/completions"
+            val provider = Settings.api_provider.lowercase()
+            val path = if (provider == "fireworks") "/inference/v1/chat/completions" else "/v1/chat/completions"
+            val url = "$base$path"
             val model = Settings.api_model.ifBlank { "gpt-4o-mini" }
             val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
             val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
