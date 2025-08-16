@@ -32,11 +32,13 @@ object LlmProvider {
     fun current(): LlmEngine {
         val provider = Settings.api_provider.lowercase()
         val apiKey = Settings.api_key
-        if (apiKey.isBlank()) return EchoEngine
+        val requiresKey = provider == "openai" || provider == "openai_compatible" || provider == "anthropic" || provider == "gemini"
+        if (requiresKey && apiKey.isBlank()) return EchoEngine
         return when (provider) {
             "openai", "openai_compatible" -> OpenAIEngine
             "anthropic" -> AnthropicEngine
             "gemini" -> GeminiEngine
+            "ollama" -> OllamaEngine
             else -> OpenAIEngine // default to OpenAI-compatible
         }
     }

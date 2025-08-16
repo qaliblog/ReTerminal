@@ -224,3 +224,55 @@ object GeminiEngine : LlmEngine {
         }
     }.flowOn(Dispatchers.IO)
 }
+
+object OllamaEngine : LlmEngine {
+    override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
+        try {
+            val base = Settings.api_base_url.trim().ifBlank { "http://127.0.0.1:11434" }.removeSuffix("/")
+            val url = "$base/api/chat"
+            val model = Settings.api_model.ifBlank { "llama3.1" }
+            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+            val body = JSONObject().apply {
+                put("model", model)
+                put("stream", true)
+                put("messages", buildChatHistoryArray(messages))
+                if (forceJson) put("format", "json_object")
+            }
+            val req = Request.Builder()
+                .url(url)
+                .addHeader("content-type", "application/json")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            ApiHttp.client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    emit("[Ollama] HTTP ${resp.code}: ${resp.message}\n")
+                    val err = resp.body?.string()
+                    if (!err.isNullOrBlank()) emit(err.take(2000))
+                    return@use
+                }
+                val rb = resp.body ?: return@use
+                val source = rb.source()
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    if (line.isBlank()) continue
+                    // Ollama streams JSON lines like {"message":{"content":"...","role":"assistant"},"done":false}
+                    runCatching {
+                        val obj = JSONObject(line)
+                        val done = obj.optBoolean("done", false)
+                        val msgObj = obj.optJSONObject("message")
+                        val content = msgObj?.optString("content").orEmpty()
+                        if (content.isNotEmpty()) emit(content)
+                        if (done) break
+                    }.onFailure {
+                        // tolerate occasional non-JSON lines
+                    }
+                }
+            }
+        } catch (e: java.io.IOException) {
+            throw e
+        } catch (e: Exception) {
+            emit("[Ollama] ${e::class.simpleName}: ${e.message}\n")
+        }
+    }.flowOn(Dispatchers.IO)
+}

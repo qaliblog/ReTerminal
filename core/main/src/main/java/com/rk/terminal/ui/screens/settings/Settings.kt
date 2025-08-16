@@ -148,34 +148,56 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     RadioButton(selected = provider.equals("gemini", true), onClick = { provider = "gemini"; Settings.api_provider = provider })
                     Text(text = "Google Gemini", modifier = Modifier.padding(start = 8.dp))
                 }
+                Row(modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)) {
+                    RadioButton(selected = provider.equals("ollama", true), onClick = {
+                        provider = "ollama"; Settings.api_provider = provider
+                        if (baseUrl.isBlank() || baseUrl == "https://api.openai.com") {
+                            baseUrl = "http://127.0.0.1:11434"
+                            Settings.api_base_url = baseUrl
+                        }
+                        if (model.isBlank() || model == "gpt-4o-mini") {
+                            model = "llama3.1"
+                            Settings.api_model = model
+                        }
+                    })
+                    Text(text = "Ollama (Local)", modifier = Modifier.padding(start = 8.dp))
+                }
 
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it; Settings.api_key = it },
-                    label = { Text("API Key") },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    singleLine = true
-                )
+                val onlineProvider = provider.equals("openai", true) || provider.equals("anthropic", true) || provider.equals("gemini", true) || provider.equals("openai_compatible", true)
 
-                if (provider.equals("openai", true)) {
+                if (onlineProvider) {
                     OutlinedTextField(
-                        value = baseUrl,
-                        onValueChange = { baseUrl = it; Settings.api_base_url = it },
-                        label = { Text("Base URL (OpenAI-compatible)") },
+                        value = apiKey,
+                        onValueChange = { apiKey = it; Settings.api_key = it },
+                        label = { Text("API Key") },
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                         singleLine = true
                     )
                 }
 
                 OutlinedTextField(
-                    value = model,
-                    onValueChange = { model = it; Settings.api_model = it },
-                    label = { Text("Model (e.g., gpt-4o-mini / claude-3-haiku / gemini-1.5-flash)") },
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it; Settings.api_base_url = it },
+                    label = { Text(if (provider.equals("ollama", true)) "Base URL (Ollama)" else "Base URL (OpenAI-compatible)") },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     singleLine = true
                 )
 
-                Text(text = "Chat will use these API settings. Local model download and folders have been replaced.", modifier = Modifier.padding(top = 8.dp))
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = { model = it; Settings.api_model = it },
+                    label = { Text("Model (e.g., gpt-4o-mini / claude-3-haiku / gemini-1.5-flash / llama3.1)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+
+                Text(text = if (provider.equals("ollama", true)) {
+                    "Ollama: ensure the daemon is running on the device or network host at the configured Base URL."
+                } else {
+                    "Chat will use these API settings. Local model download and folders have been replaced."
+                }, modifier = Modifier.padding(top = 8.dp))
             }
         }
 
@@ -219,7 +241,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
             var infoEnabled by remember { mutableStateOf(Settings.informative_agent_enabled) }
             SettingsToggle(
                 label = "Enable informative agent",
-                description = "Adds richer task progress blurbs in chat",
+                description = "Summarize and surface useful insights while running",
                 showSwitch = true,
                 default = infoEnabled,
                 sideEffect = { checked ->
@@ -231,14 +253,14 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
 
         // Researcher agent configuration
         PreferenceGroup(heading = "Researcher Agent") {
-            var resEnabled by remember { mutableStateOf(Settings.researcher_agent_enabled) }
+            var researcherEnabled by remember { mutableStateOf(Settings.researcher_agent_enabled) }
             SettingsToggle(
                 label = "Enable researcher agent",
-                description = "Search docs/errors when debugging or investigating APIs",
+                description = "When needed, research the web for solutions and context",
                 showSwitch = true,
-                default = resEnabled,
+                default = researcherEnabled,
                 sideEffect = { checked ->
-                    resEnabled = checked
+                    researcherEnabled = checked
                     Settings.researcher_agent_enabled = checked
                 }
             )
@@ -246,61 +268,42 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
 
         // Writer agent configuration
         PreferenceGroup(heading = "Writer Agent") {
-            var wEnabled by remember { mutableStateOf(Settings.writer_agent_enabled) }
+            var writerEnabled by remember { mutableStateOf(Settings.writer_agent_enabled) }
             SettingsToggle(
                 label = "Enable writer agent",
-                description = "Suggests safest write tools and regex patterns for edits",
+                description = "Improve modifying tool selections for code changes",
                 showSwitch = true,
-                default = wEnabled,
+                default = writerEnabled,
                 sideEffect = { checked ->
-                    wEnabled = checked
+                    writerEnabled = checked
                     Settings.writer_agent_enabled = checked
                 }
             )
         }
 
-        // Agent shell configuration
-        PreferenceGroup(heading = "Agent Shell") {
-            // Removed hidden terminal toggle; always use main terminal
-        }
-
-        // Codebase agent configuration
-        PreferenceGroup(heading = "Codebase Agent") {
-            var cbEnabled by remember { mutableStateOf(Settings.codebase_agent_enabled) }
-            var cachePath by remember { mutableStateOf(Settings.codebase_cache_path) }
-
+        // Control workflow API
+        PreferenceGroup(heading = "Control API (optional)") {
+            var controlEnabled by remember { mutableStateOf(Settings.control_api_enabled) }
+            var controlBase by remember { mutableStateOf(Settings.control_api_base_url) }
             SettingsToggle(
-                label = "Enable codebase agent",
-                description = "Scan and analyze repo to build an overview and important files cache",
+                label = "Enable external control API",
+                description = "Send telemetry and request plans from an external orchestrator",
                 showSwitch = true,
-                default = cbEnabled,
+                default = controlEnabled,
                 sideEffect = { checked ->
-                    cbEnabled = checked
-                    Settings.codebase_agent_enabled = checked
+                    controlEnabled = checked
+                    Settings.control_api_enabled = checked
                 }
             )
-
             Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                 OutlinedTextField(
-                    value = cachePath,
-                    onValueChange = { v -> cachePath = v; Settings.codebase_cache_path = v },
-                    label = { Text("Cache path (relative to workspace)") },
+                    value = controlBase,
+                    onValueChange = { v -> controlBase = v; Settings.control_api_base_url = v },
+                    label = { Text("Control API Base URL") },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     singleLine = true
                 )
             }
-        }
-
-        PreferenceGroup {
-            SettingsToggle(
-                label = "Customizations",
-                showSwitch = false,
-                default = false,
-                sideEffect = {
-                   navController.navigate(MainActivityRoutes.Customization.route)
-            }, endWidget = {
-                Icon(imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null,modifier = Modifier.padding(16.dp))
-            })
         }
     }
 }
