@@ -93,4 +93,3 @@ The application will be available at `http://localhost:5000` with debug mode ena
 ## License
 
 This project is open source and available under the MIT License.
-
