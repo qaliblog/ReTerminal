@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -1814,8 +1815,28 @@ class AgentOrchestrator(
         }
         return when (call.type) {
             "create_file" -> {
-                val path = call.args.optString("path")
-                require(path.isNotBlank()) { "path missing" }
+                var path = call.args.optString("path")
+                if (path.isBlank()) {
+                    val t = currentTaskContext
+                    val hinted = t?.targets?.firstOrNull()?.trim().orEmpty()
+                    if (hinted.isNotBlank()) {
+                        path = hinted
+                    } else {
+                        val wd = workingDirProvider()
+                        val base = (t?.description ?: "NEW_FILE").lowercase().replace(Regex("[^a-z0-9._/\\-]+"), "-").trim('-')
+                        val ext = when {
+                            base.contains("python") || base.contains("flask") -> "py"
+                            base.contains("html") || base.contains("template") -> "html"
+                            base.contains("css") -> "css"
+                            base.contains("js") || base.contains("javascript") -> "js"
+                            base.contains("readme") -> "md"
+                            base.contains("requirements") -> "txt"
+                            else -> "txt"
+                        }
+                        val fileName = if (base.contains('.')) base else (base.ifBlank { "NEW_FILE" } + "." + ext)
+                        path = File(wd, fileName).absolutePath
+                    }
+                }
                 
                 // Check timeout
                 if (System.currentTimeMillis() - startTime > maxFileOpTime) {
@@ -1827,39 +1848,112 @@ class AgentOrchestrator(
                     ensureParentDirs(f)
                     if (!f.exists()) f.createNewFile()
                     if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
-                    ToolResult(f.exists(), null)
+                    
+                    // Auto-generate initial content for the new file using the AI and codebase context
+                    if (f.exists() && f.length() == 0L) {
+                        fun stripFences(txt: String): String {
+                            val triple = Regex("```[a-zA-Z0-9]*\n([\u0000-\uFFFF]*?)```", RegexOption.DOT_MATCHES_ALL)
+                            val m = triple.find(txt)
+                            return if (m != null) m.groupValues[1] else txt.trim('\n', '\r', ' ')
+                        }
+                        val goal = projectRequirements ?: lastPlanGoal ?: ""
+                        val codebase = runCatching { File(workingDirProvider(), Settings.codebase_cache_path).readText() }.getOrElse { "" }.take(120000)
+                        val ctxSummary = getContextSummary()
+                        val sys = """
+                            You are writing a single complete file for a project. Return ONLY the file content. No backticks, no fences, no explanations.
+                            Ensure coherence with the existing codebase summary provided.
+                        """.trimIndent()
+                        val user = """
+                            Goal: ${goal}
+                            Target path: ${f.absolutePath}
+                            Project context summary:\n${ctxSummary}
+                            Codebase cache (truncated):\n${codebase}
+                            Write the full content for the file: ${f.name}
+                        """.trimIndent()
+                        val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+                        val generated = try { kotlinx.coroutines.runBlocking { collectAll(flow) } } catch (e: Exception) { "" }
+                        val content = stripFences(generated)
+                        if (content.isNotBlank() && !content.contains("No AI API configured", ignoreCase = true)) {
+                            f.writeText(content)
+                        }
+                    }
+                    if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
+                    ToolResult(f.exists(), JSONObject().put("path", f.absolutePath).put("bytes", f.length()).toString())
                 } catch (e: Exception) {
                     ToolResult(false, "create_file_error: ${e.message}")
                 }
             }
             "write_file" -> {
-                val path = call.args.optString("path")
-                val contentRaw = call.args.optString("content").also { if (it.isBlank()) return ToolResult(false, "empty_content: write_file requires non-empty content") }
+                var path = call.args.optString("path")
+                var contentRaw = call.args.optString("content")
                 val encoding = call.args.optString("encoding", "utf-8").lowercase()
                 val mode = call.args.optString("mode", "overwrite")
                 val ifNotExists = call.args.optBoolean("if_not_exists", false)
-                require(path.isNotBlank()) { "path missing" }
+                if (path.isBlank()) {
+                    val t = currentTaskContext
+                    val hinted = t?.targets?.firstOrNull()?.trim().orEmpty()
+                    path = if (hinted.isNotBlank()) hinted else File(workingDirProvider(), "NEW_FILE.txt").absolutePath
+                }
+                
+                // Generate content via API if missing or placeholder
+                fun looksPlaceholder(txt: String): Boolean {
+                    val low = txt.trim().lowercase()
+                    return low.isBlank() || low.contains("todo") || low == "..." || low.contains("placeholder")
+                }
+                if (looksPlaceholder(contentRaw)) {
+                    fun stripFences(txt: String): String {
+                        val triple = Regex("```[a-zA-Z0-9]*\n([\u0000-\uFFFF]*?)```", RegexOption.DOT_MATCHES_ALL)
+                        val m = triple.find(txt)
+                        return if (m != null) m.groupValues[1] else txt.trim('\n', '\r', ' ')
+                    }
+                    val goal = projectRequirements ?: lastPlanGoal ?: ""
+                    val codebase = runCatching { File(workingDirProvider(), Settings.codebase_cache_path).readText() }.getOrElse { "" }.take(120000)
+                    val ctxSummary = getContextSummary()
+                    val taskDesc = currentTaskContext?.description ?: "write file"
+                    val sys = """
+                        You are writing a complete file for a project. Return ONLY the file content without fences or explanations.
+                        Use the codebase summary to integrate with existing files, functions, and routes.
+                    """.trimIndent()
+                    val user = """
+                        Goal: ${goal}
+                        Task: ${taskDesc}
+                        Target path: ${path}
+                        Project context summary:\n${ctxSummary}
+                        Codebase cache (truncated):\n${codebase}
+                        Write the full content for the file: ${File(path).name}
+                    """.trimIndent()
+                    val flow = LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user)))
+                    val generated = try { kotlinx.coroutines.runBlocking { collectAll(flow) } } catch (e: Exception) { "" }
+                    val content = stripFences(generated)
+                    if (content.isNotBlank() && !content.contains("No AI API configured", ignoreCase = true)) {
+                        contentRaw = content
+                    }
+                }
                 
                 // Check content size to prevent memory issues
                 if (contentRaw.length > 1024 * 1024) { // 1MB limit
                     return ToolResult(false, "content_too_large: content exceeds 1MB limit")
                 }
                 
-                        // Check timeout
-        if (System.currentTimeMillis() - startTime > maxFileOpTime) {
-            return ToolResult(false, "write_file_timeout: operation took too long")
-        }
-        
-        // Check global timeout
-        if (System.currentTimeMillis() - startTime > globalTimeout) {
-            return ToolResult(false, "global_timeout: operation exceeded maximum time limit")
-        }
+                // Check timeout
+                if (System.currentTimeMillis() - startTime > maxFileOpTime) {
+                    return ToolResult(false, "write_file_timeout: operation took too long")
+                }
+                
+                // Check global timeout
+                if (System.currentTimeMillis() - startTime > globalTimeout) {
+                    return ToolResult(false, "global_timeout: operation exceeded maximum time limit")
+                }
                 
                 try {
                     val f = resolvePath(path)
                     ensureParentDirs(f)
                     if (ifNotExists && f.exists()) {
                         return ToolResult(true, "skipped_write_existing:${f.absolutePath}")
+                    }
+                    
+                    if (contentRaw.isBlank()) {
+                        return ToolResult(false, "empty_content: write_file requires non-empty content after generation")
                     }
                     
                     // Write content in chunks to avoid memory issues
@@ -1883,18 +1977,18 @@ class AgentOrchestrator(
                     if (ok) {
                         notifyWorkspaceChanged(f.absolutePath)
                         
-                                        // Update context cache for code files and schedule codebase cache upgrade
-                val fileType = when {
-                    f.extension.lowercase() == "py" -> "python"
-                    f.extension.lowercase() == "js" -> "javascript"
-                    f.extension.lowercase() == "html" -> "html"
-                    f.extension.lowercase() == "css" -> "css"
-                    f.name.lowercase() == "requirements.txt" -> "config"
-                    f.name.lowercase() == "readme.md" -> "documentation"
-                    else -> "unknown"
-                }
-                updateContextCache(f.absolutePath, contentRaw, fileType)
-                notifyWorkspaceChanged(f.absolutePath)
+                        // Update context cache for code files and schedule codebase cache upgrade
+                        val fileType = when {
+                            f.extension.lowercase() == "py" -> "python"
+                            f.extension.lowercase() == "js" -> "javascript"
+                            f.extension.lowercase() == "html" -> "html"
+                            f.extension.lowercase() == "css" -> "css"
+                            f.name.lowercase() == "requirements.txt" -> "config"
+                            f.name.lowercase() == "readme.md" -> "documentation"
+                            else -> "unknown"
+                        }
+                        updateContextCache(f.absolutePath, contentRaw, fileType)
+                        notifyWorkspaceChanged(f.absolutePath)
                     }
                     
                     // Skip hash calculation for large files to prevent freezing
@@ -2789,6 +2883,9 @@ if (exit != 0) {
                     val slice = if (bytes.size > 120_000) bytes.copyOf(120_000) else bytes
                     String(slice)
                 }.getOrElse { "" }
+                // Prevent recursive inclusion of generated cache files and agent logs
+                val isCacheOrLog = f.name.equals(Settings.codebase_cache_path, ignoreCase = true) || f.name.equals("task_log.jsonl", ignoreCase = true)
+                if (isCacheOrLog) return@forEach
                 val funcs = extractFunctions(head, when {
                     rel.endsWith(".py") -> "python"
                     rel.endsWith(".js") -> "javascript"
@@ -2825,8 +2922,14 @@ if (exit != 0) {
             val out = File(agentDir, Settings.codebase_cache_path)
             out.writeText(codebase.toString(2))
             // Also persist into working directory for visibility and for LLM context
-            runCatching { File(workingDirProvider(), Settings.codebase_cache_path).writeText(codebase.toString(2)) }
-            onStatus("Codebase cache updated: ${'$'}{summary.length()} files")
+            runCatching {
+                val wdCopy = File(workingDirProvider(), Settings.codebase_cache_path)
+                val text = codebase.toString(2)
+                if (!wdCopy.exists() || runCatching { wdCopy.readText() }.getOrElse { "" } != text) {
+                    wdCopy.writeText(text)
+                }
+            }
+            onStatus("Codebase cache updated: ${summary.length()} files")
         } catch (_: Exception) {
             // ignore
         }
