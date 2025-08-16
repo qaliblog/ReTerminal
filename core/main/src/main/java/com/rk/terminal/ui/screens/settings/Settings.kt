@@ -151,6 +151,22 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 Row(modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 6.dp)) {
+                    RadioButton(selected = provider.equals("fireworks", true), onClick = {
+                        provider = "fireworks"; Settings.api_provider = provider
+                        if (baseUrl.isBlank() || baseUrl == "https://api.openai.com") {
+                            baseUrl = "https://api.fireworks.ai"
+                            Settings.api_base_url = baseUrl
+                        }
+                        if (model.isBlank() || model == "gpt-4o-mini") {
+                            model = "accounts/fireworks/models/llama-v3p1-8b-instruct"
+                            Settings.api_model = model
+                        }
+                    })
+                    Text(text = "Fireworks AI", modifier = Modifier.padding(start = 8.dp))
+                }
+                Row(modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)) {
                     RadioButton(selected = provider.equals("ollama", true), onClick = {
                         provider = "ollama"; Settings.api_provider = provider
                         if (baseUrl.isBlank() || baseUrl == "https://api.openai.com") {
@@ -165,7 +181,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     Text(text = "Ollama (Local)", modifier = Modifier.padding(start = 8.dp))
                 }
 
-                val onlineProvider = provider.equals("openai", true) || provider.equals("anthropic", true) || provider.equals("gemini", true) || provider.equals("openai_compatible", true)
+                val onlineProvider = provider.equals("openai", true) || provider.equals("anthropic", true) || provider.equals("gemini", true) || provider.equals("fireworks", true) || provider.equals("openai_compatible", true)
 
                 if (onlineProvider) {
                     OutlinedTextField(
@@ -180,7 +196,11 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 OutlinedTextField(
                     value = baseUrl,
                     onValueChange = { baseUrl = it; Settings.api_base_url = it },
-                    label = { Text(if (provider.equals("ollama", true)) "Base URL (Ollama)" else "Base URL (OpenAI-compatible)") },
+                    label = { Text(when {
+                        provider.equals("ollama", true) -> "Base URL (Ollama)"
+                        provider.equals("fireworks", true) -> "Base URL (Fireworks)"
+                        else -> "Base URL (OpenAI-compatible)"
+                    }) },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     singleLine = true
                 )
@@ -188,7 +208,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 OutlinedTextField(
                     value = model,
                     onValueChange = { model = it; Settings.api_model = it },
-                    label = { Text("Model (e.g., gpt-4o-mini / claude-3-haiku / gemini-1.5-flash / llama3.1)") },
+                    label = { Text("Model (e.g., gpt-4o-mini / claude-3-haiku / gemini-1.5-flash / llama3.1 / accounts/fireworks/models/llama-v3p1-8b-instruct)") },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     singleLine = true
                 )
