@@ -3117,12 +3117,11 @@ if (exit != 0) {
 							"# Python application"
 						}
 					}
+					}
 					derived.contains(".js") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
 							"// Game JavaScript file"
 						} else {
-							"// JavaScript file for application logic"
-						}
 							"// JavaScript file for application logic"
 						}
 					}
@@ -3135,8 +3134,6 @@ if (exit != 0) {
 						} else if (isCalculator) {
 							"<!-- Calculator HTML file -->"
 						} else {
-							"<!-- HTML file -->"
-						}
 							"<!-- HTML file -->"
 						}
 					}
@@ -3175,7 +3172,6 @@ if (exit != 0) {
 				
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
 			}
-			else -> proposed
 			"write_file" -> {
 				val desc = (task.description ?: "").lowercase()
 				val suggested = proposed.args.optString("path")
@@ -3259,15 +3255,12 @@ if (exit != 0) {
 					derived.contains(".js") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
 							"// Game JavaScript file"
-							"// Game JavaScript file"
 						} else {
 							"// Application JavaScript file"
 						}
 					}
 					derived.contains(".css") -> {
 						if (requirements.contains("Piano Tiles") || requirements.contains("game")) {
-							"/* Game CSS styles */"
-
 							"/* Game CSS styles */"
 						} else {
 							"/* Application CSS styles */"
@@ -3316,7 +3309,6 @@ if (exit != 0) {
 				
 				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
 				}
-			else -> proposed
 			}
 			"run_shell" -> {
                 // Special handling for different types of shell tasks
