@@ -673,7 +673,9 @@ class AgentOrchestrator(
         saveObservations()
         val wdPath = workingDirProvider()
         val wd = File(wdPath)
-        val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+                    val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
+            // If a plan requires creation, ensure codebase discovery is run first
+            if (Settings.codebase_agent_enabled) runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
         val sys = """
             You are an expert software architect that creates concise, step-by-step plans for software projects OR codebase updates.
             Return ONLY a minified JSON object with the shape:
@@ -768,7 +770,8 @@ class AgentOrchestrator(
         val intentObj = classifyUserIntent(prompt, workspaceInfo)
         val intent = intentObj.optString("intent", "plan_and_execute")
         val isUpdateLike = prompt.contains("update", ignoreCase = true) || prompt.contains("modify", ignoreCase = true) || prompt.contains("refactor", ignoreCase = true) || prompt.contains("fix", ignoreCase = true)
-        if (isUpdateLike) Settings.codebase_agent_enabled = true
+        // Enable codebase agent for both update-like and non-empty creation goals
+        if (isUpdateLike || workspaceInfo.contains("\"items\":[") ) Settings.codebase_agent_enabled = true
         onStatus("Intent: ${intent}")
         // Search suggestion
         if (Settings.helper_agent_enabled && promptSuggestsSearch(prompt)) {
@@ -1211,6 +1214,19 @@ class AgentOrchestrator(
                 put("type", effectiveToolCall.type)
                 put("ok", result.ok)
                 result.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
+            }
+            // Refresh codebase cache immediately after modifying tools so next steps see updated state
+            if (Settings.codebase_agent_enabled && isModifyingTool(effectiveToolCall.type)) {
+                performCodebaseUpgradeIfPending(onStatus)
+                // Add/update codebase observation for LLM context
+                runCatching {
+                    val cb = File(workingDirProvider(), Settings.codebase_cache_path)
+                    if (cb.exists()) {
+                        val text = cb.readText()
+                        observations["codebase"] = text.take(120000)
+                        saveObservations()
+                    }
+                }
             }
 
             if (result.ok) {
@@ -2763,7 +2779,7 @@ if (exit != 0) {
                     if (f.isDirectory) walk(f, depth + 1) else files.add(f)
                 }
             }
-            if (root.exists() && root.isDirectory) walk(root, 0)
+            if (root.exists() && root.isDirectory) walk(root, 0) else return@withContext
             val summary = JSONArray()
             files.forEach { f ->
                 val rel = f.absolutePath
