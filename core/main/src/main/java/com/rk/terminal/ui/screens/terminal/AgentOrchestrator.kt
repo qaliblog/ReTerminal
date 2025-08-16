@@ -675,7 +675,7 @@ class AgentOrchestrator(
         val wd = File(wdPath)
                     val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
             // If a plan requires creation, ensure codebase discovery is run first
-            if (Settings.codebase_agent_enabled) runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
+            if (Settings.codebase_agent_enabled) runCatching { buildCodebaseCache({ }, includeRecursive = true) }
         val sys = """
             You are an expert software architect that creates concise, step-by-step plans for software projects OR codebase updates.
             Return ONLY a minified JSON object with the shape:
