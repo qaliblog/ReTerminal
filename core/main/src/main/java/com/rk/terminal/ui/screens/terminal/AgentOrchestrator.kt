@@ -675,34 +675,16 @@ class AgentOrchestrator(
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
         val sys = """
-            You are an expert software architect that creates comprehensive, step-by-step plans for software projects.
-            You must return ONLY a minified JSON object with the following shape and nothing else:
+            You are an expert software architect that creates concise, step-by-step plans for software projects OR codebase updates.
+            Return ONLY a minified JSON object with the shape:
             {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
 
-            **CRITICAL DIRECTIVE: YOUR PLAN MUST BE COMPLETE AND HOLISTIC.**
-            - For any non-trivial project, your plan must include tasks to create all necessary files (e.g., HTML, CSS, JavaScript, backend code, configuration files, etc.).
-            - Do not create a plan with just a single file for a complex application.
-            - Ensure the tasks are ordered logically (e.g., create directories first, then files).
-
-            **Example of a good plan for a simple web app:**
-            {
-                "goal": "Create a simple web app with a button that changes a text.",
-                "tasks": [
-                    {"id": "t1", "category": "make_dir", "description": "Create a 'templates' directory for HTML files."},
-                    {"id": "t2", "category": "make_dir", "description": "Create a 'static' directory for CSS and JS files."},
-                    {"id": "t3", "category": "create_file", "description": "Create the main Python file for the Flask application.", "targets": ["app.py"]},
-                    {"id": "t4", "category": "create_file", "description": "Create the HTML template.", "targets": ["templates/index.html"]},
-                    {"id": "t5", "category": "create_file", "description": "Create the CSS file for styling.", "targets": ["static/style.css"]},
-                    {"id": "t6", "category": "create_file", "description": "Create the JavaScript file for interactivity.", "targets": ["static/script.js"]},
-                    {"id": "t7", "category": "create_file", "description": "Create a requirements.txt file.", "targets": ["requirements.txt"]},
-                    {"id": "t8", "category": "run_shell", "description": "Install dependencies from requirements.txt."}
-                ]
-            }
-
+            Rules:
+            - For update/refactor/fix goals: first run a codebase discovery (list_dir_recursive or read_files_glob) and write a compact overview to codebase cache before any edits.
+            - For creation goals: front-load discovery if workspace is non-empty, then create directories and files.
             - ids must be unique short strings (e.g., t1, t2).
             - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit.
-            - Front-load discovery tasks if the existing codebase is unknown.
-            - Do not include code in the plan itself. The plan should only contain the steps to create the project.
+            - Do not include code in the plan itself.
         """.trimIndent()
         val user = """
             Goal: ${userGoal}
@@ -776,7 +758,7 @@ class AgentOrchestrator(
         val wd = File(wdPath)
         val workspaceInfo = if (wd.exists() && wd.isDirectory) listTopLevel(wd, limit = 200) else JSONObject().put("path", wdPath).put("items", JSONArray()).toString()
         if (Settings.codebase_agent_enabled) {
-            runCatching { buildCodebaseCache(onStatus) }
+            runCatching { buildCodebaseCache(onStatus, includeRecursive = true) }
         }
         // After executing a modifying tool, we already schedule cache upgrade via notifyWorkspaceChanged
 
@@ -785,6 +767,8 @@ class AgentOrchestrator(
         onStatus("Thinking about intent…")
         val intentObj = classifyUserIntent(prompt, workspaceInfo)
         val intent = intentObj.optString("intent", "plan_and_execute")
+        val isUpdateLike = prompt.contains("update", ignoreCase = true) || prompt.contains("modify", ignoreCase = true) || prompt.contains("refactor", ignoreCase = true) || prompt.contains("fix", ignoreCase = true)
+        if (isUpdateLike) Settings.codebase_agent_enabled = true
         onStatus("Intent: ${intent}")
         // Search suggestion
         if (Settings.helper_agent_enabled && promptSuggestsSearch(prompt)) {
@@ -1646,7 +1630,8 @@ class AgentOrchestrator(
             You must return ONLY a single minified JSON object describing ONE tool call to move the task forward.
 
             **CRITICAL DIRECTIVE: YOU MUST GENERATE FULL, WORKING CODE. NO PLACEHOLDERS.**
-            - When asked to create a file, you must provide the complete and functional code for that file.
+            - Never use pre-made templates for specific apps. Infer requirements strictly from the goal and a live codebase overview built via discovery tools.
+            - When asked to create a file, provide complete, functional code coherent with existing files and expectations.
             - Do NOT use placeholder comments like "// TODO: implement", "// ...", or similar.
             - Do NOT create empty files. Use the `write_file` tool and provide the full content.
             - Ensure that all generated files work together to create a cohesive and functional application.
@@ -1746,7 +1731,7 @@ class AgentOrchestrator(
             Prior observations (latest first):
             ${prior}
             
-            IMPORTANT: Based on the project requirements above, generate FUNCTIONAL code that implements the actual features described. Do not create placeholder content like "// Game content will go here". Write complete, working code that fulfills the project requirements.
+            IMPORTANT: Never assume a specific app type or inject premade templates. Infer expectations strictly from the goal and observed codebase. Generate only code and edits that are coherent with the existing files and the stated expectations. No placeholders.
             
             Produce one tool call JSON now, following the Rules and leveraging hints and observations to avoid redundant discovery.
         """.trimIndent()
@@ -1784,11 +1769,12 @@ class AgentOrchestrator(
         
         // Add global timeout protection to prevent freezing
         val globalTimeout = 30000L // 30 seconds max for any operation
-        // Fallback: if tool type is blank, attempt to coerce from current task category
-        if (tc.type.isBlank()) {
+        // Fallback: if tool type is blank or unknown, attempt to coerce from current task category
+        if (tc.type.isBlank() || tc.type.equals("unknown", ignoreCase = true)) {
             val task = currentTaskContext
             if (task != null) {
-                val coerced = coerceToolCallForTaskCategory(task, ToolCall("unknown", tc.args))
+                val fallbackType = (task.category ?: "unknown").lowercase()
+                val coerced = coerceToolCallForTaskCategory(task, ToolCall(fallbackType, tc.args))
                 return executeToolCall(coerced)
             }
         }
@@ -1882,17 +1868,18 @@ class AgentOrchestrator(
                     if (ok) {
                         notifyWorkspaceChanged(f.absolutePath)
                         
-                        // Update context cache for code files
-                        val fileType = when {
-                            f.extension.lowercase() == "py" -> "python"
-                            f.extension.lowercase() == "js" -> "javascript"
-                            f.extension.lowercase() == "html" -> "html"
-                            f.extension.lowercase() == "css" -> "css"
-                            f.name.lowercase() == "requirements.txt" -> "config"
-                            f.name.lowercase() == "readme.md" -> "documentation"
-                            else -> "unknown"
-                        }
-                        updateContextCache(f.absolutePath, contentRaw, fileType)
+                                        // Update context cache for code files and schedule codebase cache upgrade
+                val fileType = when {
+                    f.extension.lowercase() == "py" -> "python"
+                    f.extension.lowercase() == "js" -> "javascript"
+                    f.extension.lowercase() == "html" -> "html"
+                    f.extension.lowercase() == "css" -> "css"
+                    f.name.lowercase() == "requirements.txt" -> "config"
+                    f.name.lowercase() == "readme.md" -> "documentation"
+                    else -> "unknown"
+                }
+                updateContextCache(f.absolutePath, contentRaw, fileType)
+                notifyWorkspaceChanged(f.absolutePath)
                     }
                     
                     // Skip hash calculation for large files to prevent freezing
@@ -1934,6 +1921,12 @@ class AgentOrchestrator(
                 var command = call.args.optString("command")
                 val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L).coerceAtMost(300_000L) // Max 5 minutes
                 val envObj = call.args.optJSONObject("env")
+                if (command.isBlank()) {
+                    val derived = deriveDefaultCommandForRunShell(currentTaskContext)
+                    if (!derived.isNullOrBlank()) {
+                        command = derived
+                    }
+                }
                 require(command.isNotBlank()) { "command missing" }
                 
                 // Check for timeout before starting
@@ -2759,7 +2752,67 @@ if (exit != 0) {
     }
 
     private suspend fun buildCodebaseCache(onStatus: (String) -> Unit, includeRecursive: Boolean = false) = withContext(Dispatchers.IO) {
-        // No-op lightweight implementation to satisfy references; real logic is below in file.
+        try {
+            val root = File(workingDirProvider())
+            val maxDepth = if (includeRecursive) 5 else 2
+            val maxFiles = if (includeRecursive) 2000 else 400
+            val files = mutableListOf<File>()
+            fun walk(dir: File, depth: Int) {
+                if (files.size >= maxFiles || depth > maxDepth) return
+                dir.listFiles()?.forEach { f ->
+                    if (files.size >= maxFiles) return
+                    if (f.isDirectory) walk(f, depth + 1) else files.add(f)
+                }
+            }
+            if (root.exists() && root.isDirectory) walk(root, 0)
+            val summary = JSONArray()
+            files.forEach { f ->
+                val rel = f.absolutePath
+                val size = runCatching { f.length() }.getOrElse { 0L }
+                val head = runCatching {
+                    val bytes = f.readBytes()
+                    val slice = if (bytes.size > 120_000) bytes.copyOf(120_000) else bytes
+                    String(slice)
+                }.getOrElse { "" }
+                val funcs = extractFunctions(head, when {
+                    rel.endsWith(".py") -> "python"
+                    rel.endsWith(".js") -> "javascript"
+                    rel.endsWith(".html") -> "html"
+                    rel.endsWith(".css") -> "css"
+                    else -> "unknown"
+                })
+                val classes = extractClasses(head, when {
+                    rel.endsWith(".py") -> "python"
+                    rel.endsWith(".js") -> "javascript"
+                    else -> "unknown"
+                })
+                summary.put(JSONObject().apply {
+                    put("path", rel)
+                    put("bytes", size)
+                    put("functions", JSONArray(funcs))
+                    put("classes", JSONArray(classes))
+                    put("preview", head.take(2000))
+                })
+                // update context cache for later coherence
+                val fileType = when {
+                    rel.endsWith(".py") -> "python"
+                    rel.endsWith(".js") -> "javascript"
+                    rel.endsWith(".html") -> "html"
+                    rel.endsWith(".css") -> "css"
+                    else -> "unknown"
+                }
+                updateContextCache(rel, head, fileType)
+            }
+            val codebase = JSONObject()
+                .put("generated_at", System.currentTimeMillis())
+                .put("root", root.absolutePath)
+                .put("files", summary)
+            val out = File(agentDir, Settings.codebase_cache_path)
+            out.writeText(codebase.toString(2))
+            onStatus("Codebase cache updated: ${'$'}{summary.length()} files")
+        } catch (_: Exception) {
+            // ignore
+        }
     }
 
     private suspend fun revisePlanBasedOnHistoryAndError(goal: String, errorNote: String): Plan? = withContext(Dispatchers.IO) {
@@ -2864,7 +2917,17 @@ if (exit != 0) {
 		}
 
 
-		return when (cat) {
+				return when (cat) {
+			"make_dir" -> {
+				// Ensure directory creation even if model proposed a file tool
+				val suggested = proposed.args.optString("path")
+				val derived = when {
+					suggested.isNotBlank() -> suggested
+					!task.targets.isNullOrEmpty() -> task.targets!!.first()
+					else -> File(workingDirProvider(), "NEW_DIR").absolutePath
+				}
+				ToolCall("make_dir", JSONObject().put("path", derived))
+			}
 			"create_file" -> {
 				// For create_file tasks, prefer write_file with content instead of empty files
 				val desc = (task.description ?: "").lowercase()
@@ -2874,19 +2937,10 @@ if (exit != 0) {
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
-
-				// Convert create_file to write_file with functional content based on project requirements
-				val requirements = projectRequirements ?: ""
-				val content = when {
-					derived.endsWith(".py") -> "print('Hello, World!')"
-					derived.endsWith(".html") -> "<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>"
-					derived.endsWith(".css") -> "body { font-family: sans-serif; }"
-					derived.endsWith(".js") -> "console.log('Hello, World!');"
-					derived.endsWith("requirements.txt") -> "Flask==3.1.1\nWerkzeug==3.1.3"
-					else -> "# New file created by the agent."
-				}
-
-				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
+				
+				// Convert create_file to write_file with content provided by the LLM at the time of the write_file tool call.
+				// Here we only ensure a valid path; content must come from the model, not a template.
+				ToolCall("write_file", JSONObject().put("path", derived).put("content", "").put("mode", "overwrite"))
 			}
 			"write_file" -> {
 				// This case is now only for when the agent wants to write to a new file but hasn't provided content.
@@ -2897,22 +2951,13 @@ if (exit != 0) {
 					!task.targets.isNullOrEmpty() -> task.targets!!.first()
 					else -> File(workingDirProvider(), "NEW_FILE").absolutePath
 				}
-
-				val requirements = projectRequirements ?: ""
-				val content = when {
-					derived.endsWith(".py") -> "print('Hello, World!')"
-					derived.endsWith(".html") -> "<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>"
-					derived.endsWith(".css") -> "body { font-family: sans-serif; }"
-					derived.endsWith(".js") -> "console.log('Hello, World!');"
-					derived.endsWith("requirements.txt") -> "Flask==3.1.1\nWerkzeug==3.1.3"
-					else -> "# New file created by the agent."
-				}
-
-				ToolCall("write_file", JSONObject().put("path", derived).put("content", content).put("mode", "overwrite"))
+				
+				// Content must be provided by the model based on the current codebase and expectations, not a premade template.
+				ToolCall("write_file", JSONObject().put("path", derived).put("content", "").put("mode", "overwrite"))
 			}
 			else -> proposed
 		}
-	}
+}
 
 	private fun preferredPackageManager(): String? = when {
 		lastDetectedManagers.contains("apk") -> "apk"
@@ -2924,6 +2969,30 @@ if (exit != 0) {
 	}
 
 	private fun coerceInstallPythonIfNeeded(): ToolCall? = null
+
+	private fun deriveDefaultCommandForRunShell(task: Task?): String? {
+		val desc = (task?.description ?: "").lowercase()
+		// Prefer discovered files in project structure
+		fun findRequirements(): String? {
+			val hit = projectStructure.keys.firstOrNull { it.endsWith("/requirements.txt") || it.endsWith("\\requirements.txt") || it.endsWith("requirements.txt") }
+			return hit
+		}
+		if (desc.contains("install") && (desc.contains("pip") || desc.contains("python") || desc.contains("requirements"))) {
+			val reqPath = findRequirements() ?: listOf("requirements.txt", "app/requirements.txt", "backend/requirements.txt").firstOrNull { resolvePath(it).exists() } ?: "requirements.txt"
+			return "(command -v python3 >/dev/null 2>&1 && python3 -m pip install -r \"$reqPath\") || (command -v pip3 >/dev/null 2>&1 && pip3 install -r \"$reqPath\") || (command -v pip >/dev/null 2>&1 && pip install -r \"$reqPath\")"
+		}
+		if (desc.contains("run") || desc.contains("server") || desc.contains("start")) {
+			val mainHit = projectStructure.keys.firstOrNull { it.endsWith("/main.py") && it.contains("/app/") } ?: listOf("app/main.py", "main.py", "app.py").firstOrNull { resolvePath(it).exists() }
+			val mainPath = mainHit ?: "app/main.py"
+			return "python3 \"$mainPath\""
+		}
+		return null
+	}
+
+	private fun generateInitialContentForFile(path: String, requirements: String): String {
+		// Deprecated: avoid premade templates. Content should always come from the model based on the goal and codebase.
+		return ""
+	}
 }
 
 object MainShell {
