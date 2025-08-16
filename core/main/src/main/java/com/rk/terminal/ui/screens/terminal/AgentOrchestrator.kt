@@ -1914,8 +1914,8 @@ class AgentOrchestrator(
                         val content = stripFences(generated)
                         if (content.isNotBlank() && !content.contains("No AI API configured", ignoreCase = true)) {
                             f.writeText(content)
-+                            // Sync new file with codebase agent
-+                            runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, content, true) }
+                            // Sync new file with codebase agent
+                            runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, content, true) }
                         }
                     }
                     if (f.exists()) notifyWorkspaceChanged(f.absolutePath)
@@ -2530,8 +2530,8 @@ if (exit != 0) {
                             }
                             entry.put("status", if (previewOnly) "planned_create" else "created")
                             createdAny = true
-+                            // Sync newly created file
-+                            if (!previewOnly) runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, e.optString("content"), true) }
+                            // Sync newly created file
+                            if (!previewOnly) runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, e.optString("content"), true) }
                             if (includeDiffs) entry.put("diff", computeUnifiedDiff("", content, file.absolutePath))
                             outArr.put(entry)
                             continue
@@ -2675,8 +2675,8 @@ if (exit != 0) {
                                 results.add("edit[$i]: ok (${path})")
                                 notifyWorkspaceChanged(file.absolutePath)
                                 modifiedAny = true
-+                                // Sync modified file
-+                                runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, updated, false) }
+                                // Sync modified file
+                                runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, updated, false) }
                             }.onFailure { ex -> results.add("edit[$i]: write failed (${ex.message})") }
                         } else {
                             results.add("edit[$i]: planned_change (${path})")
