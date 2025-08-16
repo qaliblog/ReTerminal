@@ -39,19 +39,27 @@ private fun buildChatHistoryArray(messages: List<LlmMessage>): JSONArray {
 object OpenAIEngine : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
         try {
-            val base = Settings.api_base_url.trim().ifBlank { "https://api.openai.com" }.removeSuffix("/")
             val provider = Settings.api_provider.lowercase()
+            val defaultBase = if (provider == "fireworks") "https://api.fireworks.ai" else "https://api.openai.com"
+            val base = Settings.api_base_url.trim().ifBlank { defaultBase }.removeSuffix("/")
             val path = if (provider == "fireworks") "/inference/v1/chat/completions" else "/v1/chat/completions"
             val url = "$base$path"
-            val model = Settings.api_model.ifBlank { "gpt-4o-mini" }
+            val model = Settings.api_model.ifBlank { if (provider == "fireworks") "accounts/fireworks/models/llama-v3p1-8b-instruct" else "gpt-4o-mini" }
             val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
             val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
             val maxTokens = Settings.ai_max_tokens.coerceAtLeast(64)
             val bodyJson = JSONObject().apply {
                 put("model", model)
-                put("stream", true)
+                if (provider != "fireworks") put("stream", true)
                 put("messages", buildChatHistoryArray(messages))
                 put("max_tokens", maxTokens)
+                if (provider == "fireworks") {
+                    put("top_p", 1)
+                    put("top_k", 40)
+                    put("presence_penalty", 0)
+                    put("frequency_penalty", 0)
+                    if (tempOverride == null && !forceJson) put("temperature", 0.6)
+                }
                 if (tempOverride != null) put("temperature", tempOverride)
                 if (forceJson) {
                     put("response_format", JSONObject().put("type", "json_object"))
@@ -59,10 +67,12 @@ object OpenAIEngine : LlmEngine {
                 }
             }
             val reqBody: RequestBody = bodyJson.toString().toRequestBody("application/json".toMediaType())
-            val req = Request.Builder()
+            val builder = Request.Builder()
                 .url(url)
                 .addHeader("Authorization", "Bearer ${Settings.api_key}")
                 .addHeader("Content-Type", "application/json")
+            if (provider == "fireworks") builder.addHeader("Accept", "application/json")
+            val req = builder
                 .post(reqBody)
                 .build()
 
@@ -78,27 +88,47 @@ object OpenAIEngine : LlmEngine {
                     emit("[OpenAI] Empty body\n")
                     return@use
                 }
-                val source: BufferedSource = rb.source()
-                while (true) {
-                    val line = source.readUtf8Line() ?: break
-                    if (line.isBlank()) continue
-                    if (!line.startsWith("data:")) continue
-                    val payload = line.removePrefix("data:").trim()
-                    if (payload == "[DONE]") break
-                    runCatching {
-                        val obj = JSONObject(payload)
-                        val choices = obj.optJSONArray("choices") ?: JSONArray()
-                        for (i in 0 until choices.length()) {
-                            val delta = choices.getJSONObject(i).optJSONObject("delta")
-                            val content = delta?.optString("content")
-                            if (!content.isNullOrEmpty()) emit(content)
+                if (provider == "fireworks") {
+                    val txt = rb.string().orEmpty()
+                    val obj = runCatching { JSONObject(txt) }.getOrNull()
+                    val choices = obj?.optJSONArray("choices") ?: JSONArray()
+                    val sb = StringBuilder()
+                    for (i in 0 until choices.length()) {
+                        val choice = choices.getJSONObject(i)
+                        val msgContent = choice.optJSONObject("message")?.optString("content")
+                        val textContent = choice.optString("text")
+                        val fragment = when {
+                            !msgContent.isNullOrBlank() -> msgContent
+                            textContent.isNotBlank() -> textContent
+                            else -> ""
                         }
-                    }.onFailure {
+                        if (fragment.isNotEmpty()) sb.append(fragment)
+                    }
+                    val out = sb.toString()
+                    if (out.isEmpty()) emit("[OpenAI] Empty response\n") else out.chunked(64).forEach { emit(it) }
+                } else {
+                    val source: BufferedSource = rb.source()
+                    while (true) {
+                        val line = source.readUtf8Line() ?: break
+                        if (line.isBlank()) continue
+                        if (!line.startsWith("data:")) continue
+                        val payload = line.removePrefix("data:").trim()
+                        if (payload == "[DONE]") break
                         runCatching {
                             val obj = JSONObject(payload)
-                            val choices = obj.optJSONArray("choices")
-                            val content = choices?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
-                            if (!content.isNullOrEmpty()) emit(content)
+                            val choices = obj.optJSONArray("choices") ?: JSONArray()
+                            for (i in 0 until choices.length()) {
+                                val delta = choices.getJSONObject(i).optJSONObject("delta")
+                                val content = delta?.optString("content")
+                                if (!content.isNullOrEmpty()) emit(content)
+                            }
+                        }.onFailure {
+                            runCatching {
+                                val obj = JSONObject(payload)
+                                val choices = obj.optJSONArray("choices")
+                                val content = choices?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                                if (!content.isNullOrEmpty()) emit(content)
+                            }
                         }
                     }
                 }
