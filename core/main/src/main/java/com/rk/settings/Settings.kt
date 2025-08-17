@@ -147,6 +147,16 @@ object Settings {
         gemini_api_keys_json = arr.toString()
     }
 
+    // Back-plan auto fix
+    var backplan_enabled
+        get() = Preference.getBoolean(key = "backplan_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "backplan_enabled", value)
+
+    // Main instructions injection (expectations + blueprint + codebase summary)
+    var main_instructions_enabled
+        get() = Preference.getBoolean(key = "main_instructions_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "main_instructions_enabled", value)
+
     // Helper agent toggle
     var helper_agent_enabled
         get() = Preference.getBoolean(key = "helper_agent_enabled", default = false)

@@ -262,7 +262,8 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     // Existing keys list with remove/up/down
                     keys.forEachIndexed { index, k ->
                         Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                            Text(text = "${index + 1}. ${k}", modifier = Modifier.weight(1f))
+                            Text(text = "${index + 1}. ${k}", modifier = Modifier.weight(1f)) {
+                            }
                             OutlinedButton(onClick = {
                                 if (index > 0) {
                                     val moved = keys.removeAt(index)
@@ -285,6 +286,33 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     }
                 }
             }
+        }
+
+        // Back-plan & Main Instructions toggles
+        PreferenceGroup(heading = "Agent Safety & Instructions") {
+            var backplan by remember { mutableStateOf(Settings.backplan_enabled) }
+            SettingsToggle(
+                label = "Enable back-plan auto-fix",
+                description = "If a write fails, analyze context and auto-apply a corrective patch",
+                showSwitch = true,
+                default = backplan,
+                sideEffect = { checked ->
+                    backplan = checked
+                    Settings.backplan_enabled = checked
+                }
+            )
+
+            var mainInstr by remember { mutableStateOf(Settings.main_instructions_enabled) }
+            SettingsToggle(
+                label = "Enable main instructions injection",
+                description = "Send expectations + blueprint + codebase summary as JSON context to the AI",
+                showSwitch = true,
+                default = mainInstr,
+                sideEffect = { checked ->
+                    mainInstr = checked
+                    Settings.main_instructions_enabled = checked
+                }
+            )
         }
 
         // Helper agent configuration
