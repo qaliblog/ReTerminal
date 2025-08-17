@@ -13,6 +13,7 @@ import com.rk.components.compose.preferences.normal.Preference
 import com.rk.libcommons.application
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import java.nio.charset.Charset
+import org.json.JSONArray
 
 object Settings {
     //Boolean
@@ -113,6 +114,36 @@ object Settings {
     var api_model
         get() = Preference.getString(key = "api_model", default = "gpt-4o-mini")
         set(value) = Preference.setString(key = "api_model", value)
+
+    // Gemini API key rotation
+    var api_key_rotation_enabled
+        get() = Preference.getBoolean(key = "api_key_rotation_enabled", default = false)
+        set(value) = Preference.setBoolean(key = "api_key_rotation_enabled", value)
+
+    var gemini_api_keys_json
+        get() = Preference.getString(key = "gemini_api_keys_json", default = "[]")
+        set(value) = Preference.setString(key = "gemini_api_keys_json", value)
+
+    fun getGeminiApiKeys(): MutableList<String> {
+        return try {
+            val arr = JSONArray(gemini_api_keys_json)
+            val list = ArrayList<String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val k = arr.optString(i)
+                if (!k.isNullOrBlank()) list.add(k)
+            }
+            list
+        } catch (_: Exception) {
+            mutableListOf()
+        }
+    }
+
+    fun setGeminiApiKeys(keys: List<String>) {
+        val sanitized = keys.map { it.trim() }.filter { it.isNotEmpty() }
+        val arr = JSONArray()
+        sanitized.forEach { arr.put(it) }
+        gemini_api_keys_json = arr.toString()
+    }
 
     // Helper agent toggle
     var helper_agent_enabled

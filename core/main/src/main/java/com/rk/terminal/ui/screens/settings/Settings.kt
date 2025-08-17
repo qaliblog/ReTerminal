@@ -32,6 +32,8 @@ import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.components.SettingsToggle
 import com.rk.terminal.ui.routes.MainActivityRoutes
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.snapshots.SnapshotStateList
 
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -218,6 +220,70 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 } else {
                     "Chat will use these API settings. Local model download and folders have been replaced."
                 }, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+
+        // Gemini API key rotation
+        PreferenceGroup(heading = "Gemini Key Rotation") {
+            var rotationEnabled by remember { mutableStateOf(Settings.api_key_rotation_enabled) }
+            SettingsToggle(
+                label = "Enable API Key Rotation",
+                description = "Use multiple Gemini API keys and rotate when rate limited",
+                showSwitch = true,
+                default = rotationEnabled,
+                sideEffect = { checked ->
+                    rotationEnabled = checked
+                    Settings.api_key_rotation_enabled = checked
+                }
+            )
+
+            if (rotationEnabled) {
+                val keys: SnapshotStateList<String> = remember { mutableStateListOf<String>().also { it.addAll(Settings.getGeminiApiKeys()) } }
+                var newKey by remember { mutableStateOf("") }
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                        OutlinedTextField(
+                            value = newKey,
+                            onValueChange = { newKey = it },
+                            label = { Text("Add Gemini API key") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        OutlinedButton(modifier = Modifier.padding(start = 8.dp), onClick = {
+                            val trimmed = newKey.trim()
+                            if (trimmed.isNotEmpty()) {
+                                keys.add(trimmed)
+                                Settings.setGeminiApiKeys(keys)
+                                newKey = ""
+                            }
+                        }) { Text("Add") }
+                    }
+
+                    // Existing keys list with remove/up/down
+                    keys.forEachIndexed { index, k ->
+                        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                            Text(text = "${index + 1}. ${k}", modifier = Modifier.weight(1f))
+                            OutlinedButton(onClick = {
+                                if (index > 0) {
+                                    val moved = keys.removeAt(index)
+                                    keys.add(index - 1, moved)
+                                    Settings.setGeminiApiKeys(keys)
+                                }
+                            }) { Text("Up") }
+                            OutlinedButton(modifier = Modifier.padding(start = 8.dp), onClick = {
+                                if (index < keys.lastIndex) {
+                                    val moved = keys.removeAt(index)
+                                    keys.add(index + 1, moved)
+                                    Settings.setGeminiApiKeys(keys)
+                                }
+                            }) { Text("Down") }
+                            OutlinedButton(modifier = Modifier.padding(start = 8.dp), onClick = {
+                                keys.removeAt(index)
+                                Settings.setGeminiApiKeys(keys)
+                            }) { Text("Remove") }
+                        }
+                    }
+                }
             }
         }
 
