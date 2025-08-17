@@ -28,6 +28,8 @@ import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import android.util.Log
 import com.rk.terminal.agent.ControlApiClient
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 
 /**
  * Minimal agent orchestrator that:
@@ -2888,21 +2890,25 @@ if (exit != 0) {
         while (attempt <= maxRetries) {
             val sb = StringBuilder()
             var hadTokens = false
+            var timedOut = false
             try {
                 val flow = flowProvider()
-                flow.collect { chunk ->
-                    if (chunk.isNotEmpty()) hadTokens = true
-                    sb.append(chunk)
+                withTimeout(timeoutMs) {
+                    flow.collect { chunk ->
+                        if (chunk.isNotEmpty()) hadTokens = true
+                        sb.append(chunk)
+                    }
                 }
                 val out = sb.toString()
-                // Retry only if the response is empty
                 if (out.isBlank() && attempt < maxRetries) {
                     attempt++
                     continue
                 }
                 return@withContext out
+            } catch (e: TimeoutCancellationException) {
+                timedOut = true
+                // fall through to evaluate below
             } catch (e: java.io.IOException) {
-                // Network/connection error: retry only if we received no tokens
                 if (hadTokens) {
                     return@withContext sb.toString()
                 }
@@ -2918,6 +2924,17 @@ if (exit != 0) {
                     continue
                 }
                 return@withContext out
+            }
+            if (timedOut) {
+                // If we timed out but have partial output, return it; otherwise retry/exit
+                if (hadTokens) {
+                    return@withContext sb.toString()
+                }
+                if (attempt < maxRetries) {
+                    attempt++
+                    continue
+                }
+                return@withContext ""
             }
         }
         return@withContext ""
