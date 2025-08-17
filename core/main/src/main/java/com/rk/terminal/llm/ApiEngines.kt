@@ -261,6 +261,7 @@ object GeminiEngine : LlmEngine {
                                     if (!isQuota && (errTxt.contains("GenerateContentInputTokensPerModelPerMinute-FreeTier", true) || errTxt.contains("generate_content_free_tier_input_token_count", true))) isQuota = true
                                 }
                                 if (isQuota) {
+                                    emit("[Gemini] Key ${index + 1}/${keys.size} RPM exceeded (429). Switching to next key...\n")
                                     exhaustedThisCycle += 1
                                     index = (index + 1) % keys.size
                                     return@use
