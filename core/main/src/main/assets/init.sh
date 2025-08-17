@@ -3,6 +3,11 @@ set -e  # Exit immediately on Failure
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/share/bin:/usr/share/sbin:/usr/local/bin:/usr/local/sbin:/system/bin:/system/xbin
 export HOME=/root
 
+# Ensure /etc directory exists before creating resolv.conf
+if [ ! -d /etc ]; then
+    mkdir -p /etc
+fi
+
 if [ ! -s /etc/resolv.conf ]; then
     echo "nameserver 8.8.8.8" > /etc/resolv.conf
 fi
