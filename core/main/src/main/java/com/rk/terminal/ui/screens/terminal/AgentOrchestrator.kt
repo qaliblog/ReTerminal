@@ -2193,7 +2193,18 @@ class AgentOrchestrator(
                     appendTaskLog("run_shell_background") { put("wd", wd); put("pid", pid); put("command", command) }
                     ToolResult(pid > 0, observation)
                 } else {
-                    // ... existing code ...
+                    val mainOut = MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs)
+                    val out = mainOut.first
+                    val exitCode = mainOut.second
+                    val observation = JSONObject().put("output", out).put("exit_code", exitCode).toString()
+                    commandCache[cacheKey] = JSONObject().put("command", command).put("wd", wd).put("output", out).put("exit", exitCode).put("ts", System.currentTimeMillis())
+                    saveCommandCache()
+                    currentRunStats?.commandsRun?.add(command)
+                    // Heuristic for successful installation
+                    if (isInstallCommand(command) && exitCode == 0) {
+                        lastInstallSuccess = true
+                    }
+                    ToolResult(exitCode == 0, observation)
                 }
             }
             "get_cached_command_output" -> {
