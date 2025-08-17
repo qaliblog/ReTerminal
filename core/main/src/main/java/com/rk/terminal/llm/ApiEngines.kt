@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -223,31 +224,64 @@ object GeminiEngine : LlmEngine {
                     })
                 ))
             }
-            val req = Request.Builder()
-                .url(url)
-                .addHeader("content-type", "application/json")
-                .post(contents.toString().toRequestBody("application/json".toMediaType()))
-                .build()
 
-            ApiHttp.client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    emit("[Gemini] HTTP ${resp.code}: ${resp.message}\n")
-                    val err = resp.body?.string()
-                    if (!err.isNullOrBlank()) emit(err.take(2000))
-                    return@use
+            var completed = false
+            while (!completed) {
+                val req = Request.Builder()
+                    .url(url)
+                    .addHeader("content-type", "application/json")
+                    .post(contents.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+                var shouldRetry = false
+                ApiHttp.client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        val errTxt = resp.body?.string().orEmpty()
+                        var isQuota = resp.code == 429
+                        if (!errTxt.isBlank()) {
+                            val errorObj = runCatching { JSONObject(errTxt) }.getOrNull()?.optJSONObject("error")
+                            val statusStr = errorObj?.optString("status").orEmpty()
+                            if (statusStr == "RESOURCE_EXHAUSTED") isQuota = true
+                            val detailsArr = errorObj?.optJSONArray("details") ?: JSONArray()
+                            for (i in 0 until detailsArr.length()) {
+                                val det = detailsArr.optJSONObject(i)
+                                val typeStr = det?.optString("@type").orEmpty()
+                                if (typeStr.endsWith("google.rpc.QuotaFailure") || typeStr.endsWith("google.rpc.RetryInfo")) {
+                                    isQuota = true
+                                    break
+                                }
+                            }
+                            if (!isQuota && (errTxt.contains("GenerateContentInputTokensPerModelPerMinute-FreeTier", true) || errTxt.contains("generate_content_free_tier_input_token_count", true))) isQuota = true
+                        }
+                        if (isQuota) {
+                            emit("RPM exceeded, retrying to access the API again in 5 seconds...\n")
+                            shouldRetry = true
+                            return@use
+                        } else {
+                            emit("[Gemini] HTTP ${resp.code}: ${resp.message}\n")
+                            if (errTxt.isNotBlank()) emit(errTxt.take(2000))
+                            completed = true
+                            return@use
+                        }
+                    }
+                    val txt = resp.body?.string().orEmpty()
+                    val obj = runCatching { JSONObject(txt) }.getOrNull()
+                    val cand = obj?.optJSONArray("candidates")?.optJSONObject(0)
+                    val parts = cand?.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
+                    val sb = StringBuilder()
+                    for (i in 0 until parts.length()) {
+                        val part = parts.getJSONObject(i)
+                        val fragment = part.optString("text")
+                        if (fragment.isNotEmpty()) sb.append(fragment)
+                    }
+                    val out = sb.toString()
+                    if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
+                    completed = true
                 }
-                val txt = resp.body?.string().orEmpty()
-                val obj = runCatching { JSONObject(txt) }.getOrNull()
-                val cand = obj?.optJSONArray("candidates")?.optJSONObject(0)
-                val parts = cand?.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
-                val sb = StringBuilder()
-                for (i in 0 until parts.length()) {
-                    val part = parts.getJSONObject(i)
-                    val fragment = part.optString("text")
-                    if (fragment.isNotEmpty()) sb.append(fragment)
+                if (!completed && shouldRetry) {
+                    delay(5000)
+                } else {
+                    break
                 }
-                val out = sb.toString()
-                if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
             }
         } catch (e: java.io.IOException) {
             throw e
@@ -288,7 +322,6 @@ object OllamaEngine : LlmEngine {
                 while (true) {
                     val line = source.readUtf8Line() ?: break
                     if (line.isBlank()) continue
-                    // Ollama streams JSON lines like {"message":{"content":"...","role":"assistant"},"done":false}
                     var shouldBreak = false
                     try {
                         val obj = JSONObject(line)
@@ -298,7 +331,6 @@ object OllamaEngine : LlmEngine {
                         if (content.isNotEmpty()) emit(content)
                         if (done) shouldBreak = true
                     } catch (_: Exception) {
-                        // tolerate occasional non-JSON lines
                     }
                     if (shouldBreak) break
                 }
