@@ -207,7 +207,6 @@ object GeminiEngine : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
         try {
             val model = Settings.api_model.ifBlank { "gemini-1.5-flash" }
-            val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${Settings.api_key}"
             val userText = messages.filter { it.role == "user" }.joinToString("\n\n") { it.content }
             val sys = messages.firstOrNull { it.role == "system" }?.content
             val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
@@ -225,62 +224,133 @@ object GeminiEngine : LlmEngine {
                 ))
             }
 
-            var completed = false
-            while (!completed) {
-                val req = Request.Builder()
-                    .url(url)
-                    .addHeader("content-type", "application/json")
-                    .post(contents.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-                var shouldRetry = false
-                ApiHttp.client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        val errTxt = resp.body?.string().orEmpty()
-                        var isQuota = resp.code == 429
-                        if (!errTxt.isBlank()) {
-                            val errorObj = runCatching { JSONObject(errTxt) }.getOrNull()?.optJSONObject("error")
-                            val statusStr = errorObj?.optString("status").orEmpty()
-                            if (statusStr == "RESOURCE_EXHAUSTED") isQuota = true
-                            val detailsArr = errorObj?.optJSONArray("details") ?: JSONArray()
-                            for (i in 0 until detailsArr.length()) {
-                                val det = detailsArr.optJSONObject(i)
-                                val typeStr = det?.optString("@type").orEmpty()
-                                if (typeStr.endsWith("google.rpc.QuotaFailure") || typeStr.endsWith("google.rpc.RetryInfo")) {
-                                    isQuota = true
-                                    break
+            val rotationEnabled = Settings.api_key_rotation_enabled
+            val keys = Settings.getGeminiApiKeys().filter { it.isNotBlank() }
+            val useRotation = rotationEnabled && keys.isNotEmpty()
+
+            if (useRotation) {
+                var index = 0
+                var completed = false
+                while (!completed) {
+                    var exhaustedThisCycle = 0
+                    for (i in keys.indices) {
+                        val currentKey = keys[index]
+                        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${currentKey}"
+                        val req = Request.Builder()
+                            .url(url)
+                            .addHeader("content-type", "application/json")
+                            .post(contents.toString().toRequestBody("application/json".toMediaType()))
+                            .build()
+                        ApiHttp.client.newCall(req).execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                val errTxt = resp.body?.string().orEmpty()
+                                var isQuota = resp.code == 429
+                                if (!errTxt.isBlank()) {
+                                    val errorObj = runCatching { JSONObject(errTxt) }.getOrNull()?.optJSONObject("error")
+                                    val statusStr = errorObj?.optString("status").orEmpty()
+                                    if (statusStr == "RESOURCE_EXHAUSTED") isQuota = true
+                                    val detailsArr = errorObj?.optJSONArray("details") ?: JSONArray()
+                                    for (j in 0 until detailsArr.length()) {
+                                        val det = detailsArr.optJSONObject(j)
+                                        val typeStr = det?.optString("@type").orEmpty()
+                                        if (typeStr.endsWith("google.rpc.QuotaFailure") || typeStr.endsWith("google.rpc.RetryInfo")) {
+                                            isQuota = true
+                                            break
+                                        }
+                                    }
+                                    if (!isQuota && (errTxt.contains("GenerateContentInputTokensPerModelPerMinute-FreeTier", true) || errTxt.contains("generate_content_free_tier_input_token_count", true))) isQuota = true
+                                }
+                                if (isQuota) {
+                                    exhaustedThisCycle += 1
+                                    index = (index + 1) % keys.size
+                                    return@use
+                                } else {
+                                    emit("[Gemini] HTTP ${resp.code}: ${resp.message}\n")
+                                    if (errTxt.isNotBlank()) emit(errTxt.take(2000))
+                                    completed = true
+                                    return@use
                                 }
                             }
-                            if (!isQuota && (errTxt.contains("GenerateContentInputTokensPerModelPerMinute-FreeTier", true) || errTxt.contains("generate_content_free_tier_input_token_count", true))) isQuota = true
-                        }
-                        if (isQuota) {
-                            emit("RPM exceeded, retrying to access the API again in 5 seconds...\n")
-                            shouldRetry = true
-                            return@use
-                        } else {
-                            emit("[Gemini] HTTP ${resp.code}: ${resp.message}\n")
-                            if (errTxt.isNotBlank()) emit(errTxt.take(2000))
+                            val txt = resp.body?.string().orEmpty()
+                            val obj = runCatching { JSONObject(txt) }.getOrNull()
+                            val cand = obj?.optJSONArray("candidates")?.optJSONObject(0)
+                            val parts = cand?.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
+                            val sb = StringBuilder()
+                            for (j in 0 until parts.length()) {
+                                val part = parts.getJSONObject(j)
+                                val fragment = part.optString("text")
+                                if (fragment.isNotEmpty()) sb.append(fragment)
+                            }
+                            val out = sb.toString()
+                            if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
                             completed = true
-                            return@use
                         }
+                        if (completed) break
                     }
-                    val txt = resp.body?.string().orEmpty()
-                    val obj = runCatching { JSONObject(txt) }.getOrNull()
-                    val cand = obj?.optJSONArray("candidates")?.optJSONObject(0)
-                    val parts = cand?.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
-                    val sb = StringBuilder()
-                    for (i in 0 until parts.length()) {
-                        val part = parts.getJSONObject(i)
-                        val fragment = part.optString("text")
-                        if (fragment.isNotEmpty()) sb.append(fragment)
+                    if (!completed && exhaustedThisCycle >= keys.size) {
+                        emit("All API keys exceeded RPM. Retrying again in 5 seconds...\n")
+                        delay(5000)
                     }
-                    val out = sb.toString()
-                    if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
-                    completed = true
                 }
-                if (!completed && shouldRetry) {
-                    delay(5000)
-                } else {
-                    break
+            } else {
+                var completed = false
+                while (!completed) {
+                    val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=${Settings.api_key}"
+                    val req = Request.Builder()
+                        .url(url)
+                        .addHeader("content-type", "application/json")
+                        .post(contents.toString().toRequestBody("application/json".toMediaType()))
+                        .build()
+                    var shouldRetry = false
+                    ApiHttp.client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errTxt = resp.body?.string().orEmpty()
+                            var isQuota = resp.code == 429
+                            if (!errTxt.isBlank()) {
+                                val errorObj = runCatching { JSONObject(errTxt) }.getOrNull()?.optJSONObject("error")
+                                val statusStr = errorObj?.optString("status").orEmpty()
+                                if (statusStr == "RESOURCE_EXHAUSTED") isQuota = true
+                                val detailsArr = errorObj?.optJSONArray("details") ?: JSONArray()
+                                for (i in 0 until detailsArr.length()) {
+                                    val det = detailsArr.optJSONObject(i)
+                                    val typeStr = det?.optString("@type").orEmpty()
+                                    if (typeStr.endsWith("google.rpc.QuotaFailure") || typeStr.endsWith("google.rpc.RetryInfo")) {
+                                        isQuota = true
+                                        break
+                                    }
+                                }
+                                if (!isQuota && (errTxt.contains("GenerateContentInputTokensPerModelPerMinute-FreeTier", true) || errTxt.contains("generate_content_free_tier_input_token_count", true))) isQuota = true
+                            }
+                            if (isQuota) {
+                                emit("RPM exceeded, retrying to access the API again in 5 seconds...\n")
+                                shouldRetry = true
+                                return@use
+                            } else {
+                                emit("[Gemini] HTTP ${resp.code}: ${resp.message}\n")
+                                if (errTxt.isNotBlank()) emit(errTxt.take(2000))
+                                completed = true
+                                return@use
+                            }
+                        }
+                        val txt = resp.body?.string().orEmpty()
+                        val obj = runCatching { JSONObject(txt) }.getOrNull()
+                        val cand = obj?.optJSONArray("candidates")?.optJSONObject(0)
+                        val parts = cand?.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
+                        val sb = StringBuilder()
+                        for (i in 0 until parts.length()) {
+                            val part = parts.getJSONObject(i)
+                            val fragment = part.optString("text")
+                            if (fragment.isNotEmpty()) sb.append(fragment)
+                        }
+                        val out = sb.toString()
+                        if (out.isEmpty()) emit("[Gemini] Empty response\n") else out.chunked(64).forEach { emit(it) }
+                        completed = true
+                    }
+                    if (!completed && shouldRetry) {
+                        delay(5000)
+                    } else if (completed) {
+                        break
+                    }
                 }
             }
         } catch (e: java.io.IOException) {
