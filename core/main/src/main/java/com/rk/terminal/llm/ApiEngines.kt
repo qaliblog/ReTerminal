@@ -15,6 +15,7 @@ import okio.BufferedSource
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
 private object ApiHttp {
     val client: OkHttpClient by lazy {
@@ -24,6 +25,15 @@ private object ApiHttp {
             .writeTimeout(20, TimeUnit.SECONDS)
             .build()
     }
+}
+
+private fun OkHttpClient.withTimeouts(ms: Int): OkHttpClient {
+    val seconds = (ms.coerceAtLeast(2000)) / 1000L
+    return this.newBuilder()
+        .connectTimeout(seconds, TimeUnit.SECONDS)
+        .readTimeout(seconds, TimeUnit.SECONDS)
+        .writeTimeout(seconds, TimeUnit.SECONDS)
+        .build()
 }
 
 private fun buildChatHistoryArray(messages: List<LlmMessage>): JSONArray {
@@ -39,166 +49,212 @@ private fun buildChatHistoryArray(messages: List<LlmMessage>): JSONArray {
 
 object OpenAIEngine : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
-        try {
-            val provider = Settings.api_provider.lowercase()
-            val defaultBase = if (provider == "fireworks") "https://api.fireworks.ai" else "https://api.openai.com"
-            val base = Settings.api_base_url.trim().ifBlank { defaultBase }.removeSuffix("/")
-            val path = if (provider == "fireworks") "/inference/v1/chat/completions" else "/v1/chat/completions"
-            val url = "$base$path"
-            val model = Settings.api_model.ifBlank { if (provider == "fireworks") "accounts/fireworks/models/llama-v3p1-8b-instruct" else "gpt-4o-mini" }
-            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
-            val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
-            val maxTokens = Settings.ai_max_tokens.coerceAtLeast(64)
-            val bodyJson = JSONObject().apply {
-                put("model", model)
-                if (provider != "fireworks") put("stream", true)
-                put("messages", buildChatHistoryArray(messages))
-                put("max_tokens", maxTokens)
-                if (provider == "fireworks") {
-                    put("top_p", 1)
-                    put("top_k", 40)
-                    put("presence_penalty", 0)
-                    put("frequency_penalty", 0)
-                    if (tempOverride == null && !forceJson) put("temperature", 0.6)
-                }
-                if (tempOverride != null) put("temperature", tempOverride)
-                if (forceJson) {
-                    put("response_format", JSONObject().put("type", "json_object"))
-                    put("temperature", 0)
-                }
+        val provider = Settings.api_provider.lowercase()
+        val defaultBase = if (provider == "fireworks") "https://api.fireworks.ai" else "https://api.openai.com"
+        val base = Settings.api_base_url.trim().ifBlank { defaultBase }.removeSuffix("/")
+        val path = if (provider == "fireworks") "/inference/v1/chat/completions" else "/v1/chat/completions"
+        val url = "$base$path"
+        val model = Settings.api_model.ifBlank { if (provider == "fireworks") "accounts/fireworks/models/llama-v3p1-8b-instruct" else "gpt-4o-mini" }
+        val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+        val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
+        val maxTokens = (Settings.openai_max_tokens.takeIf { it > 0 } ?: Settings.ai_max_tokens).coerceAtLeast(64)
+        val timeoutMs = Settings.openai_timeout_ms.coerceAtLeast(5_000)
+        val client = ApiHttp.client.withTimeouts(timeoutMs)
+        val bodyJson = JSONObject().apply {
+            put("model", model)
+            if (provider != "fireworks") put("stream", true)
+            put("messages", buildChatHistoryArray(messages))
+            put("max_tokens", maxTokens)
+            if (provider == "fireworks") {
+                put("top_p", 1)
+                put("top_k", 40)
+                put("presence_penalty", 0)
+                put("frequency_penalty", 0)
+                if (tempOverride == null && !forceJson) put("temperature", 0.6)
             }
-            val reqBody: RequestBody = bodyJson.toString().toRequestBody("application/json".toMediaType())
-            val builder = Request.Builder()
-                .url(url)
-                .addHeader("Authorization", "Bearer ${Settings.api_key}")
-                .addHeader("Content-Type", "application/json")
-            if (provider == "fireworks") builder.addHeader("Accept", "application/json")
-            val req = builder
-                .post(reqBody)
-                .build()
+            if (tempOverride != null) put("temperature", tempOverride)
+            if (forceJson) {
+                put("response_format", JSONObject().put("type", "json_object"))
+                put("temperature", 0)
+            }
+        }
+        val reqBody: RequestBody = bodyJson.toString().toRequestBody("application/json".toMediaType())
+        val builder = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer ${Settings.api_key}")
+            .addHeader("Content-Type", "application/json")
+        if (provider == "fireworks") builder.addHeader("Accept", "application/json")
+        val req = builder
+            .post(reqBody)
+            .build()
 
-            ApiHttp.client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    emit("[OpenAI] HTTP ${resp.code}: ${resp.message}\n")
-                    val err = resp.body?.string()
-                    if (!err.isNullOrBlank()) emit(err.take(2000))
-                    return@use
-                }
-                val rb = resp.body
-                if (rb == null) {
-                    emit("[OpenAI] Empty body\n")
-                    return@use
-                }
-                if (provider == "fireworks") {
-                    val txt = rb.string().orEmpty()
-                    val obj = runCatching { JSONObject(txt) }.getOrNull()
-                    val choices = obj?.optJSONArray("choices") ?: JSONArray()
-                    val sb = StringBuilder()
-                    for (i in 0 until choices.length()) {
-                        val choice = choices.getJSONObject(i)
-                        val msgContent = choice.optJSONObject("message")?.optString("content")
-                        val textContent = choice.optString("text")
-                        val fragment = when {
-                            !msgContent.isNullOrBlank() -> msgContent
-                            textContent.isNotBlank() -> textContent
-                            else -> ""
-                        }
-                        if (fragment.isNotEmpty()) sb.append(fragment)
+        var attempt = 0
+        val maxRetries = 2
+        retry@ while (attempt <= maxRetries) {
+            try {
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        emit("[OpenAI] HTTP ${resp.code}: ${resp.message}\n")
+                        val err = resp.body?.string()
+                        if (!err.isNullOrBlank()) emit(err.take(2000))
+                        break@retry
                     }
-                    val out = sb.toString()
-                    if (out.isEmpty()) emit("[OpenAI] Empty response\n") else out.chunked(64).forEach { emit(it) }
+                    val rb = resp.body
+                    if (rb == null) {
+                        emit("[OpenAI] Empty body\n")
+                        break@retry
+                    }
+                    if (provider == "fireworks") {
+                        val txt = rb.string().orEmpty()
+                        val obj = runCatching { JSONObject(txt) }.getOrNull()
+                        val choices = obj?.optJSONArray("choices") ?: JSONArray()
+                        val sb = StringBuilder()
+                        for (i in 0 until choices.length()) {
+                            val choice = choices.getJSONObject(i)
+                            val msgContent = choice.optJSONObject("message")?.optString("content")
+                            val textContent = choice.optString("text")
+                            val fragment = when {
+                                !msgContent.isNullOrBlank() -> msgContent
+                                textContent.isNotBlank() -> textContent
+                                else -> ""
+                            }
+                            if (fragment.isNotEmpty()) sb.append(fragment)
+                        }
+                        val out = sb.toString()
+                        if (out.isEmpty()) emit("[OpenAI] Empty response\n") else out.chunked(64).forEach { emit(it) }
+                    } else {
+                        val source: BufferedSource = rb.source()
+                        var emittedAny = false
+                        try {
+                            while (true) {
+                                val line = source.readUtf8Line() ?: break
+                                if (line.isBlank()) continue
+                                if (!line.startsWith("data:")) continue
+                                val payload = line.removePrefix("data:").trim()
+                                if (payload == "[DONE]") break
+                                runCatching {
+                                    val obj = JSONObject(payload)
+                                    val choices = obj.optJSONArray("choices") ?: JSONArray()
+                                    for (i in 0 until choices.length()) {
+                                        val delta = choices.getJSONObject(i).optJSONObject("delta")
+                                        val content = delta?.optString("content")
+                                        if (!content.isNullOrEmpty()) { emit(content); emittedAny = true }
+                                    }
+                                }.onFailure {
+                                    runCatching {
+                                        val obj = JSONObject(payload)
+                                        val choices = obj.optJSONArray("choices")
+                                        val content = choices?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                                        if (!content.isNullOrEmpty()) { emit(content); emittedAny = true }
+                                    }
+                                }
+                            }
+                        } catch (e: java.io.IOException) {
+                            if (!emittedAny && attempt < maxRetries) {
+                                val backoff = (350L * (1 shl attempt)) + Random.nextLong(0, 200)
+                                emit("[OpenAI] IO error, retrying in ${backoff}ms...\n")
+                                delay(backoff)
+                                attempt++
+                                continue@retry
+                            }
+                            // if emittedAny, treat as success and stop
+                        }
+                    }
+                }
+                break@retry
+            } catch (e: java.io.IOException) {
+                if (attempt < maxRetries) {
+                    val backoff = (350L * (1 shl attempt)) + Random.nextLong(0, 200)
+                    emit("[OpenAI] IO error, retrying in ${backoff}ms...\n")
+                    delay(backoff)
+                    attempt++
+                    continue@retry
                 } else {
-                    val source: BufferedSource = rb.source()
-                    while (true) {
-                        val line = source.readUtf8Line() ?: break
-                        if (line.isBlank()) continue
-                        if (!line.startsWith("data:")) continue
-                        val payload = line.removePrefix("data:").trim()
-                        if (payload == "[DONE]") break
-                        runCatching {
-                            val obj = JSONObject(payload)
-                            val choices = obj.optJSONArray("choices") ?: JSONArray()
-                            for (i in 0 until choices.length()) {
-                                val delta = choices.getJSONObject(i).optJSONObject("delta")
-                                val content = delta?.optString("content")
-                                if (!content.isNullOrEmpty()) emit(content)
-                            }
-                        }.onFailure {
-                            runCatching {
-                                val obj = JSONObject(payload)
-                                val choices = obj.optJSONArray("choices")
-                                val content = choices?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
-                                if (!content.isNullOrEmpty()) emit(content)
-                            }
-                        }
-                    }
+                    emit("[OpenAI] ${e::class.simpleName}: ${e.message}\n")
+                    break@retry
                 }
+            } catch (e: Exception) {
+                emit("[OpenAI] ${e::class.simpleName}: ${e.message}\n")
+                break@retry
             }
-        } catch (e: java.io.IOException) {
-            throw e
-        } catch (e: Exception) {
-            emit("[OpenAI] ${e::class.simpleName}: ${e.message}\n")
         }
     }.flowOn(Dispatchers.IO)
 }
 
 object AnthropicEngine : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
-        try {
-            val url = "https://api.anthropic.com/v1/messages"
-            val model = Settings.api_model.ifBlank { "claude-3-haiku-20240307" }
-            val sys = messages.firstOrNull { it.role == "system" }?.content
-            val conv = JSONArray()
-            messages.filter { it.role == "user" || it.role == "assistant" }.forEach { m ->
-                val item = JSONObject()
-                item.put("role", if (m.role == "assistant") "assistant" else "user")
-                item.put("content", JSONArray().put(JSONObject().put("type", "text").put("text", m.content)))
-                conv.put(item)
-            }
-            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
-            val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
-            val maxTokens = Settings.ai_max_tokens.coerceAtLeast(64)
-            val body = JSONObject().apply {
-                put("model", model)
-                put("max_tokens", maxTokens)
-                put("messages", conv)
-                if (!sys.isNullOrBlank()) put("system", sys)
-                if (tempOverride != null) put("temperature", tempOverride)
-                if (forceJson) put("temperature", 0)
-            }
-            val req = Request.Builder()
-                .url(url)
-                .addHeader("x-api-key", Settings.api_key)
-                .addHeader("anthropic-version", "2023-06-01")
-                .addHeader("content-type", "application/json")
-                .post(body.toString().toRequestBody("application/json".toMediaType()))
-                .build()
+        val url = "https://api.anthropic.com/v1/messages"
+        val model = Settings.api_model.ifBlank { "claude-3-haiku-20240307" }
+        val sys = messages.firstOrNull { it.role == "system" }?.content
+        val conv = JSONArray()
+        messages.filter { it.role == "user" || it.role == "assistant" }.forEach { m ->
+            val item = JSONObject()
+            item.put("role", if (m.role == "assistant") "assistant" else "user")
+            item.put("content", JSONArray().put(JSONObject().put("type", "text").put("text", m.content)))
+            conv.put(item)
+        }
+        val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+        val tempOverride = Settings.ai_temperature_str.trim().toDoubleOrNull()
+        val maxTokens = (Settings.anthropic_max_tokens.takeIf { it > 0 } ?: Settings.ai_max_tokens).coerceAtLeast(64)
+        val timeoutMs = Settings.anthropic_timeout_ms.coerceAtLeast(5_000)
+        val client = ApiHttp.client.withTimeouts(timeoutMs)
+        val body = JSONObject().apply {
+            put("model", model)
+            put("max_tokens", maxTokens)
+            put("messages", conv)
+            if (!sys.isNullOrBlank()) put("system", sys)
+            if (tempOverride != null) put("temperature", tempOverride)
+            if (forceJson) put("temperature", 0)
+        }
+        val req = Request.Builder()
+            .url(url)
+            .addHeader("x-api-key", Settings.api_key)
+            .addHeader("anthropic-version", "2023-06-01")
+            .addHeader("content-type", "application/json")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
 
-            ApiHttp.client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    emit("[Anthropic] HTTP ${resp.code}: ${resp.message}\n")
-                    val err = resp.body?.string()
-                    if (!err.isNullOrBlank()) emit(err.take(2000))
-                    return@use
-                }
-                val txt = resp.body?.string().orEmpty()
-                val obj = runCatching { JSONObject(txt) }.getOrNull()
-                val contentArr = obj?.optJSONArray("content") ?: JSONArray()
-                val sb = StringBuilder()
-                for (i in 0 until contentArr.length()) {
-                    val part = contentArr.getJSONObject(i)
-                    if (part.optString("type") == "text") {
-                        val fragment = part.optString("text")
-                        if (fragment.isNotEmpty()) sb.append(fragment)
+        var attempt = 0
+        val maxRetries = 2
+        while (attempt <= maxRetries) {
+            try {
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        emit("[Anthropic] HTTP ${resp.code}: ${resp.message}\n")
+                        val err = resp.body?.string()
+                        if (!err.isNullOrBlank()) emit(err.take(2000))
+                        break
                     }
+                    val txt = resp.body?.string().orEmpty()
+                    val obj = runCatching { JSONObject(txt) }.getOrNull()
+                    val contentArr = obj?.optJSONArray("content") ?: JSONArray()
+                    val sb = StringBuilder()
+                    for (i in 0 until contentArr.length()) {
+                        val part = contentArr.getJSONObject(i)
+                        if (part.optString("type") == "text") {
+                            val fragment = part.optString("text")
+                            if (fragment.isNotEmpty()) sb.append(fragment)
+                        }
+                    }
+                    val out = sb.toString()
+                    if (out.isEmpty()) emit("[Anthropic] Empty response\n") else out.chunked(64).forEach { emit(it) }
                 }
-                val out = sb.toString()
-                if (out.isEmpty()) emit("[Anthropic] Empty response\n") else out.chunked(64).forEach { emit(it) }
+                break
+            } catch (e: java.io.IOException) {
+                if (attempt < maxRetries) {
+                    val backoff = (350L * (1 shl attempt)) + Random.nextLong(0, 200)
+                    emit("[Anthropic] IO error, retrying in ${backoff}ms...\n")
+                    delay(backoff)
+                    attempt++
+                    continue
+                } else {
+                    emit("[Anthropic] ${e::class.simpleName}: ${e.message}\n")
+                    break
+                }
+            } catch (e: Exception) {
+                emit("[Anthropic] ${e::class.simpleName}: ${e.message}\n")
+                break
             }
-        } catch (e: java.io.IOException) {
-            throw e
-        } catch (e: Exception) {
-            emit("[Anthropic] ${e::class.simpleName}: ${e.message}\n")
         }
     }.flowOn(Dispatchers.IO)
 }
@@ -364,52 +420,81 @@ object GeminiEngine : LlmEngine {
 
 object OllamaEngine : LlmEngine {
     override fun generate(messages: List<LlmMessage>): Flow<String> = flow {
-        try {
-            val base = Settings.api_base_url.trim().ifBlank { "http://127.0.0.1:11434" }.removeSuffix("/")
-            val url = "$base/api/chat"
-            val model = Settings.api_model.ifBlank { "llama3.1" }
-            val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
-            val body = JSONObject().apply {
-                put("model", model)
-                put("stream", true)
-                put("messages", buildChatHistoryArray(messages))
-                if (forceJson) put("format", "json_object")
-            }
-            val req = Request.Builder()
-                .url(url)
-                .addHeader("content-type", "application/json")
-                .post(body.toString().toRequestBody("application/json".toMediaType()))
-                .build()
+        val base = Settings.api_base_url.trim().ifBlank { "http://127.0.0.1:11434" }.removeSuffix("/")
+        val url = "$base/api/chat"
+        val model = Settings.api_model.ifBlank { "llama3.1" }
+        val forceJson = messages.any { it.content.contains("Return ONLY") && it.content.contains("JSON", ignoreCase = true) }
+        val body = JSONObject().apply {
+            put("model", model)
+            put("stream", true)
+            put("messages", buildChatHistoryArray(messages))
+            if (forceJson) put("format", "json_object")
+        }
+        val timeoutMs = Settings.ollama_timeout_ms.coerceAtLeast(5_000)
+        val client = ApiHttp.client.withTimeouts(timeoutMs)
+        val req = Request.Builder()
+            .url(url)
+            .addHeader("content-type", "application/json")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
 
-            ApiHttp.client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    emit("[Ollama] HTTP ${resp.code}: ${resp.message}\n")
-                    val err = resp.body?.string()
-                    if (!err.isNullOrBlank()) emit(err.take(2000))
-                    return@use
-                }
-                val rb = resp.body ?: return@use
-                val source = rb.source()
-                while (true) {
-                    val line = source.readUtf8Line() ?: break
-                    if (line.isBlank()) continue
-                    var shouldBreak = false
-                    try {
-                        val obj = JSONObject(line)
-                        val done = obj.optBoolean("done", false)
-                        val msgObj = obj.optJSONObject("message")
-                        val content = msgObj?.optString("content").orEmpty()
-                        if (content.isNotEmpty()) emit(content)
-                        if (done) shouldBreak = true
-                    } catch (_: Exception) {
+        var attempt = 0
+        val maxRetries = 2
+        retry@ while (attempt <= maxRetries) {
+            try {
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        emit("[Ollama] HTTP ${resp.code}: ${resp.message}\n")
+                        val err = resp.body?.string()
+                        if (!err.isNullOrBlank()) emit(err.take(2000))
+                        break@retry
                     }
-                    if (shouldBreak) break
+                    val rb = resp.body ?: break@retry
+                    val source = rb.source()
+                    var emittedAny = false
+                    try {
+                        while (true) {
+                            val line = source.readUtf8Line() ?: break
+                            if (line.isBlank()) continue
+                            var shouldBreak = false
+                            try {
+                                val obj = JSONObject(line)
+                                val done = obj.optBoolean("done", false)
+                                val msgObj = obj.optJSONObject("message")
+                                val content = msgObj?.optString("content").orEmpty()
+                                if (content.isNotEmpty()) { emit(content); emittedAny = true }
+                                if (done) shouldBreak = true
+                            } catch (_: Exception) {
+                            }
+                            if (shouldBreak) break
+                        }
+                    } catch (e: java.io.IOException) {
+                        if (!emittedAny && attempt < maxRetries) {
+                            val backoff = (350L * (1 shl attempt)) + Random.nextLong(0, 200)
+                            emit("[Ollama] IO error, retrying in ${backoff}ms...\n")
+                            delay(backoff)
+                            attempt++
+                            continue@retry
+                        }
+                        // else: partial output already emitted; treat as success
+                    }
                 }
+                break@retry
+            } catch (e: java.io.IOException) {
+                if (attempt < maxRetries) {
+                    val backoff = (350L * (1 shl attempt)) + Random.nextLong(0, 200)
+                    emit("[Ollama] IO error, retrying in ${backoff}ms...\n")
+                    delay(backoff)
+                    attempt++
+                    continue@retry
+                } else {
+                    emit("[Ollama] ${e::class.simpleName}: ${e.message}\n")
+                    break@retry
+                }
+            } catch (e: Exception) {
+                emit("[Ollama] ${e::class.simpleName}: ${e.message}\n")
+                break@retry
             }
-        } catch (e: java.io.IOException) {
-            throw e
-        } catch (e: Exception) {
-            emit("[Ollama] ${e::class.simpleName}: ${e.message}\n")
         }
     }.flowOn(Dispatchers.IO)
 }

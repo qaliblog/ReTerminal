@@ -152,6 +152,11 @@ object Settings {
         get() = Preference.getBoolean(key = "backplan_enabled", default = false)
         set(value) = Preference.setBoolean(key = "backplan_enabled", value)
 
+    // Show back-plan logs in plan panel
+    var show_backplan_logs
+        get() = Preference.getBoolean(key = "show_backplan_logs", default = false)
+        set(value) = Preference.setBoolean(key = "show_backplan_logs", value)
+
     // Main instructions injection (expectations + blueprint + codebase summary)
     var main_instructions_enabled
         get() = Preference.getBoolean(key = "main_instructions_enabled", default = false)
@@ -170,6 +175,33 @@ object Settings {
     var ai_temperature_str
         get() = Preference.getString(key = "ai_temperature_str", default = "")
         set(value) = Preference.setString(key = "ai_temperature_str", value)
+
+    // Per-provider advanced settings
+    var openai_timeout_ms
+        get() = Preference.getInt(key = "openai_timeout_ms", default = 20000)
+        set(value) = Preference.setInt(key = "openai_timeout_ms", value)
+    var anthropic_timeout_ms
+        get() = Preference.getInt(key = "anthropic_timeout_ms", default = 20000)
+        set(value) = Preference.setInt(key = "anthropic_timeout_ms", value)
+    var gemini_timeout_ms
+        get() = Preference.getInt(key = "gemini_timeout_ms", default = 20000)
+        set(value) = Preference.setInt(key = "gemini_timeout_ms", value)
+    var ollama_timeout_ms
+        get() = Preference.getInt(key = "ollama_timeout_ms", default = 20000)
+        set(value) = Preference.setInt(key = "ollama_timeout_ms", value)
+
+    var openai_max_tokens
+        get() = Preference.getInt(key = "openai_max_tokens", default = 1024)
+        set(value) = Preference.setInt(key = "openai_max_tokens", value)
+    var anthropic_max_tokens
+        get() = Preference.getInt(key = "anthropic_max_tokens", default = 1024)
+        set(value) = Preference.setInt(key = "anthropic_max_tokens", value)
+    var gemini_max_tokens
+        get() = Preference.getInt(key = "gemini_max_tokens", default = 1024)
+        set(value) = Preference.setInt(key = "gemini_max_tokens", value)
+    var ollama_max_tokens
+        get() = Preference.getInt(key = "ollama_max_tokens", default = 1024)
+        set(value) = Preference.setInt(key = "ollama_max_tokens", value)
 
     // Codebase agent
     var codebase_agent_enabled

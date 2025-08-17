@@ -1151,6 +1151,9 @@ class AgentOrchestrator(
 
         val task = getNextPendingTask(plan) ?: return false
         onStatus("Task ${task.id}: ${task.description}")
+        // Ensure folder structure from blueprint and plan before modifying
+        runCatching { ensureFolderStructureFromBlueprint(onStatus) }
+        runCatching { ensureFolderStructureFromPlan(plan, onStatus) }
         appendTaskLog("task_start") {
             put("task_id", task.id)
             put("description", task.description)
@@ -1849,7 +1852,7 @@ class AgentOrchestrator(
         """.trimIndent()
         val msgs = mutableListOf(
             LlmMessage("system", sys),
-            LlmMessage("user", prompt)
+            LlmMessage("user", addMainInstructionsToPrompt(prompt))
         )
         val reco = helperRecommend("inner_loop", mapOf("goal" to goal.take(500), "task" to "${task.id}:${task.description}"))
         applyHelperToMessages(reco, msgs)
@@ -2150,6 +2153,7 @@ class AgentOrchestrator(
                 var command = call.args.optString("command")
                 val timeoutMs = call.args.optLong("timeout_ms", 120_000L).coerceAtLeast(1_000L).coerceAtMost(300_000L) // Max 5 minutes
                 val envObj = call.args.optJSONObject("env")
+                val background = call.args.optBoolean("background", false)
                 if (command.isBlank()) {
                     val derived = deriveDefaultCommandForRunShell(currentTaskContext)
                     if (!derived.isNullOrBlank()) {
@@ -2157,22 +2161,16 @@ class AgentOrchestrator(
                     }
                 }
                 require(command.isNotBlank()) { "command missing" }
-                
-                // Check for timeout before starting
                 if (System.currentTimeMillis() - startTime > maxFileOpTime) {
                     return ToolResult(false, "run_shell_timeout: operation took too long")
                 }
-                
-                // Check global timeout
                 if (System.currentTimeMillis() - startTime > globalTimeout) {
                     return ToolResult(false, "global_timeout: operation exceeded maximum time limit")
                 }
                 val wd = workingDirProvider()
                 val cacheKey = commandCacheKey(command, wd)
-                // Normalize common typos like pip3--version -> pip3 --version
                 command = command.replace(Regex("\\b(pip3?)--version\\b"), "$1 --version")
                 command = command.replace(Regex("\\b(python3?)--version\\b"), "$1 --version")
-                // Robustify python/pip version checks using fallbacks and non-failing tail
                 fun robustifyPythonPip(cmd: String): String {
                     val hasPy = Regex("\\bpython(3)?\\s*--version").containsMatchIn(cmd)
                     val hasPip = Regex("\\bpip(3)?\\s*--version").containsMatchIn(cmd)
@@ -2182,130 +2180,20 @@ class AgentOrchestrator(
                     return if (parts.isNotEmpty()) parts.joinToString(" && ") + " || true" else cmd
                 }
                 command = robustifyPythonPip(command)
-                // Always run inside the visible main terminal session
-                val mainOut = MainShell.execInMainSession(context as? MainActivity, wd, command, timeoutMs)
-                var output = mainOut.first
-                var exit = mainOut.second
-                
-                // Check for PEP 668 externally managed environment error and provide better fallback
-                if (exit != 0 && output.lowercase().contains("externally-managed-environment")) {
-                    // Try to install Flask using apk if available
-                    if (output.lowercase().contains("flask")) {
-                        val apkCommand = "apk add py3-flask"
-                        val apkOut = MainShell.execInMainSession(context as? MainActivity, wd, apkCommand, 30000L)
-                        if (apkOut.second == 0) {
-                            output = apkOut.first
-                            exit = 0
-                        }
-                    }
+                if (background) {
+                    // Stop previous background processes before starting a new one
+                    runCatching { stopAllBackground() }
+                    val bgCmd = "(nohup sh -c '${command.replace("'","'\\''")}' >/dev/null 2>&1 & echo $!)"
+                    val mainOut = MainShell.execInMainSession(context as? MainActivity, wd, bgCmd, 10_000L)
+                    val out = mainOut.first
+                    val pid = Regex("(\\d+)").findAll(out).mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }.lastOrNull() ?: -1
+                    if (pid > 0) recordBackgroundPid(pid)
+                    val observation = JSONObject().put("pid", pid).put("started", pid > 0).put("wd", wd).put("command", command).toString()
+                    appendTaskLog("run_shell_background") { put("wd", wd); put("pid", pid); put("command", command) }
+                    ToolResult(pid > 0, observation)
+                } else {
+                    // ... existing code ...
                 }
-                // Heuristic upgrade on failure: try one improved command
-                					fun suggestCommandUpgradeHeuristic(cmd: String, out: String): String? {
-						val lower = out.lowercase()
-						if (cmd.trim().startsWith("git ") && lower.contains("not a git repository")) {
-							if (!cmd.contains("git init")) return "git init && ${cmd}"
-						}
-						if (cmd.contains("git commit") && (lower.contains("please tell me who you are") || lower.contains("user.name") && lower.contains("user.email"))) {
-							return "git config user.email 'you@example.com' && git config user.name 'You' && ${cmd}"
-						}
-						// Flask import missing -> install Flask
-						if (lower.contains("modulenotfounderror") && lower.contains("flask")) {
-							return if (lastDetectedManagers.contains("apk")) "apk update && apk add py3-flask" else "python3 -m pip install --upgrade pip setuptools wheel && python3 -m pip install flask"
-						}
-						if ((lower.contains("no module named") || lower.contains("modulenotfounderror")) && lower.contains("flask")) {
-							return if (lastDetectedManagers.contains("apk")) "apk update && apk add py3-flask" else "python3 -m pip install --upgrade pip setuptools wheel && python3 -m pip install flask"
-						}
-						// pip/Flask/Pygame upgrades
-						val pipInstall = Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(cmd)
-						if (pipInstall) {
-							val installing = cmd.substringAfter("install ").trim()
-							val targetPkg = installing.split(" ").firstOrNull()?.trim()?.lowercase() ?: ""
-							val pep668 = lower.contains("externally-managed-environment") || lower.contains("externally managed")
-							val apkAvailable = lastDetectedManagers.contains("apk") || lower.contains("apk-tools")
-							if (apkAvailable && targetPkg == "pygame") {
-								return "apk update && apk add py3-pygame"
-							}
-							if (lower.contains("gcc: not found") || lower.contains("sdl2-config: not found")) {
-								if (apkAvailable) return "apk update && apk add build-base sdl2-dev sdl2_image-dev sdl2_mixer-dev sdl2_ttf-dev"
-							}
-							if (pep668 && apkAvailable) {
-								val apkName = when (targetPkg) {
-									"flask" -> "py3-flask"
-									else -> "py3-${'$'}{targetPkg}"
-								}
-								return "apk update && apk add ${apkName}"
-							}
-							if (pep668) {
-								val pkgPart = cmd.substringAfter("install ")
-								return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
-							}
-							if (!cmd.contains("python3 -m pip")) {
-								return cmd.replaceFirst(Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE), "python3 -m pip install ")
-							}
-							if (lower.contains("externally-managed-environment") || lower.contains("permission denied") || lower.contains("not writeable") || lower.contains("is not owned by")) {
-								val pkgPart = cmd.substringAfter("install ")
-								return "python3 -m venv .venv && . .venv/bin/activate && pip install --upgrade pip setuptools wheel && pip install ${pkgPart}"
-							}
-							if (lower.contains("pip: not found") || lower.contains("no module named pip") || lower.contains("command not found: pip")) {
-								val pkgPart = cmd.substringAfter("install ")
-								return "(command -v apk >/dev/null 2>&1 && apk update && apk add py3-pip) || true && python3 -m pip install ${pkgPart}"
-							}
-						}
-						return null
-					}
-if (exit != 0) {
-                    val upgraded = suggestCommandUpgradeHeuristic(command, output)
-                    if (upgraded != null) {
-                        val retry = MainShell.execInMainSession(context as? MainActivity, wd, upgraded, timeoutMs)
-                        val combined = StringBuilder()
-                        combined.append(output)
-                        combined.append("\n----- retry: ").append(upgraded).append(" -----\n")
-                        combined.append(retry.first)
-                        output = combined.toString()
-                        exit = retry.second
-                        if (exit == 0 && isInstallCommand(upgraded) && !output.lowercase().contains("externally-managed-environment")) {
-                            lastInstallSuccess = true
-                        }
-                    }
-                }
-                if (exit == 0 && isInstallCommand(command) && !output.lowercase().contains("externally-managed-environment")) {
-                    lastInstallSuccess = true
-                }
-                val obs = output.ifBlank { null }
-                val payload = JSONObject()
-                    .put("command", command)
-                    .put("wd", wd)
-                    .put("output", output)
-                    .put("exit", exit)
-                    .put("ts", System.currentTimeMillis())
-                commandCache[cacheKey] = payload
-                saveCommandCache()
-                persistCliReport()
-                currentRunStats?.commandsRun?.add(command)
-                val isEnvCheck = isEnvPreflightCommand(command)
-                appendTaskLog("run_shell_result") {
-                    put("command", command)
-                    put("wd", wd)
-                    put("exit", exit)
-                    put("output_preview", output.take(800))
-                    put("bytes", output.length)
-                }
-                // Persist environment signals for later tool coercion
-                runCatching {
-                    val lower = output.lowercase()
-                    if (lower.contains("id=alpine") || lower.contains("apk-tools")) lastDetectedOsId = "alpine"
-                    if (lower.contains("apk-tools") || lower.contains("\napk ")) lastDetectedManagers.add("apk")
-                    if (lower.contains("apt ") || lower.contains("apt-get ")) lastDetectedManagers.add("apt")
-                    if (lower.contains("dnf ")) lastDetectedManagers.add("dnf")
-                    if (lower.contains("yum ")) lastDetectedManagers.add("yum")
-                    if (lower.contains("pacman ")) lastDetectedManagers.add("pacman")
-                }
-                // PEP 668 detected: mark failure to trigger remediation instead of false success
-                if (Regex("\\bpip3?\\s+install\\s+", RegexOption.IGNORE_CASE).containsMatchIn(command) && output.lowercase().contains("externally-managed-environment")) {
-                    lastInstallSuccess = false
-                    currentTaskContext?.let { t -> markTaskFailed(t.id, "pep668_externally_managed_env") }
-                }
-                ToolResult(exit == 0 || isEnvCheck, obs)
             }
             "get_cached_command_output" -> {
                 val command = call.args.optString("command")
@@ -2591,187 +2479,221 @@ if (exit != 0) {
                 val outArr = JSONArray()
                 var createdAny = false
                 var modifiedAny = false
-                for (i in 0 until edits.length()) {
-                    val e = edits.optJSONObject(i) ?: continue
-                    val op = e.optString("op")
-                    val path = e.optString("path")
-                    if (path.isBlank()) { results.add("edit[$i]: missing path"); continue }
-                    val file = resolvePath(path)
-                    val entry = JSONObject().put("file", file.absolutePath).put("op", op)
-                    if (!file.exists()) {
-                        if (op == "write_if_missing") {
-                            val content = e.optString("content")
-                            ensureParentDirs(file)
-                            if (!previewOnly) {
-                                file.writeText(content)
+                var retried = false
+                retryOuter@ while (true) {
+                    outArr.length() // no-op to keep reference
+                    results.clear()
+                    createdAny = false; modifiedAny = false
+                    for (i in 0 until edits.length()) {
+                        val e = edits.optJSONObject(i) ?: continue
+                        val op = e.optString("op")
+                        val path = e.optString("path")
+                        if (path.isBlank()) { results.add("edit[$i]: missing path"); continue }
+                        val file = resolvePath(path)
+                        val entry = JSONObject().put("file", file.absolutePath).put("op", op)
+                        if (!file.exists()) {
+                            if (op == "write_if_missing") {
+                                val content = e.optString("content")
+                                ensureParentDirs(file)
+                                if (!previewOnly) {
+                                    file.writeText(content)
+                                }
+                                entry.put("status", if (previewOnly) "planned_create" else "created")
+                                createdAny = true
+                                if (!previewOnly) runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, e.optString("content"), true) }
+                                if (includeDiffs) entry.put("diff", computeUnifiedDiff("", content, file.absolutePath))
+                                outArr.put(entry)
+                                continue
                             }
-                            entry.put("status", if (previewOnly) "planned_create" else "created")
-                            createdAny = true
-                            // Sync newly created file
-                            if (!previewOnly) runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, e.optString("content"), true) }
-                            if (includeDiffs) entry.put("diff", computeUnifiedDiff("", content, file.absolutePath))
+                            results.add("edit[$i]: file missing: ${path}")
+                            entry.put("status", "missing")
                             outArr.put(entry)
                             continue
                         }
-                        results.add("edit[$i]: file missing: ${path}")
-                        entry.put("status", "missing")
-                        outArr.put(entry)
-                        continue
-                    }
-                    val original = runCatching { file.readText() }.getOrElse { "" }
-                    val updated = when (op) {
-                        "replace_exact" -> {
-                            val old = e.optString("old")
-                            val new = e.optString("new")
-                            if (old.isEmpty()) { results.add("edit[$i]: old empty"); null } else {
-                                val idx = original.indexOf(old)
-                                if (idx < 0) { results.add("edit[$i]: old not found"); null } else original.replaceFirst(old, new)
-                            }
-                        }
-                        "replace_between_markers" -> {
-                            val start = e.optString("start_marker")
-                            val end = e.optString("end_marker")
-                            val newContent = e.optString("new_content")
-                            val includeMarkers = e.optBoolean("include_markers", false)
-                            val sIdx = original.indexOf(start)
-                            if (sIdx < 0) { results.add("edit[$i]: start not found"); null } else {
-                                val eIdx = original.indexOf(end, sIdx + start.length)
-                                if (eIdx < 0) { results.add("edit[$i]: end not found"); null } else {
-                                    if (includeMarkers) {
-                                        val pre = original.substring(0, sIdx)
-                                        val post = original.substring(eIdx + end.length)
-                                        pre + start + newContent + end + post
-                                    } else {
-                                        val pre = original.substring(0, sIdx + start.length)
-                                        val post = original.substring(eIdx)
-                                        pre + newContent + post
-                                    }
+                        val original = runCatching { file.readText() }.getOrElse { "" }
+                        val indent = detectIndentation(original).first
+                        fun norm(s: String) = normalizeIndent(s, indent)
+                        val updated = when (op) {
+                            "replace_exact" -> {
+                                val old = e.optString("old")
+                                val new = e.optString("new")
+                                if (old.isEmpty()) { results.add("edit[$i]: old empty"); null } else {
+                                    val idx = original.indexOf(old)
+                                    if (idx < 0) { results.add("edit[$i]: old not found"); null } else original.replaceFirst(old, norm(new))
                                 }
                             }
-                        }
-                        "insert_after_anchor" -> {
-                            val anchor = e.optString("anchor")
-                            val newContent = e.optString("new_content")
-                            val aIdx = original.indexOf(anchor)
-                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
-                                val insertPos = aIdx + anchor.length
-                                original.substring(0, insertPos) + newContent + original.substring(insertPos)
-                            }
-                        }
-                        "insert_before_anchor" -> {
-                            val anchor = e.optString("anchor")
-                            val newContent = e.optString("new_content")
-                            val aIdx = original.indexOf(anchor)
-                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else original.substring(0, aIdx) + newContent + original.substring(aIdx)
-                        }
-                        "replace_regex" -> {
-                            val regexObj = e.optJSONObject("regex")
-                            val pattern = e.optString("pattern").ifBlank { regexObj?.optString("pattern").orEmpty() }
-                            val replacement = e.optString("replacement").ifBlank { regexObj?.optString("replace").orEmpty() }
-                            val unique = e.optBoolean("unique", true)
-                            if (pattern.isBlank()) { results.add("edit[$i]: pattern empty"); null } else {
-                                val regex = runCatching { Regex(pattern) }.getOrElse { Regex(Pattern.quote(pattern)) }
-                                val count = regex.findAll(original).count()
-                                if (unique && count != 1) { results.add("edit[$i]: non-unique matches=${'$'}count"); null } else original.replace(regex, replacement)
-                            }
-                        }
-                        "ensure_block_present" -> {
-                            val block = e.optString("block")
-                            val idMarker = e.optString("idempotent_marker")
-                            val before = e.optString("anchor_before")
-                            val after = e.optString("anchor_after")
-                            val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
-                            if (contains) { results.add("edit[$i]: already present"); null } else {
-                                when {
-                                    before.isNotBlank() -> {
-                                        val idx = original.indexOf(before)
-                                        if (idx < 0) { results.add("edit[$i]: anchor_before not found"); null } else original.substring(0, idx) + block + original.substring(idx)
-                                    }
-                                    after.isNotBlank() -> {
-                                        val idx = original.indexOf(after)
-                                        if (idx < 0) { results.add("edit[$i]: anchor_after not found"); null } else {
-                                            val pos = idx + after.length
-                                            original.substring(0, pos) + block + original.substring(pos)
+                            "replace_between_markers" -> {
+                                val start = e.optString("start_marker")
+                                val end = e.optString("end_marker")
+                                val newContent = norm(e.optString("new_content"))
+                                val includeMarkers = e.optBoolean("include_markers", false)
+                                val sIdx = original.indexOf(start)
+                                if (sIdx < 0) { results.add("edit[$i]: start not found"); null } else {
+                                    val eIdx = original.indexOf(end, sIdx + start.length)
+                                    if (eIdx < 0) { results.add("edit[$i]: end not found"); null } else {
+                                        if (includeMarkers) {
+                                            val pre = original.substring(0, sIdx)
+                                            val post = original.substring(eIdx + end.length)
+                                            pre + start + newContent + end + post
+                                        } else {
+                                            val pre = original.substring(0, sIdx + start.length)
+                                            val post = original.substring(eIdx)
+                                            pre + newContent + post
                                         }
                                     }
-                                    else -> original + block
+                                }
+                            }
+                            "insert_after_anchor" -> {
+                                val anchor = e.optString("anchor")
+                                val newContent = norm(e.optString("new_content"))
+                                val aIdx = original.indexOf(anchor)
+                                if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
+                                    val insertPos = aIdx + anchor.length
+                                    original.substring(0, insertPos) + newContent + original.substring(insertPos)
+                                }
+                            }
+                            "insert_before_anchor" -> {
+                                val anchor = e.optString("anchor")
+                                val newContent = norm(e.optString("new_content"))
+                                val aIdx = original.indexOf(anchor)
+                                if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else original.substring(0, aIdx) + newContent + original.substring(aIdx)
+                            }
+                            "replace_regex" -> {
+                                val regexObj = e.optJSONObject("regex")
+                                val pattern = e.optString("pattern").ifBlank { regexObj?.optString("pattern").orEmpty() }
+                                val replacement = norm(e.optString("replacement").ifBlank { regexObj?.optString("replace").orEmpty() })
+                                val unique = e.optBoolean("unique", true)
+                                if (pattern.isBlank()) { results.add("edit[$i]: pattern empty"); null } else {
+                                    val regex = runCatching { Regex(pattern) }.getOrElse { Regex(Pattern.quote(pattern)) }
+                                    val count = regex.findAll(original).count()
+                                    if (unique && count != 1) { results.add("edit[$i]: non-unique matches=$count"); null } else original.replace(regex, replacement)
+                                }
+                            }
+                            "ensure_block_present" -> {
+                                val block = norm(e.optString("block"))
+                                val idMarker = e.optString("idempotent_marker")
+                                val before = e.optString("anchor_before")
+                                val after = e.optString("anchor_after")
+                                val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
+                                if (contains) { results.add("edit[$i]: already present"); null } else {
+                                    when {
+                                        before.isNotBlank() -> {
+                                            val idx = original.indexOf(before)
+                                            if (idx < 0) { results.add("edit[$i]: anchor_before not found"); null } else original.substring(0, idx) + block + original.substring(idx)
+                                        }
+                                        after.isNotBlank() -> {
+                                            val idx = original.indexOf(after)
+                                            if (idx < 0) { results.add("edit[$i]: anchor_after not found"); null } else {
+                                                val pos = idx + after.length
+                                                original.substring(0, pos) + block + original.substring(pos)
+                                            }
+                                        }
+                                        else -> original + block
+                                    }
+                                }
+                            }
+                            "append_once" -> {
+                                val block = norm(e.optString("block"))
+                                val idMarker = e.optString("idempotent_marker")
+                                val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
+                                if (contains) { results.add("edit[$i]: already present"); null } else original + block
+                            }
+                            "write_if_missing" -> {
+                                results.add("edit[$i]: exists (skipped)")
+                                null
+                            }
+                            "replace_lines" -> {
+                                val start = e.optInt("start_line", -1)
+                                val end = e.optInt("end_line", -1)
+                                val newContent = norm(e.optString("new_content"))
+                                if (start <= 0 || end < start) { results.add("edit[$i]: invalid line range"); null } else {
+                                    val lines = original.split("\n").toMutableList()
+                                    val from = (start - 1).coerceAtLeast(0)
+                                    val to = end.coerceAtMost(lines.size)
+                                    val newLines = newContent.split("\n")
+                                    lines.subList(from, to).clear()
+                                    lines.addAll(from, newLines)
+                                    lines.joinToString("\n")
+                                }
+                            }
+                            "insert_lines_after" -> {
+                                val line = e.optInt("line_number", -1)
+                                val newContent = norm(e.optString("new_content"))
+                                if (line < 0) { results.add("edit[$i]: invalid line number"); null } else {
+                                    val lines = original.split("\n").toMutableList()
+                                    val idx = line.coerceAtMost(lines.size)
+                                    val newLines = newContent.split("\n")
+                                    lines.addAll(idx, newLines)
+                                    lines.joinToString("\n")
+                                }
+                            }
+                            "insert_lines_before" -> {
+                                val line = e.optInt("line_number", -1)
+                                val newContent = norm(e.optString("new_content"))
+                                if (line <= 0) { results.add("edit[$i]: invalid line number"); null } else {
+                                    val lines = original.split("\n").toMutableList()
+                                    val idx = (line - 1).coerceAtLeast(0)
+                                    val newLines = newContent.split("\n")
+                                    lines.addAll(idx, newLines)
+                                    lines.joinToString("\n")
+                                }
+                            }
+                            else -> { results.add("edit[$i]: unknown op $op"); null }
+                        }
+                        if (updated != null && updated != original) {
+                            if (!previewOnly) {
+                                runCatching { file.writeText(updated) }.onSuccess {
+                                    results.add("edit[$i]: ok (${path})")
+                                    notifyWorkspaceChanged(file.absolutePath)
+                                    modifiedAny = true
+                                    runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, updated, false) }
+                                }.onFailure { ex -> results.add("edit[$i]: write failed (${ex.message})") }
+                            } else {
+                                results.add("edit[$i]: planned_change (${path})")
+                                modifiedAny = true
+                            }
+                            if (includeDiffs) {
+                                entry.put("status", if (previewOnly) "planned_change" else "modified")
+                                entry.put("diff", computeUnifiedDiff(original, updated, file.absolutePath))
+                            }
+                            outArr.put(entry)
+                        } else if (updated == null) {
+                            entry.put("status", "no_change")
+                            outArr.put(entry)
+                        }
+                    }
+                    val summary = if (includeDiffs) JSONObject().put("results", outArr).put("preview_only", previewOnly).toString() else (if (results.isEmpty()) "no edits" else results.joinToString("; "))
+                    val ok = createdAny || modifiedAny || previewOnly
+                    if (!ok && !retried) {
+                        // Auto-retry once by refining anchors to regex
+                        val retryEdits = JSONArray()
+                        for (i in 0 until edits.length()) {
+                            val e = edits.getJSONObject(i)
+                            val op = e.optString("op")
+                            if (op == "insert_after_anchor" || op == "insert_before_anchor") {
+                                val anchor = e.optString("anchor")
+                                if (anchor.isNotBlank()) {
+                                    retryEdits.put(JSONObject().apply {
+                                        put("path", e.optString("path"))
+                                        put("op", "replace_regex")
+                                        val pattern = buildRegexFromAnchor(anchor)
+                                        val replacement = if (op == "insert_after_anchor") anchor + (e.optString("new_content")) else (e.optString("new_content")) + anchor
+                                        put("pattern", pattern)
+                                        put("replacement", replacement)
+                                        put("unique", true)
+                                        appendTaskLog("apply_changes_retry") { put("pattern", pattern); put("path", e.optString("path")) }
+                                    })
                                 }
                             }
                         }
-                        "append_once" -> {
-                            val block = e.optString("block")
-                            val idMarker = e.optString("idempotent_marker")
-                            val contains = if (idMarker.isNotBlank()) original.contains(idMarker) else original.contains(block)
-                            if (contains) { results.add("edit[$i]: already present"); null } else original + block
+                        if (retryEdits.length() > 0) {
+                            edits.length() // reference
+                            retried = true
+                            return@when executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", retryEdits)))
                         }
-                        "write_if_missing" -> {
-                            results.add("edit[$i]: exists (skipped)")
-                            null
-                        }
-                        "replace_lines" -> {
-                            val start = e.optInt("start_line", -1)
-                            val end = e.optInt("end_line", -1)
-                            val newContent = e.optString("new_content")
-                            if (start <= 0 || end < start) { results.add("edit[$i]: invalid line range"); null } else {
-                                val lines = original.split("\n").toMutableList()
-                                val from = (start - 1).coerceAtLeast(0)
-                                val to = end.coerceAtMost(lines.size)
-                                val newLines = newContent.split("\n")
-                                lines.subList(from, to).clear()
-                                lines.addAll(from, newLines)
-                                lines.joinToString("\n")
-                            }
-                        }
-                        "insert_lines_after" -> {
-                            val line = e.optInt("line_number", -1)
-                            val newContent = e.optString("new_content")
-                            if (line < 0) { results.add("edit[$i]: invalid line number"); null } else {
-                                val lines = original.split("\n").toMutableList()
-                                val idx = line.coerceAtMost(lines.size)
-                                val newLines = newContent.split("\n")
-                                lines.addAll(idx, newLines)
-                                lines.joinToString("\n")
-                            }
-                        }
-                        "insert_lines_before" -> {
-                            val line = e.optInt("line_number", -1)
-                            val newContent = e.optString("new_content")
-                            if (line <= 0) { results.add("edit[$i]: invalid line number"); null } else {
-                                val lines = original.split("\n").toMutableList()
-                                val idx = (line - 1).coerceAtLeast(0)
-                                val newLines = newContent.split("\n")
-                                lines.addAll(idx, newLines)
-                                lines.joinToString("\n")
-                            }
-                        }
-                        else -> { results.add("edit[$i]: unknown op ${'$'}op"); null }
                     }
-                    if (updated != null && updated != original) {
-                        if (!previewOnly) {
-                            runCatching { file.writeText(updated) }.onSuccess {
-                                results.add("edit[$i]: ok (${path})")
-                                notifyWorkspaceChanged(file.absolutePath)
-                                modifiedAny = true
-                                // Sync modified file
-                                runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, updated, false) }
-                            }.onFailure { ex -> results.add("edit[$i]: write failed (${ex.message})") }
-                        } else {
-                            results.add("edit[$i]: planned_change (${path})")
-                            modifiedAny = true
-                        }
-                        if (includeDiffs) {
-                            entry.put("status", if (previewOnly) "planned_change" else "modified")
-                            entry.put("diff", computeUnifiedDiff(original, updated, file.absolutePath))
-                        }
-                        outArr.put(entry)
-                    } else if (updated == null) {
-                        entry.put("status", "no_change")
-                        outArr.put(entry)
-                    }
+                    ToolResult(ok, summary)
                 }
-                val summary = if (includeDiffs) JSONObject().put("results", outArr).put("preview_only", previewOnly).toString() else (if (results.isEmpty()) "no edits" else results.joinToString("; "))
-                val ok = createdAny || modifiedAny || previewOnly
-                ToolResult(ok, summary)
             }
             "search_replace" -> {
                 val path = call.args.optString("path")
@@ -2877,6 +2799,21 @@ if (exit != 0) {
                 }
                 f.writeText(root.toString(2))
                 ToolResult(true, JSONObject().put("path", f.absolutePath).put("updated", true).toString())
+            }
+            "apply_hunks" -> {
+                val hunks = call.args.optJSONArray("hunks") ?: JSONArray()
+                val edits = JSONArray()
+                for (i in 0 until hunks.length()) {
+                    val h = hunks.optJSONObject(i) ?: continue
+                    edits.put(JSONObject().apply {
+                        put("path", h.optString("path"))
+                        put("op", "replace_lines")
+                        put("start_line", h.optInt("start_line"))
+                        put("end_line", h.optInt("end_line"))
+                        put("new_content", h.optString("new_content"))
+                    })
+                }
+                return@when executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", edits)))
             }
             else -> ToolResult(false, "unknown_tool_type:${call.type}")
         }
@@ -3311,8 +3248,19 @@ if (exit != 0) {
         if (!blueprint.isNullOrBlank()) obj.put("blueprint", runCatching { JSONObject(blueprint) }.getOrElse { JSONObject() })
         val codebase = runCatching { File(workingDirProvider(), Settings.codebase_cache_path).readText() }.getOrElse { null }
         if (!codebase.isNullOrBlank()) obj.put("codebase", runCatching { JSONObject(codebase) }.getOrElse { JSONObject() })
-        val writerTools = runCatching { writerToolsFile.takeIf { it.exists() }?.readText() }.getOrElse { null }
-        if (!writerTools.isNullOrBlank()) obj.put("writer_tools", runCatching { JSONObject(writerTools) }.getOrElse { JSONObject() })
+        val tools = JSONArray().apply {
+            put(JSONObject().put("name","create_file").put("desc","Create an empty file at path"))
+            put(JSONObject().put("name","write_file").put("desc","Write full content to path"))
+            put(JSONObject().put("name","make_dir").put("desc","Create directory path"))
+            put(JSONObject().put("name","apply_changes").put("desc","Targeted idempotent edits"))
+            put(JSONObject().put("name","apply_hunks").put("desc","Chunked line-range edits"))
+            put(JSONObject().put("name","search_replace").put("desc","Single replace with uniqueness check"))
+            put(JSONObject().put("name","read_file").put("desc","Read file before editing"))
+            put(JSONObject().put("name","read_files_glob").put("desc","Scan files for discovery"))
+            put(JSONObject().put("name","grep").put("desc","Find anchors/patterns"))
+            put(JSONObject().put("name","run_shell").put("desc","Run shell commands; background optional"))
+        }
+        obj.put("tools", tools)
         return obj.toString()
     }
 
@@ -3327,32 +3275,41 @@ if (exit != 0) {
             put("failure", failureNote.take(500))
         }
         onStatus("Back-plan: analyzing failure and generating corrective patch…")
-        val sys = """
+        fun exampleFor(ext: String): String = when (ext.lowercase()) {
+            "py" -> "{\"type\":\"apply_changes\",\"args\":{\"edits\":[{\"path\":\"app.py\",\"op\":\"insert_after_anchor\",\"anchor\":\"@app.route('/health')\",\"new_content\":\"\\n    return 'ok'\\n\"}]}}"
+            "html" -> "{\"type\":\"apply_changes\",\"args\":{\"edits\":[{\"path\":\"templates/index.html\",\"op\":\"replace_regex\",\"pattern\":\"<h1>.*?</h1>\",\"replacement\":\"<h1>Title<\\/h1>\",\"unique\":true}]}}"
+            "js" -> "{\"type\":\"apply_changes\",\"args\":{\"edits\":[{\"path\":\"main.js\",\"op\":\"append_once\",\"block\":\"\\n// id:INIT\\nconsole.log('init')\\n\",\"idempotent_marker\":\"id:INIT\"}]}}"
+            else -> "{\"type\":\"apply_changes\",\"args\":{\"edits\":[{\"path\":\"README.md\",\"op\":\"append_once\",\"block\":\"\\n## Note\\n...\\n\",\"idempotent_marker\":\"Note\"}]}}"
+        }
+        val checklist = "- Verify anchors exist; if not, switch to a regex variant. - Keep changes minimal and idempotent; never duplicate blocks. - Return apply_changes JSON only; no prose."
+        val sysBase = """
             You are a corrective agent. Return ONLY one minified JSON for an apply_changes tool call.
-            Schema: {"type":"apply_changes","args":{"edits":[{"path":string,"op":"replace_exact"|"replace_between_markers"|"insert_after_anchor"|"insert_before_anchor"|"replace_regex"|"ensure_block_present"|"append_once"|"replace_lines"|"insert_lines_after"|"insert_lines_before"|"write_if_missing", ...}]}}
-            Rules:
-            - Use minimal edits to satisfy the instruction and fix the file.
-            - If file missing, use write_if_missing with full content.
-            - Keep indentation and formatting from existing content.
-            - Only output the JSON object, nothing else.
+            Schema: {"type":"apply_changes","args":{"edits":[{"path":string,"op":"replace_exact"|"replace_between_markers"|"insert_after_anchor"|"insert_before_anchor"|"replace_regex"|"ensure_block_present"|"append_once"|"replace_lines"|"insert_lines_after"|"insert_lines_before"|"write_if_missing"}]}}
+            Checklist: $checklist
+            Example: ${exampleFor(f.extension)}
         """.trimIndent()
-        val user = JSONObject().apply {
+        val userObj = JSONObject().apply {
             put("file_path", f.absolutePath)
             put("current_content", currentContent.take(120000))
             put("instruction", userInstruction.take(4000))
             put("intended_change_preview", intended.take(4000))
             put("main_instructions", if (Settings.main_instructions_enabled) runCatching { JSONObject(instructionsJson) }.getOrElse { JSONObject() } else JSONObject())
-        }.toString()
-        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
-        val jsonText = extractFirstJsonObject(content)
+        }
+        var content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sysBase), LlmMessage("user", userObj.toString()))) })
+        var jsonText = extractFirstJsonObject(content)
         if (jsonText == null) {
-            appendTaskLog("backplan_result") {
-                put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
-                put("path", f.absolutePath)
-                put("ok", false)
-                put("reason", "no_json")
+            val strictSys = (sysBase + "\nReturn JSON only. Do not include any explanations. Last error: $failureNote").trim()
+            content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", strictSys), LlmMessage("user", userObj.toString()))) })
+            jsonText = extractFirstJsonObject(content)
+            if (jsonText == null) {
+                appendTaskLog("backplan_result") {
+                    put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
+                    put("path", f.absolutePath)
+                    put("ok", false)
+                    put("reason", "no_json")
+                }
+                return@withContext false
             }
-            return@withContext false
         }
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext false
         if (obj.optString("type") != "apply_changes") {
@@ -3373,7 +3330,6 @@ if (exit != 0) {
             put("observation_preview", res.observation?.take(400))
         }
         if (res.ok) {
-            // Update codebase cache and sync
             runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, runCatching { f.readText() }.getOrElse { "" }, !f.exists()) }
             notifyWorkspaceChanged(f.absolutePath)
         }
@@ -3404,8 +3360,21 @@ if (exit != 0) {
 		}
 		if (created.isNotEmpty()) {
 			onStatus("Ensured folder structure from blueprint: created ${created.size} dir(s)")
-			appendTaskLog("folder_structure_ensured") { put("created", JSONArray(created)) }
+			appendTaskLog("folder_structure_from_plan") { put("created", JSONArray(created)) }
 		}
+	}
+
+	fun retryBackPlanForTask(taskId: String): Boolean {
+		return runCatching {
+			val file = taskLogFile
+			if (!file.exists()) return@runCatching false
+			val lines = file.readLines()
+			val last = lines.asReversed().mapNotNull { runCatching { JSONObject(it) }.getOrNull() }.firstOrNull { it.optString("type") == "backplan_attempt" && it.optString("task_id") == taskId }
+			if (last == null) return@runCatching false
+			val path = last.optString("path").ifBlank { return@runCatching false }
+			val instr = observations[taskId] ?: "apply fix"
+			kotlinx.coroutines.runBlocking { runBackPlanFixIfNeeded(path, intended = "(retry)", userInstruction = instr, failureNote = "user_retry", onStatus = { }, taskId = taskId) }
+		}.getOrElse { false }
 	}
 }
 
