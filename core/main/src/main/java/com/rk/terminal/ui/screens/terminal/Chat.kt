@@ -454,6 +454,17 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }.getOrElse { emptyList() }
     }
 
+    fun hasFailedBackPlan(taskId: String): Boolean {
+        return runCatching {
+            val file = File(application!!.filesDir, "chat/${currentChatId.value}/task_log.jsonl")
+            if (!file.exists()) return@runCatching false
+            val lines = file.readLines().asReversed()
+            val res = lines.mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
+                .firstOrNull { it.optString("type") == "backplan_result" && it.optString("task_id") == taskId }
+            res?.optBoolean("ok") == false
+        }.getOrElse { false }
+    }
+
     @Composable
     fun BackPlanLogPanel(taskId: String) {
         val entries = remember(messages.size, activePlan.value) { readBackPlanLogsForTask(taskId) }
@@ -494,6 +505,14 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 AssistChip(onClick = {}, label = { Text(st) }, colors = AssistChipDefaults.assistChipColors())
                                 if (!t.category.isNullOrBlank()) AssistChip(onClick = {}, label = { Text(t.category!!) })
+                                if (hasFailedBackPlan(t.id)) {
+                                    AssistChip(onClick = {
+                                        scope.launch(Dispatchers.IO) {
+                                            val ok = runCatching { agent.retryBackPlanForTask(t.id) }.getOrElse { false }
+                                            scope.launch(Dispatchers.Main) { postStatus(if (ok) "Applied fix for ${t.id}" else "Fix failed for ${t.id}"); saveHistory() }
+                                        }
+                                    }, label = { Text("Apply fix") })
+                                }
                             }
                         }
                         Button(onClick = {
@@ -525,7 +544,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
                             }
                         }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Text(if (st == "pending") "Run" else "Re-run") }
                     }
-                    BackPlanLogPanel(taskId = t.id)
+                    if (Settings.show_backplan_logs) {
+                        BackPlanLogPanel(taskId = t.id)
+                    }
                 }
             }
         }
@@ -686,6 +707,16 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 },
                 label = { Text(if (searchAssist) "Search: ON" else "Search: OFF") }
             )
+            Button(
+                onClick = {
+                    scope.launch(Dispatchers.IO) {
+                        val stopped = runCatching { agent.stopAllBackground() }.getOrElse { false }
+                        scope.launch(Dispatchers.Main) { postStatus(if (stopped) "Stopped background processes" else "No background processes to stop"); saveHistory() }
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) { Text("Stop") }
+
             Button(
                 onClick = {
                     val prompt = input.trim()

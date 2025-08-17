@@ -301,6 +301,18 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 }
             )
 
+            var showLogs by remember { mutableStateOf(Settings.show_backplan_logs) }
+            SettingsToggle(
+                label = "Show back-plan logs under tasks",
+                description = "Display remediation attempts in the Plan panel",
+                showSwitch = true,
+                default = showLogs,
+                sideEffect = { checked ->
+                    showLogs = checked
+                    Settings.show_backplan_logs = checked
+                }
+            )
+
             var mainInstr by remember { mutableStateOf(Settings.main_instructions_enabled) }
             SettingsToggle(
                 label = "Enable main instructions injection",
@@ -343,6 +355,79 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     value = tempStr,
                     onValueChange = { v -> tempStr = v; Settings.ai_temperature_str = v },
                     label = { Text("Temperature override (e.g., 0, 0.2, 0.7)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+            }
+        }
+
+        // Advanced AI Settings
+        PreferenceGroup(heading = "Advanced AI Settings (per provider)") {
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                var openaiTimeout by remember { mutableStateOf(Settings.openai_timeout_ms.toString()) }
+                var openaiTokens by remember { mutableStateOf(Settings.openai_max_tokens.toString()) }
+                OutlinedTextField(
+                    value = openaiTimeout,
+                    onValueChange = { v -> openaiTimeout = v; v.toIntOrNull()?.let { Settings.openai_timeout_ms = it } },
+                    label = { Text("OpenAI timeout (ms)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = openaiTokens,
+                    onValueChange = { v -> openaiTokens = v; v.toIntOrNull()?.let { Settings.openai_max_tokens = it } },
+                    label = { Text("OpenAI max tokens") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+
+                var anthropicTimeout by remember { mutableStateOf(Settings.anthropic_timeout_ms.toString()) }
+                var anthropicTokens by remember { mutableStateOf(Settings.anthropic_max_tokens.toString()) }
+                OutlinedTextField(
+                    value = anthropicTimeout,
+                    onValueChange = { v -> anthropicTimeout = v; v.toIntOrNull()?.let { Settings.anthropic_timeout_ms = it } },
+                    label = { Text("Anthropic timeout (ms)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = anthropicTokens,
+                    onValueChange = { v -> anthropicTokens = v; v.toIntOrNull()?.let { Settings.anthropic_max_tokens = it } },
+                    label = { Text("Anthropic max tokens") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+
+                var geminiTimeout by remember { mutableStateOf(Settings.gemini_timeout_ms.toString()) }
+                var geminiTokens by remember { mutableStateOf(Settings.gemini_max_tokens.toString()) }
+                OutlinedTextField(
+                    value = geminiTimeout,
+                    onValueChange = { v -> geminiTimeout = v; v.toIntOrNull()?.let { Settings.gemini_timeout_ms = it } },
+                    label = { Text("Gemini timeout (ms)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = geminiTokens,
+                    onValueChange = { v -> geminiTokens = v; v.toIntOrNull()?.let { Settings.gemini_max_tokens = it } },
+                    label = { Text("Gemini max tokens") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+
+                var ollamaTimeout by remember { mutableStateOf(Settings.ollama_timeout_ms.toString()) }
+                var ollamaTokens by remember { mutableStateOf(Settings.ollama_max_tokens.toString()) }
+                OutlinedTextField(
+                    value = ollamaTimeout,
+                    onValueChange = { v -> ollamaTimeout = v; v.toIntOrNull()?.let { Settings.ollama_timeout_ms = it } },
+                    label = { Text("Ollama timeout (ms)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = ollamaTokens,
+                    onValueChange = { v -> ollamaTokens = v; v.toIntOrNull()?.let { Settings.ollama_max_tokens = it } },
+                    label = { Text("Ollama max tokens") },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     singleLine = true
                 )
