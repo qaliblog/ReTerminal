@@ -1740,10 +1740,12 @@ class AgentOrchestrator(
 
             OUTPUT FORMAT FOR UPDATES (MANDATORY):
             - Return ONLY one minified JSON tool call.
-            - For modifications, prefer `apply_changes` with at most 4 targeted edits.
+            - For modifications, prefer `apply_changes` with targeted edits (use as many edits as needed; keep them minimal and idempotent).
             - Each edit must include the `path` and one op among: `replace_exact`, `replace_between_markers`, `insert_after_anchor`, `insert_before_anchor`, `replace_regex`, `ensure_block_present`, `append_once`, `replace_lines`, `insert_lines_after`, `insert_lines_before`, or `write_if_missing`.
             - Include precise anchors/markers or regex patterns. Keep changes minimal and idempotent.
             - For full new files, use `write_file` with the entire file content.
+            - Example (minified): {"type":"apply_changes","args":{"edits":[{"path":"app.py","op":"insert_after_anchor","anchor":"@app.route('/move')","new_content":"\n# new handler...\n"},{"path":"templates/index.html","op":"replace_regex","pattern":"<h1>.*?</h1>","replacement":"<h1>Tic Tac Toe<\\/h1>","unique":true}]}}
+            - The agent will call you again for subsequent steps; do not batch multiple tool calls in one response.
 
             Allowed schemas:
              {"type":"create_file","args":{"path": string}}
