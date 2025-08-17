@@ -31,9 +31,13 @@ object EchoEngine : LlmEngine {
 object LlmProvider {
     fun current(): LlmEngine {
         val provider = Settings.api_provider.lowercase()
-        val apiKey = Settings.api_key
+        val primaryKey = Settings.api_key
         val requiresKey = provider == "openai" || provider == "openai_compatible" || provider == "anthropic" || provider == "gemini" || provider == "fireworks"
-        if (requiresKey && apiKey.isBlank()) return EchoEngine
+        val hasAnyKey = when (provider) {
+            "gemini" -> primaryKey.isNotBlank() || (Settings.api_key_rotation_enabled && Settings.getGeminiApiKeys().any { it.isNotBlank() })
+            else -> primaryKey.isNotBlank()
+        }
+        if (requiresKey && !hasAnyKey) return EchoEngine
         return when (provider) {
             "openai", "openai_compatible" -> OpenAIEngine
             "fireworks" -> OpenAIEngine
