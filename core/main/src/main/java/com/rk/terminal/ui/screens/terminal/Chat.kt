@@ -67,6 +67,8 @@ import androidx.compose.ui.platform.LocalFocusManager
 import com.rk.settings.Settings
 import androidx.compose.foundation.layout.PaddingValues
 import com.rk.terminal.ui.screens.terminal.MainShell
+import java.text.SimpleDateFormat
+import java.util.Date
 
 private data class ChatMessage(val role: String, val content: String)
 
@@ -427,69 +429,107 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         }
 
-        // Plan panel
-        if (hasPlan) {
-            val plan = activePlan.value!!
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(max = 360.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Plan", style = MaterialTheme.typography.titleSmall)
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Auto-run")
-                            Switch(checked = autoRun, onCheckedChange = { autoRun = it })
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    val statuses = agent.getPlanStatuses()
-                    plan.tasks.forEach { t ->
-                        val st = statuses[t.id] ?: "pending"
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                val obsFile = File(application!!.filesDir, "chat/${currentChatId.value}/observations.json")
-                                val obsText = runCatching { if (obsFile.exists()) JSONObject(obsFile.readText()).optString(t.id) else null }.getOrNull()
-                                val displayDesc = if (!obsText.isNullOrBlank() && st == "done") obsText.take(200) else t.description
-                                Text("${t.id}: ${displayDesc}")
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    AssistChip(onClick = {}, label = { Text(st) }, colors = AssistChipDefaults.assistChipColors())
-                                    if (!t.category.isNullOrBlank()) AssistChip(onClick = {}, label = { Text(t.category!!) })
-                                }
-                            }
-                            Button(onClick = {
-                                scope.launch(Dispatchers.IO) {
-                                    try {
-                                        var loops = 0
-                                        while (true) {
-                                            val current = activePlan.value ?: break
-                                            if (agent.getNextPendingTask(current) == null) break
-                                            val success = agent.executeNextTask(current) { s ->
-                                                scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
-                                            }
-                                            if (!success) {
-                                                val updated = agent.requestUpdatedPlan(current)
-                                                if (updated != null) {
-                                                    scope.launch(Dispatchers.Main) {
-                                                        activePlan.value = updated
-                                                        postStatus("Plan updated.")
-                                                        saveHistory()
-                                                    }
-                                                }
-                                            }
-                                            loops++
-                                            if (!autoRun || loops >= 50) break
-                                        }
-                                    } catch (e: Exception) {
-                                        scope.launch(Dispatchers.Main) { postStatus("Agent error: ${e.message}"); saveHistory() }
-                                    }
-                                }
-                            }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Text(if (st == "pending") "Run" else "Re-run") }
-                        }
+    fun readBackPlanLogsForTask(taskId: String): List<String> {
+        return runCatching {
+            val file = File(application!!.filesDir, "chat/${currentChatId.value}/task_log.jsonl")
+            if (!file.exists()) return@runCatching emptyList<String>()
+            val lines = file.readLines()
+            val out = mutableListOf<String>()
+            lines.forEach { line ->
+                val obj = runCatching { JSONObject(line) }.getOrNull() ?: return@forEach
+                val type = obj.optString("type")
+                if (type == "backplan_attempt" || type == "backplan_result") {
+                    if (obj.optString("task_id") == taskId) {
+                        val ts = obj.optLong("ts")
+                        val date = SimpleDateFormat("HH:mm:ss").format(Date(ts))
+                        val ok = if (type == "backplan_result") " ok=${obj.optBoolean("ok")}" else ""
+                        val failure = obj.optString("failure").takeIf { it.isNotBlank() }?.let { " failure='${it}'" } ?: ""
+                        val path = obj.optString("path").takeIf { it.isNotBlank() }?.let { " path='${it}'" } ?: ""
+                        val obs = obj.optString("observation_preview").takeIf { it.isNotBlank() }?.let { " obs='${it.take(120)}'" } ?: ""
+                        out.add("[$date] ${type}${ok}${failure}${path}${obs}")
                     }
                 }
             }
+            out
+        }.getOrElse { emptyList() }
+    }
+
+    @Composable
+    fun BackPlanLogPanel(taskId: String) {
+        val entries = remember(messages.size, activePlan.value) { readBackPlanLogsForTask(taskId) }
+        if (entries.isEmpty()) return
+        Card(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Back-plan activity", style = MaterialTheme.typography.labelSmall)
+                entries.takeLast(6).forEach { line -> Text(line, style = MaterialTheme.typography.bodySmall) }
+            }
         }
+    }
+
+    // Plan panel
+    if (hasPlan) {
+        val plan = activePlan.value!!
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(max = 360.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Plan", style = MaterialTheme.typography.titleSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Auto-run")
+                        Switch(checked = autoRun, onCheckedChange = { autoRun = it })
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                val statuses = agent.getPlanStatuses()
+                plan.tasks.forEach { t ->
+                    val st = statuses[t.id] ?: "pending"
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            val obsFile = File(application!!.filesDir, "chat/${currentChatId.value}/observations.json")
+                            val obsText = runCatching { if (obsFile.exists()) JSONObject(obsFile.readText()).optString(t.id) else null }.getOrNull()
+                            val displayDesc = if (!obsText.isNullOrBlank() && st == "done") obsText.take(200) else t.description
+                            Text("${t.id}: ${displayDesc}")
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                AssistChip(onClick = {}, label = { Text(st) }, colors = AssistChipDefaults.assistChipColors())
+                                if (!t.category.isNullOrBlank()) AssistChip(onClick = {}, label = { Text(t.category!!) })
+                            }
+                        }
+                        Button(onClick = {
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    var loops = 0
+                                    while (true) {
+                                        val current = activePlan.value ?: break
+                                        if (agent.getNextPendingTask(current) == null) break
+                                        val success = agent.executeNextTask(current) { s ->
+                                            scope.launch(Dispatchers.Main) { postStatus(s); saveHistory() }
+                                        }
+                                        if (!success) {
+                                            val updated = agent.requestUpdatedPlan(current)
+                                            if (updated != null) {
+                                                scope.launch(Dispatchers.Main) {
+                                                    activePlan.value = updated
+                                                    postStatus("Plan updated.")
+                                                    saveHistory()
+                                                }
+                                            }
+                                        }
+                                        loops++
+                                        if (!autoRun || loops >= 50) break
+                                    }
+                                } catch (e: Exception) {
+                                    scope.launch(Dispatchers.Main) { postStatus("Agent error: ${e.message}"); saveHistory() }
+                                }
+                            }
+                        }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) { Text(if (st == "pending") "Run" else "Re-run") }
+                    }
+                    BackPlanLogPanel(taskId = t.id)
+                }
+            }
+        }
+    }
 
         // Row 1: Chat session selector + Input + Send
         Row(

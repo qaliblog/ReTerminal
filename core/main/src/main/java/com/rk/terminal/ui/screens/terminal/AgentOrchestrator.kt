@@ -97,6 +97,7 @@ class AgentOrchestrator(
     private var lastInstallSuccess: Boolean = false
     private var lastPlanGoal: String? = null
     private var projectRequirements: String? = null // Store the original project requirements
+    private var folderStructureEnsured: Boolean = false
     
     // Context cache for maintaining code continuity across tasks
     private data class FileContext(
@@ -2004,6 +2005,17 @@ class AgentOrchestrator(
                     }
                     
                     if (contentRaw.isBlank()) {
+                        // Attempt a back-plan corrective fix
+                        val attempted = runCatching {
+                            val t = currentTaskContext
+                            val desc = t?.description ?: ""
+                            kotlinx.coroutines.runBlocking {
+                                runBackPlanFixIfNeeded(path, intended = "(intended write_file with content)", userInstruction = desc, failureNote = "empty_content_after_generation", onStatus = { })
+                            }
+                        }.getOrElse { false }
+                        if (attempted) {
+                            return ToolResult(true, "backplan_applied:${f.absolutePath}")
+                        }
                         return ToolResult(false, "empty_content: write_file requires non-empty content after generation")
                     }
                     
@@ -2058,6 +2070,15 @@ class AgentOrchestrator(
                     
                     ToolResult(ok, JSONObject().put("path", f.absolutePath).put("bytes", f.length()).put("sha256", hash).toString())
                 } catch (e: Exception) {
+                    // Back-plan on write failure
+                    val attempted = runCatching {
+                        val t = currentTaskContext
+                        val desc = t?.description ?: ""
+                        kotlinx.coroutines.runBlocking {
+                            runBackPlanFixIfNeeded(path, intended = contentRaw.take(4000), userInstruction = desc, failureNote = "write_file_error:${e.message}", onStatus = { })
+                        }
+                    }.getOrElse { false }
+                    if (attempted) return ToolResult(true, "backplan_applied:${resolvePath(path).absolutePath}")
                     ToolResult(false, "write_file_error: ${e.message}")
                 }
             }
@@ -3235,6 +3256,94 @@ if (exit != 0) {
                 desc.contains("new file") || isWriteCategory(task.category)
         return if (isFull) "full_code_generation" else "code_update"
     }
+
+    private fun buildMainInstructionsJson(): String {
+        val obj = JSONObject()
+        obj.put("enabled", Settings.main_instructions_enabled)
+        obj.put("expectations", projectRequirements ?: lastPlanGoal ?: "")
+        val blueprint = runCatching { blueprintFile.readText() }.getOrElse { null }
+        if (!blueprint.isNullOrBlank()) obj.put("blueprint", runCatching { JSONObject(blueprint) }.getOrElse { JSONObject() })
+        val codebase = runCatching { File(workingDirProvider(), Settings.codebase_cache_path).readText() }.getOrElse { null }
+        if (!codebase.isNullOrBlank()) obj.put("codebase", runCatching { JSONObject(codebase) }.getOrElse { JSONObject() })
+        val writerTools = runCatching { writerToolsFile.takeIf { it.exists() }?.readText() }.getOrElse { null }
+        if (!writerTools.isNullOrBlank()) obj.put("writer_tools", runCatching { JSONObject(writerTools) }.getOrElse { JSONObject() })
+        return obj.toString()
+    }
+
+    private suspend fun runBackPlanFixIfNeeded(path: String, intended: String, userInstruction: String, failureNote: String, onStatus: (String) -> Unit): Boolean = withContext(Dispatchers.IO) {
+        if (!Settings.backplan_enabled) return@withContext false
+        val f = resolvePath(path)
+        val currentContent = runCatching { if (f.exists()) f.readText() else "" }.getOrElse { "" }
+        val instructionsJson = buildMainInstructionsJson()
+        appendTaskLog("backplan_attempt") {
+            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
+            put("path", f.absolutePath)
+            put("failure", failureNote.take(500))
+        }
+        onStatus("Back-plan: analyzing failure and generating corrective patch…")
+        val sys = """
+            You are a corrective agent. Return ONLY one minified JSON for an apply_changes tool call.
+            Schema: {"type":"apply_changes","args":{"edits":[{"path":string,"op":"replace_exact"|"replace_between_markers"|"insert_after_anchor"|"insert_before_anchor"|"replace_regex"|"ensure_block_present"|"append_once"|"replace_lines"|"insert_lines_after"|"insert_lines_before"|"write_if_missing", ...}]}}
+            Rules:
+            - Use minimal edits to satisfy the instruction and fix the file.
+            - If file missing, use write_if_missing with full content.
+            - Keep indentation and formatting from existing content.
+            - Only output the JSON object, nothing else.
+        """.trimIndent()
+        val user = JSONObject().apply {
+            put("file_path", f.absolutePath)
+            put("current_content", currentContent.take(120000))
+            put("instruction", userInstruction.take(4000))
+            put("intended_change_preview", intended.take(4000))
+            put("main_instructions", if (Settings.main_instructions_enabled) runCatching { JSONObject(instructionsJson) }.getOrElse { JSONObject() } else JSONObject())
+        }.toString()
+        val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
+        val jsonText = extractFirstJsonObject(content) ?: return@withContext false
+        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext false
+        if (obj.optString("type") != "apply_changes") return@withContext false
+        val toolCall = ToolCall("apply_changes", obj.optJSONObject("args") ?: JSONObject())
+        val res = executeToolCall(toolCall)
+        appendTaskLog("backplan_result") {
+            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
+            put("path", f.absolutePath)
+            put("ok", res.ok)
+            put("observation_preview", res.observation?.take(400))
+        }
+        if (res.ok) {
+            // Update codebase cache and sync
+            runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, runCatching { f.readText() }.getOrElse { "" }, !f.exists()) }
+            notifyWorkspaceChanged(f.absolutePath)
+        }
+        return@withContext res.ok
+    }
+
+	private fun ensureFolderStructureFromBlueprint(onStatus: (String) -> Unit) {
+		val bpText = runCatching { blueprintFile.takeIf { it.exists() }?.readText().orEmpty() }.getOrElse { "" }
+		if (bpText.isBlank()) return
+		val rootDir = File(workingDirProvider())
+		val obj = runCatching { JSONObject(bpText) }.getOrNull() ?: return
+		val modules = obj.optJSONArray("modules") ?: JSONArray()
+		val created = mutableListOf<String>()
+		for (i in 0 until modules.length()) {
+			val m = modules.optJSONObject(i) ?: continue
+			val raw = m.optString("id").ifBlank { m.optString("name") }
+			if (raw.isBlank()) continue
+			val slug = raw.lowercase().replace(Regex("[^a-z0-9._/\\-]+"), "-").trim('-')
+			if (slug.isBlank()) continue
+			val dir = File(rootDir, slug)
+			if (!dir.exists()) {
+				dir.mkdirs()
+				if (dir.exists()) {
+					created.add(dir.absolutePath)
+					notifyWorkspaceChanged(dir.absolutePath)
+				}
+			}
+		}
+		if (created.isNotEmpty()) {
+			onStatus("Ensured folder structure from blueprint: created ${created.size} dir(s)")
+			appendTaskLog("folder_structure_ensured") { put("created", JSONArray(created)) }
+		}
+	}
 }
 
 object MainShell {
