@@ -2,16 +2,31 @@ ALPINE_DIR=$PREFIX/local/alpine
 
 mkdir -p $ALPINE_DIR
 
-if [ -z "$(ls -A "$ALPINE_DIR" | grep -vE '^(root|tmp)$')" ]; then
+# Check if Alpine rootfs is complete (has essential directories)
+if [ -z "$(ls -A "$ALPINE_DIR" | grep -vE '^(root|tmp)$')" ] || [ ! -d "$ALPINE_DIR/bin" ] || [ ! -d "$ALPINE_DIR/sbin" ] || [ ! -d "$ALPINE_DIR/usr" ]; then
     echo "Extracting Alpine Linux rootfs..."
+    
+    # Check if the tar.gz file exists and has content
+    if [ ! -f "$PREFIX/files/alpine.tar.gz" ]; then
+        echo "Error: alpine.tar.gz not found at $PREFIX/files/alpine.tar.gz"
+        exit 1
+    fi
+    
+    echo "Alpine tar.gz file size: $(ls -lh "$PREFIX/files/alpine.tar.gz" | awk '{print $5}')"
+    
+    # Clean up incomplete extraction
+    rm -rf "$ALPINE_DIR"/*
+    
     if tar -xf "$PREFIX/files/alpine.tar.gz" -C "$ALPINE_DIR"; then
         echo "Alpine Linux rootfs extracted successfully"
+        echo "Extracted contents:"
+        ls -la "$ALPINE_DIR"
     else
         echo "Error: Failed to extract Alpine Linux rootfs"
         exit 1
     fi
 else
-    echo "Alpine Linux rootfs already exists"
+    echo "Alpine Linux rootfs already exists and appears complete"
 fi
 
 [ ! -e "$PREFIX/local/bin/proot" ] && cp "$PREFIX/files/proot" "$PREFIX/local/bin"
@@ -21,13 +36,7 @@ for sofile in "$PREFIX/files/"*.so.2; do
     [ ! -e "$dest" ] && cp "$sofile" "$dest"
 done
 
-# Verify Alpine rootfs has essential directories
-if [ ! -d "$ALPINE_DIR/bin" ] || [ ! -d "$ALPINE_DIR/sbin" ] || [ ! -d "$ALPINE_DIR/usr" ]; then
-    echo "Error: Alpine rootfs appears to be incomplete"
-    echo "Contents of $ALPINE_DIR:"
-    ls -la "$ALPINE_DIR"
-    exit 1
-fi
+
 
 
 ARGS="--kill-on-exit"

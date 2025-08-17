@@ -59,6 +59,8 @@ fun Downloader(
                     }
                 },
                 onComplete = {
+                    // Reset the download state to ensure UI updates
+                    Rootfs.resetDownloadState()
                     isSetupComplete = true
                 },
                 onError = { error ->
