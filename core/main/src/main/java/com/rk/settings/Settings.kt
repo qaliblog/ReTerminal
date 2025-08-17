@@ -14,6 +14,8 @@ import com.rk.libcommons.application
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import java.nio.charset.Charset
 import org.json.JSONArray
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 
 object Settings {
     //Boolean
@@ -196,6 +198,24 @@ object Settings {
 object Preference {
     private var sharedPreferences: SharedPreferences = application!!.getSharedPreferences("Settings", Context.MODE_PRIVATE)
 
+    // Encrypted preferences for sensitive values
+    private val securePreferences: SharedPreferences by lazy {
+        val masterKey = MasterKey.Builder(application!!)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            application!!,
+            "SecureSettings",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
+    private fun isSensitiveKey(key: String): Boolean {
+        return key == "api_key" || key == "gemini_api_keys_json"
+    }
+
     //store the result into memory for faster access
     private val memory = HashMap<String,Any>()
     fun getBoolean(key: String,default: Boolean): Boolean{
@@ -219,19 +239,33 @@ object Preference {
     fun getString(key: String,default: String): String{
         return if (memory.containsKey(key) && memory[key] is String) memory[key] as String
         else{
-            if (sharedPreferences.contains(key)){
+            if (isSensitiveKey(key)){
+                // Migrate from plain prefs if needed
+                if (!securePreferences.contains(key) && sharedPreferences.contains(key)) {
+                    val legacy = sharedPreferences.getString(key, default) ?: default
+                    securePreferences.edit().putString(key, legacy).apply()
+                    sharedPreferences.edit().remove(key).apply()
+                }
+                val result = securePreferences.getString(key, default) ?: default
+                memory[key] = result
+                result
+            } else if (sharedPreferences.contains(key)){
                 val result = sharedPreferences.getString(key,default) ?: default
                 memory[key] = result
                 result
             }else{
                 memory[key] = default
-                sharedPreferences.getString(key,default) ?: default
+                if (isSensitiveKey(key)) securePreferences.getString(key, default) ?: default else sharedPreferences.getString(key,default) ?: default
             }
         }
     }
     fun setString(key: String,value: String){
         memory[key] = value
-        sharedPreferences.edit().putString(key, value).apply()
+        if (isSensitiveKey(key)) {
+            securePreferences.edit().putString(key, value).apply()
+        } else {
+            sharedPreferences.edit().putString(key, value).apply()
+        }
     }
 
     fun getInt(key: String,default: Int): Int{
@@ -255,12 +289,18 @@ object Preference {
     @SuppressLint("ApplySharedPref")
     fun clearData(){
         sharedPreferences.edit().clear().commit()
+        securePreferences.edit().clear().commit()
     }
 
     fun removeKey(key: String){
-        if (sharedPreferences.contains(key).not()){
+        if (sharedPreferences.contains(key).not() && securePreferences.contains(key).not()){
             return
         }
-        sharedPreferences.edit().remove(key).apply()
+        if (isSensitiveKey(key)) {
+            securePreferences.edit().remove(key).apply()
+        } else {
+            sharedPreferences.edit().remove(key).apply()
+        }
+        memory.remove(key)
     }
 }

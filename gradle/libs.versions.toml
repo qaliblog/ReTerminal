@@ -56,6 +56,7 @@ lifecycleViewmodelAndroid = "2.8.7"
 wordWrap = "0.1.13"
 coreAnimation = "1.0.0"
 runtimeAndroid = "1.7.8"
+securityCrypto = "1.1.0-alpha06"
 
 [libraries]
 accompanist-swiperefresh = { module = "com.google.accompanist:accompanist-swiperefresh", version.ref = "accompanistSwiperefresh" }
@@ -132,6 +133,7 @@ lifecycle-viewmodel-android = { group = "androidx.lifecycle", name = "lifecycle-
 word-wrap = { module = "com.github.davidmoten:word-wrap", version.ref = "wordWrap" }
 core-animation = { group = "androidx.core", name = "core-animation", version.ref = "coreAnimation" }
 runtime-android = { group = "androidx.compose.runtime", name = "runtime-android", version.ref = "runtimeAndroid" }
+security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
 [plugins]
 
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

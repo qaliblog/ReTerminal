@@ -2720,6 +2720,9 @@ if (exit != 0) {
                 if (unique && occurrences != 1) return ToolResult(false, "non-unique match count: ${occurrences}")
                 val updated = original.replaceFirst(old, new)
                 file.writeText(updated)
+                notifyWorkspaceChanged(file.absolutePath)
+                // Sync modified file content to codebase agent
+                runCatching { ControlApiClient.syncFile(sessionId, file.absolutePath, updated, false) }
                 ToolResult(true, "replaced ${if (unique) 1 else occurrences} occurrence(s) in ${file.absolutePath}")
             }
             "delete_file" -> {
