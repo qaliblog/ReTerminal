@@ -126,12 +126,22 @@ Updating : apk update && apk upgrade
 
             val shell = if (pendingCommand == null) {
                 args = if (workingMode == WorkingMode.ALPINE){
-                    arrayOf("-c",initFile.absolutePath)
-                }else{
+                    // Check if Alpine environment is available
+                    val alpineRootfs = File("${filesDir.parentFile!!.path}/local/alpine")
+                    val prootBinary = File("${filesDir.parentFile!!.path}/local/bin/proot")
+                    
+                    if (alpineRootfs.exists() && prootBinary.exists()) {
+                        arrayOf("-c", initFile.absolutePath)
+                    } else {
+                        // Fallback to basic Android shell if Alpine isn't available
+                        android.util.Log.w("MkSession", "Alpine environment not available, using fallback shell")
+                        arrayOf("-c", "echo 'Alpine Linux not available, using basic Android shell'; export PS1='[\\u@android \\w]\\$ '; exec /system/bin/sh")
+                    }
+                } else {
                     arrayOf()
                 }
                 "/system/bin/sh"
-            } else{
+            } else {
                 args = pendingCommand!!.args
                 pendingCommand!!.shell
             }

@@ -4,12 +4,22 @@ mkdir -p $ALPINE_DIR
 
 if [ -z "$(ls -A "$ALPINE_DIR" | grep -vE '^(root|tmp)$')" ]; then
     if [ -f "$PREFIX/files/alpine.tar.gz" ]; then
-        tar -xf "$PREFIX/files/alpine.tar.gz" -C "$ALPINE_DIR"
+        echo "Extracting Alpine Linux rootfs..."
+        if tar -xf "$PREFIX/files/alpine.tar.gz" -C "$ALPINE_DIR"; then
+            echo "Alpine Linux rootfs extracted successfully"
+        else
+            echo "Error: Failed to extract Alpine Linux rootfs"
+            echo "The archive might be corrupted. Please re-download."
+            exit 1
+        fi
     else
         echo "Error: alpine.tar.gz not found at $PREFIX/files/alpine.tar.gz"
         echo "Please ensure the Alpine Linux rootfs is properly downloaded."
+        echo "The app should automatically download this file on first run."
         exit 1
     fi
+else
+    echo "Alpine Linux rootfs already exists"
 fi
 
 # Ensure required directories exist
@@ -93,5 +103,20 @@ ARGS="$ARGS -0"
 ARGS="$ARGS --link2symlink"
 ARGS="$ARGS --sysvipc"
 ARGS="$ARGS -L"
+
+echo "Starting Alpine Linux environment with proot..."
+echo "Rootfs: $PREFIX/local/alpine"
+echo "Proot: $PREFIX/local/bin/proot"
+echo "Linker: $LINKER"
+
+if [ ! -f "$PREFIX/local/bin/proot" ]; then
+    echo "Error: proot binary not found"
+    exit 1
+fi
+
+if [ ! -d "$PREFIX/local/alpine" ]; then
+    echo "Error: Alpine rootfs directory not found"
+    exit 1
+fi
 
 $LINKER $PREFIX/local/bin/proot $ARGS sh $PREFIX/local/bin/init "$@"

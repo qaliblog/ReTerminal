@@ -61,10 +61,13 @@ fun Downloader(
                 onComplete = {
                     // Reset the download state to ensure UI updates
                     Rootfs.resetDownloadState()
+                    android.util.Log.i("Downloader", "Setup completed successfully")
+                    android.util.Log.d("Downloader", Rootfs.getDiagnosticInfo())
                     isSetupComplete = true
                 },
                 onError = { error ->
                     android.util.Log.e("Downloader", "Setup failed: ${error.message}", error)
+                    android.util.Log.d("Downloader", Rootfs.getDiagnosticInfo())
                     toast(if (error is UnknownHostException) "Network Error" else "Setup Failed: ${error.message}")
                 }
             )
