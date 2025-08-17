@@ -3276,6 +3276,7 @@ if (exit != 0) {
         val currentContent = runCatching { if (f.exists()) f.readText() else "" }.getOrElse { "" }
         val instructionsJson = buildMainInstructionsJson()
         appendTaskLog("backplan_attempt") {
+            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
             put("path", f.absolutePath)
             put("failure", failureNote.take(500))
         }
@@ -3303,6 +3304,7 @@ if (exit != 0) {
         val toolCall = ToolCall("apply_changes", obj.optJSONObject("args") ?: JSONObject())
         val res = executeToolCall(toolCall)
         appendTaskLog("backplan_result") {
+            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
             put("path", f.absolutePath)
             put("ok", res.ok)
             put("observation_preview", res.observation?.take(400))
