@@ -3,46 +3,42 @@ set -e  # Exit immediately on Failure
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/share/bin:/usr/share/sbin:/usr/local/bin:/usr/local/sbin:/system/bin:/system/xbin
 export HOME=/root
 
+# Ensure /etc directory exists before creating resolv.conf
+if [ ! -d /etc ]; then
+    mkdir -p /etc
+fi
+
 if [ ! -s /etc/resolv.conf ]; then
     echo "nameserver 8.8.8.8" > /etc/resolv.conf
 fi
 
 
 cd "$XPWD"
-if [ -n "$XCMD" ]; then
-    set +e
-    if [ -n "$XOUT" ]; then
-        sh -c "$XCMD" > "$XOUT" 2>&1
-        code=$?
-        if [ -n "$XSENTINEL" ]; then
-            printf '%s\n' "$XSENTINEL" >> "$XOUT"
-        fi
-        printf 'EXIT_CODE=%s\n' "$code" >> "$XOUT"
-    else
-        # Fallback to stdout if no XOUT provided
-        sh -c "$XCMD"
-        code=$?
-    fi
-    exit $code
-fi
 export PS1="\[\e[38;5;46m\]\u\[\033[39m\]@karbon \[\033[39m\]\w \[\033[0m\]\\$ "
 # shellcheck disable=SC2034
 export PIP_BREAK_SYSTEM_PACKAGES=1
-required_packages="bash gcompat glib nano"
-missing_packages=""
-for pkg in $required_packages; do
-    if ! apk info -e $pkg >/dev/null 2>&1; then
-        missing_packages="$missing_packages $pkg"
+
+# Check if apk is available before trying to use it
+if command -v apk >/dev/null 2>&1; then
+    required_packages="bash gcompat glib nano"
+    missing_packages=""
+    for pkg in $required_packages; do
+        if ! apk info -e $pkg >/dev/null 2>&1; then
+            missing_packages="$missing_packages $pkg"
+        fi
+    done
+    if [ -n "$missing_packages" ]; then
+        echo -e "\e[34;1m[*] \e[37mInstalling Important packages\e[0m"
+        apk update && apk upgrade
+        apk add $missing_packages
+        if [ $? -eq 0 ]; then
+            echo -e "\e[32;1m[+] \e[37mSuccessfully Installed\e[0m"
+        fi
+        echo -e "\e[34m[*] \e[37mUse \e[32mapk\e[37m to install new packages\e[0m"
     fi
-done
-if [ -n "$missing_packages" ]; then
-    echo -e "\e[34;1m[*] \e[37mInstalling Important packages\e[0m"
-    apk update && apk upgrade
-    apk add $missing_packages
-    if [ $? -eq 0 ]; then
-        echo -e "\e[32;1m[+] \e[37mSuccessfully Installed\e[0m"
-    fi
-    echo -e "\e[34m[*] \e[37mUse \e[32mapk\e[37m to install new packages\e[0m"
+else
+    echo -e "\e[33m[!] \e[37mAlpine package manager (apk) not available\e[0m"
+    echo -e "\e[33m[!] \e[37mRunning in limited environment mode\e[0m"
 fi
 
 #fix linker warning

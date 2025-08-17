@@ -428,11 +428,22 @@ class AgentOrchestrator(
 
     private suspend fun decideRemediationAction(goal: String, task: Task, failureNote: String): String = withContext(Dispatchers.IO) {
         val sys = """
-            You are a supervisor deciding the smallest effective remediation when a task struggles.
-            Return ONLY JSON: {"action": "mini_plan"|"revise_plan"|"retry", "why": string} with no extra text.
-            - mini_plan: when a few targeted discovery/edits can unblock the task without changing the whole plan
-            - revise_plan: when the plan likely needs restructuring or different approach
-            - retry: when the failure seems transient or due to missing small context that another attempt can fetch
+            You are a senior project management and troubleshooting specialist.
+            Task: Determine the optimal remediation strategy when task execution encounters difficulties.
+            Context: Analyze task failures, project goals, and available resources to select the most effective recovery approach.
+            Output format: Return ONLY JSON with remediation decision and reasoning.
+            
+            Remediation strategies:
+            - mini_plan: Create targeted sub-tasks to resolve specific blockers without major plan changes
+            - revise_plan: Restructure the overall approach when fundamental issues are identified
+            - retry: Attempt the same task again when failures appear transient or context-dependent
+            
+            Decision criteria:
+            - mini_plan: For isolated issues that can be resolved with focused discovery or edits
+            - revise_plan: When the current approach is fundamentally flawed or misaligned
+            - retry: For temporary failures, missing context, or transient system issues
+            
+            Return format: {"action": "strategy_type", "why": "detailed reasoning"}
         """.trimIndent()
         val user = """
             Goal: ${goal}
@@ -464,14 +475,32 @@ class AgentOrchestrator(
             observations.entries.forEach { (k, v) -> put(k, if (v.length > 4000) v.take(4000) + " …" else v) }
         }.toString()
         val sys = """
-            You create a small remediation mini-plan to unblock a single parent task. Return ONLY JSON:
-            {"parent_task_id": string, "reason": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
-            Rules:
-            - 2 to 6 concise steps max
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit
-            - Favor discovery-first then precise, idempotent edits
-            - ids must be stable and short (m1, m2, ...)
-            - No explanations beyond the 'reason' field
+            You are a senior task remediation and problem-solving specialist.
+            Task: Create targeted mini-plans to resolve specific task execution blockers.
+            Context: Analyze task failures and project context to design focused recovery strategies.
+            Output format: Return ONLY JSON with structured remediation plan and execution details.
+            
+            Mini-plan design principles:
+            - Focus on 2-6 targeted steps to resolve specific issues
+            - Prioritize discovery and analysis before modifications
+            - Ensure each step is precise, actionable, and idempotent
+            - Maintain logical progression from diagnosis to resolution
+            
+            Task categories:
+            - list_dir: Directory exploration for structure understanding
+            - read_file: File content examination and analysis
+            - grep: Pattern-based content search and identification
+            - analyze: Code review, debugging, and problem diagnosis
+            - write_file: Complete file creation with full implementation
+            - apply_changes: Targeted file modifications and updates
+            - make_dir: Directory structure creation and organization
+            - create_file: File creation for new components
+            - run_shell: Command execution and system operations
+            - json_edit: Structured data modifications and configuration
+            
+            Plan structure: {"parent_task_id": "string", "reason": "string", "tasks": [{"id": "string", "category": "string", "description": "string", "targets": ["string"], "search": ["string"], "markers": ["string"]}]}
+            
+            Task ID format: Use short, stable identifiers (m1, m2, m3, etc.)
         """.trimIndent()
         val user = """
             Goal: ${plan.goal}
@@ -601,8 +630,19 @@ class AgentOrchestrator(
     // ===================== THINK & ACT (Adaptive) =====================
     private suspend fun classifyUserIntent(prompt: String, workspaceInfo: String): JSONObject = withContext(Dispatchers.IO) {
         val sys = """
-            Classify the user's request into one intent. Return ONLY JSON:
-            {"intent": "error_diagnosis"|"question_analysis"|"project_bootstrap"|"feature_addition"|"plan_and_execute", "why": string}
+            You are a senior AI classification specialist.
+            Task: Classify user intent from their request.
+            Context: Analyze the user's prompt and workspace information to determine their primary goal.
+            Output format: Return ONLY JSON with intent classification and reasoning.
+            
+            Available intents:
+            - error_diagnosis: User is experiencing errors or issues
+            - question_analysis: User is asking questions about code or system
+            - project_bootstrap: User wants to create a new project from scratch
+            - feature_addition: User wants to add new features to existing code
+            - plan_and_execute: User wants to build or modify something with step-by-step execution
+            
+            Return format: {"intent": "intent_type", "why": "brief reasoning"}
         """.trimIndent()
         val user = """
             Prompt: ${prompt}
@@ -618,9 +658,20 @@ class AgentOrchestrator(
 
     private suspend fun requestDiscoveryToolCall(contextNote: String): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            Propose one discovery tool call to gather information. Return ONLY JSON with one of these types: list_dir, list_dir_recursive, grep, read_file, read_file_lines, head_file, tail_file, read_file_chunk, read_file_section_by_markers, read_files_glob, stat_file, json_get, get_cached_command_output, list_cached_commands, run_shell.
-            Favor environment checks first when context suggests system interactions, e.g., uname -a; cat /etc/os-release 2>/dev/null || true; (command -v apt || command -v dnf || command -v yum || command -v pacman || command -v apk || true); (command -v python3 || command -v python || true); (command -v node || true); (command -v npm || true); (command -v gcc || true); (command -v g++ || true); echo ${'$'}SHELL; echo ${'$'}PATH.
-            Schema examples same as earlier. Output must be one minified JSON object.
+            You are a senior system discovery specialist.
+            Task: Propose one discovery tool call to gather information.
+            Context: Analyze the current context and determine the most appropriate discovery action to gather relevant information.
+            Output format: Return ONLY JSON with a single tool call for discovery.
+            
+            Discovery priorities:
+            1. Environment checks for system interactions (uname -a, package managers, language runtimes)
+            2. File system exploration (list_dir, list_dir_recursive, read_file)
+            3. Content analysis (grep, read_file_section_by_markers)
+            4. System information (stat_file, json_get)
+            
+            Available tools: list_dir, list_dir_recursive, grep, read_file, read_file_lines, head_file, tail_file, read_file_chunk, read_file_section_by_markers, read_files_glob, stat_file, json_get, get_cached_command_output, list_cached_commands, run_shell
+            
+            Return format: {"type": "tool_name", "args": {...}}
         """.trimIndent()
         val wd = workingDirProvider()
         val user = """
@@ -641,9 +692,25 @@ class AgentOrchestrator(
 
     private suspend fun requestBlueprint(prompt: String, workspaceInfo: String): String? = withContext(Dispatchers.IO) {
         val sys = """
-            Produce a concise, well-structured project blueprint as minified JSON and nothing else.
-            Shape: {"name": string, "summary": string, "stack": {"lang": string, "frameworks": [string...]}, "modules": [{"id": string, "name": string, "responsibilities": [string...] }], "apis": [{"name": string, "endpoints":[{"path": string, "method": string, "desc": string}]}]}
-            Keep it small but thoughtful; it will guide subsequent planning.
+            You are a senior software architect and project planner.
+            Task: Create a comprehensive project blueprint based on user requirements.
+            Context: Analyze the user's goal and workspace information to design an optimal project structure.
+            Output format: Return ONLY minified JSON with project architecture and planning details.
+            
+            Blueprint structure:
+            - name: Project name
+            - summary: Brief project description
+            - stack: Technology stack (language, frameworks)
+            - modules: Core components and their responsibilities
+            - apis: API endpoints and their purposes
+            
+            Design principles:
+            - Keep it concise but comprehensive
+            - Focus on scalability and maintainability
+            - Consider best practices for the chosen technology stack
+            - Ensure modularity and separation of concerns
+            
+            Return format: {"name": "string", "summary": "string", "stack": {"lang": "string", "frameworks": ["string"]}, "modules": [{"id": "string", "name": "string", "responsibilities": ["string"]}], "apis": [{"name": "string", "endpoints": [{"path": "string", "method": "string", "desc": "string"}]}]}
         """.trimIndent()
         val user = """
             Goal: ${prompt}
@@ -660,8 +727,19 @@ class AgentOrchestrator(
 
     private suspend fun answerQuestionFromObservations(prompt: String): String = withContext(Dispatchers.IO) {
         val sys = """
-            You are given prior observations from a repository; answer the user's question concisely.
-            Answer in plain text, cite filenames or paths inline when helpful.
+            You are a senior technical analyst and code reviewer.
+            Task: Answer user questions based on repository observations and codebase analysis.
+            Context: Use prior observations from the repository to provide accurate and helpful answers.
+            Output format: Provide clear, concise answers in plain text with relevant file citations.
+            
+            Answer guidelines:
+            - Be precise and factual based on the available observations
+            - Cite specific filenames and paths when referencing code
+            - Provide context and explanations for technical concepts
+            - If information is missing, acknowledge limitations
+            - Focus on actionable insights and practical solutions
+            
+            Response style: Clear, professional, and technically accurate
         """.trimIndent()
         val obs = observations.entries.joinToString("\n\n") { (k, v) -> "[${k}]\n${v.take(4000)}" }
         val user = """
@@ -691,16 +769,32 @@ class AgentOrchestrator(
         // If a plan requires creation, ensure codebase discovery is run first
             if (Settings.codebase_agent_enabled) runCatching { buildCodebaseCache({ }, includeRecursive = true) }
         val sys = """
-            You are an expert software architect that creates concise, step-by-step plans for software projects OR codebase updates.
-            Return ONLY a minified JSON object with the shape:
-            {"goal": string, "tasks": [{"id": string, "category": string, "description": string, "targets": [string...], "search": [string...], "markers": [string...]}, ...]}
-
-            Rules:
-            - For update/refactor/fix goals: first run a codebase discovery (list_dir_recursive or read_files_glob) and write a compact overview to codebase cache before any edits.
-            - For creation goals: front-load discovery if workspace is non-empty, then create directories and files.
-            - ids must be unique short strings (e.g., t1, t2).
-            - category must be one of: list_dir | read_file | grep | analyze | write_file | apply_changes | make_dir | create_file | run_shell | json_edit.
-            - Do not include code in the plan itself.
+            You are a senior software architect and project planning specialist.
+            Task: Create comprehensive, step-by-step execution plans for software projects and codebase updates.
+            Context: Analyze user goals, workspace information, and project requirements to design optimal execution strategies.
+            Output format: Return ONLY minified JSON with structured task plans and execution details.
+            
+            Planning principles:
+            - For updates/refactors/fixes: Prioritize codebase discovery and analysis before modifications
+            - For new projects: Begin with discovery if workspace exists, then proceed with creation tasks
+            - Ensure logical task sequencing and dependency management
+            - Focus on incremental, testable progress
+            
+            Task categories:
+            - list_dir: Directory exploration and structure analysis
+            - read_file: File content examination and understanding
+            - grep: Pattern-based content search and analysis
+            - analyze: Code review, debugging, and problem diagnosis
+            - write_file: Complete file creation with full content
+            - apply_changes: Targeted file modifications and updates
+            - make_dir: Directory structure creation
+            - create_file: File creation (empty or template-based)
+            - run_shell: Command execution and system operations
+            - json_edit: Structured data modifications
+            
+            Plan structure: {"goal": "string", "tasks": [{"id": "string", "category": "string", "description": "string", "targets": ["string"], "search": ["string"], "markers": ["string"]}]}
+            
+            Task ID format: Use short, unique identifiers (e.g., t1, t2, t3)
         """.trimIndent()
         val user = """
             Goal: ${userGoal}
@@ -946,7 +1040,20 @@ class AgentOrchestrator(
             }
         }
         val synthSys = """
-            You synthesize concise, accurate information from fetched pages. Return ONLY text. Cite URLs inline.
+            You are a senior research synthesis and information analysis specialist.
+            Task: Synthesize and summarize information from multiple web sources.
+            Context: Analyze fetched web pages to extract relevant, accurate information for the user's query.
+            Output format: Provide concise, well-structured summaries with inline URL citations.
+            
+            Synthesis guidelines:
+            - Extract the most relevant and accurate information from all sources
+            - Organize information logically and coherently
+            - Cite specific URLs inline when referencing information
+            - Focus on actionable insights and practical solutions
+            - Maintain objectivity and verify information across sources
+            - Prioritize recent and authoritative sources
+            
+            Response style: Clear, concise, and well-cited with practical focus
         """.trimIndent()
         val bundle = (0 until fetched.length()).joinToString("\n\n") { idx ->
             val o = fetched.getJSONObject(idx)
@@ -969,8 +1076,25 @@ class AgentOrchestrator(
     private suspend fun researcherAssistIfNeeded(errorNote: String, latestObs: String?): String? = withContext(Dispatchers.IO) {
         if (!Settings.researcher_agent_enabled) return@withContext null
         val sys = """
-            You decide what to research to resolve an error.
-            Return ONLY minified JSON: {"query": string}
+            You are a senior error diagnosis and research specialist.
+            Task: Determine optimal research queries to resolve technical errors and issues.
+            Context: Analyze error messages and system context to identify the most effective search strategies.
+            Output format: Return ONLY minified JSON with targeted research query.
+            
+            Research strategy:
+            - Focus on specific error messages and error codes
+            - Include relevant technology stack and version information
+            - Target official documentation and community solutions
+            - Prioritize recent and well-documented solutions
+            - Consider multiple search angles for comprehensive coverage
+            
+            Query optimization:
+            - Use specific technical terms and error codes
+            - Include relevant software versions and platforms
+            - Target authoritative sources (official docs, Stack Overflow, GitHub)
+            - Balance specificity with searchability
+            
+            Return format: {"query": "optimized search query"}
         """.trimIndent()
         val user = """
             Error: ${errorNote}
@@ -1647,8 +1771,19 @@ class AgentOrchestrator(
     private suspend fun informativeForTask(planGoal: String, task: Task, lastObservation: String?): JSONObject? = withContext(Dispatchers.IO) {
         if (!Settings.informative_agent_enabled) return@withContext null
         val sys = """
-            You generate brief, friendly progress updates.
-            Return ONLY minified JSON: {"what": string, "success": string}
+            You are a senior project communication specialist.
+            Task: Generate user-friendly progress updates and status reports.
+            Context: Provide clear, informative updates about task execution and project progress.
+            Output format: Return ONLY minified JSON with progress information and success indicators.
+            
+            Update guidelines:
+            - Be concise but informative about current activities
+            - Provide context about what was accomplished
+            - Use clear, non-technical language when possible
+            - Highlight key achievements and next steps
+            - Maintain positive, encouraging tone
+            
+            Response structure: {"what": "current activity description", "success": "achievement summary"}
         """.trimIndent()
         val user = """
             Goal: ${planGoal}
@@ -1725,18 +1860,24 @@ class AgentOrchestrator(
 
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
         val sys = """
-            You are a senior software engineer responsible for writing complete, functional, and high-quality code.
-            Your task is to orchestrate a short inner loop to complete the current task using the available tools.
-            You must return ONLY a single minified JSON object describing ONE tool call to move the task forward.
-
-            **CRITICAL DIRECTIVE: YOU MUST GENERATE FULL, WORKING CODE. NO PLACEHOLDERS.**
-            - Never use pre-made templates for specific apps. Infer requirements strictly from the goal and a live codebase overview built via discovery tools.
-            - When asked to create a file, provide complete, functional code coherent with existing files and expectations.
-            - Do NOT use placeholder comments like "// TODO: implement", "// ...", or similar.
-            - Do NOT create empty files. Use the `write_file` tool and provide the full content.
-            - Ensure that all generated files work together to create a cohesive and functional application.
-
-            **IMPORTANT: For any file modification, you must first read the file to understand its content and structure. Use the `read_file` tool before using `write_file` or `apply_changes` to ensure you are making the correct modifications.**
+            You are a senior software engineer and code implementation specialist.
+            Task: Execute precise tool calls to complete software development tasks.
+            Context: Analyze the current goal, task requirements, and codebase state to determine the optimal next action.
+            Output format: Return ONLY a single minified JSON object describing ONE tool call to advance the task.
+            
+            **CRITICAL IMPLEMENTATION STANDARDS:**
+            - Generate complete, functional, production-ready code with no placeholders
+            - Infer requirements from goal analysis and codebase discovery, not pre-made templates
+            - Create cohesive, integrated solutions that work together seamlessly
+            - Prioritize code quality, maintainability, and best practices
+            - Always read existing files before modifications to ensure compatibility
+            
+            **CODE QUALITY REQUIREMENTS:**
+            - No placeholder comments (// TODO, // ..., etc.)
+            - No empty files - provide complete, working implementations
+            - Follow language-specific conventions and best practices
+            - Include proper error handling and validation
+            - Ensure code is self-documenting and well-structured
 
             OUTPUT FORMAT FOR UPDATES (MANDATORY):
             - Return ONLY one minified JSON tool call.
@@ -1956,8 +2097,27 @@ class AgentOrchestrator(
                         val codebase = runCatching { File(workingDirProvider(), Settings.codebase_cache_path).readText() }.getOrElse { "" }.take(120000)
                         val ctxSummary = getContextSummary()
                         val sys = """
-                            You are writing a single complete file for a project. Return ONLY the file content. No backticks, no fences, no explanations.
-                            Ensure coherence with the existing codebase summary provided.
+                            You are a senior software developer and file content specialist.
+                            Task: Generate complete, functional file content for a new project file.
+                            Context: Create coherent, production-ready code that integrates seamlessly with the existing codebase.
+                            Output format: Return ONLY the complete file content without markdown formatting or explanations.
+                            
+                            Content requirements:
+                            - Generate complete, functional code with no placeholders
+                            - Ensure compatibility with existing codebase architecture
+                            - Follow language-specific conventions and best practices
+                            - Include proper imports, error handling, and documentation
+                            - Maintain consistency with project structure and patterns
+                            - Create self-contained, testable components
+                            
+                            Quality standards:
+                            - No TODO comments or placeholder text
+                            - No markdown code fences or backticks
+                            - No explanatory text outside the code
+                            - Production-ready, deployable code
+                            - Proper error handling and validation
+                            
+                            Response: Pure file content only
                         """.trimIndent()
                         val user = """
                             Goal: ${goal}
@@ -3192,9 +3352,22 @@ if (exit != 0) {
 
 	private fun buildHelperRecommendationPrompt(kind: String, contextMap: Map<String, String>): Pair<String,String> {
 		val sys = """
-			You are a side helper agent. Return ONLY compact JSON with keys you need to adjust the main agent call.
-			Schema: {"prompt_prefix": string, "prompt_suffix": string, "suggested_tools": [string...], "max_tokens": number, "temperature": number, "model": string}
-			Return minified JSON without extra text. Omit fields you don't adjust.
+			You are a senior AI prompt optimization specialist.
+			Task: Optimize and enhance main agent prompts for better performance and accuracy.
+			Context: Analyze the current task type and context to provide targeted prompt improvements.
+			Output format: Return ONLY compact JSON with prompt enhancement recommendations.
+			
+			Optimization areas:
+			- prompt_prefix: Add context-specific instructions or clarifications
+			- prompt_suffix: Include task-specific constraints or requirements
+			- suggested_tools: Recommend optimal tools for the current task type
+			- max_tokens: Adjust token limits based on task complexity
+			- temperature: Fine-tune creativity vs precision balance
+			- model: Suggest optimal model for the specific task
+			
+			Response schema: {"prompt_prefix": "string", "prompt_suffix": "string", "suggested_tools": ["string"], "max_tokens": number, "temperature": number, "model": "string"}
+			
+			Guidelines: Return minified JSON, omit fields that don't need adjustment
 		""".trimIndent()
 		val user = JSONObject().apply {
 			put("kind", kind)
@@ -3328,13 +3501,38 @@ if (exit != 0) {
         }
         onStatus("Back-plan: analyzing failure and generating corrective patch…")
         val sys = """
-            You are a corrective agent. Return ONLY one minified JSON for an apply_changes tool call.
-            Schema: {"type":"apply_changes","args":{"edits":[{"path":string,"op":"replace_exact"|"replace_between_markers"|"insert_after_anchor"|"insert_before_anchor"|"replace_regex"|"ensure_block_present"|"append_once"|"replace_lines"|"insert_lines_after"|"insert_lines_before"|"write_if_missing", ...}]}}
-            Rules:
-            - Use minimal edits to satisfy the instruction and fix the file.
-            - If file missing, use write_if_missing with full content.
-            - Keep indentation and formatting from existing content.
-            - Only output the JSON object, nothing else.
+            You are a senior code correction and debugging specialist.
+            Task: Generate precise file corrections to resolve implementation failures and satisfy user requirements.
+            Context: Analyze failed attempts, current file content, and user instructions to create targeted fixes.
+            Output format: Return ONLY one minified JSON for an apply_changes tool call.
+            
+            Correction strategy:
+            - Identify the root cause of the failure from the context
+            - Apply minimal, targeted edits to resolve the specific issue
+            - Maintain existing code structure, indentation, and formatting
+            - Ensure the corrected code satisfies the original user instruction
+            - Preserve code quality and best practices
+            
+            Edit operations:
+            - replace_exact: Replace specific text with exact matching
+            - replace_between_markers: Replace content between start/end markers
+            - insert_after_anchor: Insert content after a specific anchor text
+            - insert_before_anchor: Insert content before a specific anchor text
+            - replace_regex: Replace content matching a regex pattern
+            - ensure_block_present: Add a code block if it doesn't exist
+            - append_once: Add content only if not already present
+            - replace_lines: Replace specific line ranges
+            - insert_lines_after: Insert lines after a specific line number
+            - insert_lines_before: Insert lines before a specific line number
+            - write_if_missing: Create full file content if file doesn't exist
+            
+            Schema: {"type":"apply_changes","args":{"edits":[{"path":"string","op":"operation_type",...}]}}
+            
+            Quality standards:
+            - Use minimal edits to achieve the desired result
+            - Preserve existing code structure and formatting
+            - Ensure corrections are idempotent and safe
+            - Focus on the specific failure point
         """.trimIndent()
         val user = JSONObject().apply {
             put("file_path", f.absolutePath)
