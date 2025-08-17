@@ -1257,6 +1257,40 @@ class AgentOrchestrator(
                 put("ok", result.ok)
                 result.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
             }
+            // Attempt back-plan fix if a modifying tool failed
+            if (!result.ok && Settings.backplan_enabled && isModifyingTool(effectiveToolCall.type)) {
+                val targets = mutableSetOf<String>()
+                when (effectiveToolCall.type) {
+                    "apply_changes" -> {
+                        val edits = effectiveToolCall.args.optJSONArray("edits") ?: JSONArray()
+                        for (i in 0 until edits.length()) {
+                            edits.optJSONObject(i)?.optString("path")?.takeIf { it.isNotBlank() }?.let { targets.add(it) }
+                        }
+                    }
+                    "write_file", "search_replace", "delete_file", "copy_file", "move_file" -> {
+                        effectiveToolCall.args.optString("path").takeIf { it.isNotBlank() }?.let { targets.add(it) }
+                    }
+                }
+                var fixed = false
+                for (p in targets) {
+                    val intended = when (effectiveToolCall.type) {
+                        "apply_changes" -> effectiveToolCall.args.toString().take(4000)
+                        "write_file" -> effectiveToolCall.args.optString("content").take(4000)
+                        "search_replace" -> JSONObject().put("old", effectiveToolCall.args.optString("old")).put("new", effectiveToolCall.args.optString("new")).toString()
+                        else -> ""
+                    }
+                    val failureNote = result.observation?.take(400) ?: "tool_failed"
+                    val ok = runBackPlanFixIfNeeded(p, intended = intended, userInstruction = task.description, failureNote = failureNote, onStatus = onStatus)
+                    if (ok) { fixed = true; break }
+                }
+                if (fixed) {
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+            }
+
             // Refresh codebase cache immediately after modifying tools so next steps see updated state
             if (Settings.codebase_agent_enabled && isModifyingTool(effectiveToolCall.type)) {
                 performCodebaseUpgradeIfPending(onStatus)
@@ -1704,6 +1738,13 @@ class AgentOrchestrator(
 
             **IMPORTANT: For any file modification, you must first read the file to understand its content and structure. Use the `read_file` tool before using `write_file` or `apply_changes` to ensure you are making the correct modifications.**
 
+            OUTPUT FORMAT FOR UPDATES (MANDATORY):
+            - Return ONLY one minified JSON tool call.
+            - For modifications, prefer `apply_changes` with at most 4 targeted edits.
+            - Each edit must include the `path` and one op among: `replace_exact`, `replace_between_markers`, `insert_after_anchor`, `insert_before_anchor`, `replace_regex`, `ensure_block_present`, `append_once`, `replace_lines`, `insert_lines_after`, `insert_lines_before`, or `write_if_missing`.
+            - Include precise anchors/markers or regex patterns. Keep changes minimal and idempotent.
+            - For full new files, use `write_file` with the entire file content.
+
             Allowed schemas:
              {"type":"create_file","args":{"path": string}}
              {"type":"write_file","args":{"path": string, "content": string, "mode": "overwrite"|"append", "if_not_exists": boolean, "encoding": "utf-8"|"base64"}}
@@ -1737,7 +1778,10 @@ class AgentOrchestrator(
                  {"path": string, "op": "replace_regex", "pattern": string, "replacement": string, "unique": boolean},
                  {"path": string, "op": "ensure_block_present", "block": string, "idempotent_marker": string, "anchor_before": string, "anchor_after": string},
                  {"path": string, "op": "append_once", "block": string, "idempotent_marker": string},
-                 {"path": string, "op": "write_if_missing", "content": string}
+                 {"path": string, "op": "write_if_missing", "content": string},
+                 {"path": string, "op": "replace_lines", "start_line": number, "end_line": number, "new_content": string},
+                 {"path": string, "op": "insert_lines_after", "line_number": number, "new_content": string},
+                 {"path": string, "op": "insert_lines_before", "line_number": number, "new_content": string}
              ]}}
              
              ## DEVELOPMENT STANDARDS & BEST PRACTICES
