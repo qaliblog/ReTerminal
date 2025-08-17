@@ -17,7 +17,21 @@ object Rootfs {
     }
 
     var isDownloaded = mutableStateOf(isFilesDownloaded())
+    
     fun isFilesDownloaded(): Boolean{
-        return reTerminal.exists() && reTerminal.child("proot").exists() && reTerminal.child("libtalloc.so.2").exists() && reTerminal.child("alpine.tar.gz").exists()
+        return try {
+            reTerminal.exists() && 
+            reTerminal.child("proot").exists() && 
+            reTerminal.child("libtalloc.so.2").exists() && 
+            reTerminal.child("alpine.tar.gz").exists()
+        } catch (e: Exception) {
+            // Log error and return false to trigger download
+            android.util.Log.e("Rootfs", "Error checking files: ${e.message}")
+            false
+        }
+    }
+    
+    fun resetDownloadState() {
+        isDownloaded.value = isFilesDownloaded()
     }
 }

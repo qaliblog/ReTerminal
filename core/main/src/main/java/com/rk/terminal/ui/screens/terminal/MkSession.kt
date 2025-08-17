@@ -39,11 +39,15 @@ object MkSession {
 
             val workingDir = pendingCommand?.workingDir ?: "/sdcard"
 
+            // Ensure local bin directory exists
+            localBinDir().mkdirs()
+            
             val initFile: File = localBinDir().child("init-host")
 
             if (initFile.exists().not()){
                 initFile.createFileIfNot()
                 initFile.writeText(assets.open("init-host.sh").bufferedReader().use { it.readText() })
+                initFile.setExecutable(true, false)
             }
 
 
@@ -51,6 +55,7 @@ object MkSession {
                 if (exists().not()){
                     createFileIfNot()
                     writeText(assets.open("init.sh").bufferedReader().use { it.readText() })
+                    setExecutable(true, false)
                 }
             }
 
@@ -81,6 +86,10 @@ object MkSession {
 
 
             env.addAll(envVariables.map { "${it.key}=${it.value}" })
+
+            // Ensure required directories exist
+            localDir().mkdirs()
+            localLibDir().mkdirs()
 
             localDir().child("stat").apply {
                 if (exists().not()){

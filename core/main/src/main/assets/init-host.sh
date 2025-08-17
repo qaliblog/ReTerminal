@@ -3,14 +3,37 @@ ALPINE_DIR=$PREFIX/local/alpine
 mkdir -p $ALPINE_DIR
 
 if [ -z "$(ls -A "$ALPINE_DIR" | grep -vE '^(root|tmp)$')" ]; then
-    tar -xf "$PREFIX/files/alpine.tar.gz" -C "$ALPINE_DIR"
+    if [ -f "$PREFIX/files/alpine.tar.gz" ]; then
+        tar -xf "$PREFIX/files/alpine.tar.gz" -C "$ALPINE_DIR"
+    else
+        echo "Error: alpine.tar.gz not found at $PREFIX/files/alpine.tar.gz"
+        echo "Please ensure the Alpine Linux rootfs is properly downloaded."
+        exit 1
+    fi
 fi
 
-[ ! -e "$PREFIX/local/bin/proot" ] && cp "$PREFIX/files/proot" "$PREFIX/local/bin"
+# Ensure required directories exist
+mkdir -p "$PREFIX/local/bin"
+mkdir -p "$PREFIX/local/lib"
 
+# Copy proot if it exists
+if [ ! -e "$PREFIX/local/bin/proot" ]; then
+    if [ -f "$PREFIX/files/proot" ]; then
+        cp "$PREFIX/files/proot" "$PREFIX/local/bin"
+        chmod +x "$PREFIX/local/bin/proot"
+    else
+        echo "Error: proot not found at $PREFIX/files/proot"
+        echo "Please ensure proot is properly downloaded."
+        exit 1
+    fi
+fi
+
+# Copy library files
 for sofile in "$PREFIX/files/"*.so.2; do
-    dest="$PREFIX/local/lib/$(basename "$sofile")"
-    [ ! -e "$dest" ] && cp "$sofile" "$dest"
+    if [ -f "$sofile" ]; then
+        dest="$PREFIX/local/lib/$(basename "$sofile")"
+        [ ! -e "$dest" ] && cp "$sofile" "$dest"
+    fi
 done
 
 
