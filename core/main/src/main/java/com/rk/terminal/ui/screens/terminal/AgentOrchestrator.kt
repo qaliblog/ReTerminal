@@ -1280,7 +1280,7 @@ class AgentOrchestrator(
                         else -> ""
                     }
                     val failureNote = result.observation?.take(400) ?: "tool_failed"
-                    val ok = runBackPlanFixIfNeeded(p, intended = intended, userInstruction = task.description, failureNote = failureNote, onStatus = onStatus)
+                    val ok = runBackPlanFixIfNeeded(p, intended = intended, userInstruction = task.description, failureNote = failureNote, onStatus = onStatus, taskId = task.id)
                     if (ok) { fixed = true; break }
                 }
                 if (fixed) {
@@ -2054,7 +2054,7 @@ class AgentOrchestrator(
                             val t = currentTaskContext
                             val desc = t?.description ?: ""
                             kotlinx.coroutines.runBlocking {
-                                runBackPlanFixIfNeeded(path, intended = "(intended write_file with content)", userInstruction = desc, failureNote = "empty_content_after_generation", onStatus = { })
+                                runBackPlanFixIfNeeded(path, intended = "(intended write_file with content)", userInstruction = desc, failureNote = "empty_content_after_generation", onStatus = { }, taskId = t?.id)
                             }
                         }.getOrElse { false }
                         if (attempted) {
@@ -2119,7 +2119,7 @@ class AgentOrchestrator(
                         val t = currentTaskContext
                         val desc = t?.description ?: ""
                         kotlinx.coroutines.runBlocking {
-                            runBackPlanFixIfNeeded(path, intended = contentRaw.take(4000), userInstruction = desc, failureNote = "write_file_error:${e.message}", onStatus = { })
+                            runBackPlanFixIfNeeded(path, intended = contentRaw.take(4000), userInstruction = desc, failureNote = "write_file_error:${e.message}", onStatus = { }, taskId = t?.id)
                         }
                     }.getOrElse { false }
                     if (attempted) return ToolResult(true, "backplan_applied:${resolvePath(path).absolutePath}")
@@ -3314,13 +3314,13 @@ if (exit != 0) {
         return obj.toString()
     }
 
-    private suspend fun runBackPlanFixIfNeeded(path: String, intended: String, userInstruction: String, failureNote: String, onStatus: (String) -> Unit): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun runBackPlanFixIfNeeded(path: String, intended: String, userInstruction: String, failureNote: String, onStatus: (String) -> Unit, taskId: String? = null): Boolean = withContext(Dispatchers.IO) {
         if (!Settings.backplan_enabled) return@withContext false
         val f = resolvePath(path)
         val currentContent = runCatching { if (f.exists()) f.readText() else "" }.getOrElse { "" }
         val instructionsJson = buildMainInstructionsJson()
         appendTaskLog("backplan_attempt") {
-            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
+            put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
             put("path", f.absolutePath)
             put("failure", failureNote.take(500))
         }
@@ -3342,13 +3342,30 @@ if (exit != 0) {
             put("main_instructions", if (Settings.main_instructions_enabled) runCatching { JSONObject(instructionsJson) }.getOrElse { JSONObject() } else JSONObject())
         }.toString()
         val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
-        val jsonText = extractFirstJsonObject(content) ?: return@withContext false
+        val jsonText = extractFirstJsonObject(content)
+        if (jsonText == null) {
+            appendTaskLog("backplan_result") {
+                put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
+                put("path", f.absolutePath)
+                put("ok", false)
+                put("reason", "no_json")
+            }
+            return@withContext false
+        }
         val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext false
-        if (obj.optString("type") != "apply_changes") return@withContext false
+        if (obj.optString("type") != "apply_changes") {
+            appendTaskLog("backplan_result") {
+                put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
+                put("path", f.absolutePath)
+                put("ok", false)
+                put("reason", "wrong_type")
+            }
+            return@withContext false
+        }
         val toolCall = ToolCall("apply_changes", obj.optJSONObject("args") ?: JSONObject())
         val res = executeToolCall(toolCall)
         appendTaskLog("backplan_result") {
-            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
+            put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
             put("path", f.absolutePath)
             put("ok", res.ok)
             put("observation_preview", res.observation?.take(400))
