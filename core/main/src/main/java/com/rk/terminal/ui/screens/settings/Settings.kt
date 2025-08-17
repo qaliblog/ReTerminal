@@ -262,8 +262,7 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                     // Existing keys list with remove/up/down
                     keys.forEachIndexed { index, k ->
                         Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                            Text(text = "${index + 1}. ${k}", modifier = Modifier.weight(1f)) {
-                            }
+                            Text(text = "${index + 1}. ${k}", modifier = Modifier.weight(1f))
                             OutlinedButton(onClick = {
                                 if (index > 0) {
                                     val moved = keys.removeAt(index)
