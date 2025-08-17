@@ -157,6 +157,7 @@ class AgentOrchestrator(
     private val blueprintFile: File by lazy { File(agentDir, "blueprint.json") }
     private val cliReportFile: File by lazy { File(agentDir, "cli_report.json") }
     private val writerToolsFile: File by lazy { File(agentDir, "writer_tools.json") }
+    private val backgroundPidsFile: File by lazy { File(agentDir, "background_pids.json") }
 
     // Add task log file (JSON Lines)
     private val taskLogFile: File by lazy { File(agentDir, "task_log.jsonl") }
@@ -2689,10 +2690,13 @@ class AgentOrchestrator(
                         if (retryEdits.length() > 0) {
                             edits.length() // reference
                             retried = true
-                            return@when executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", retryEdits)))
+                            executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", retryEdits)))
+                        } else {
+                            ToolResult(ok, summary)
                         }
+                    } else {
+                        ToolResult(ok, summary)
                     }
-                    ToolResult(ok, summary)
                 }
             }
             "search_replace" -> {
@@ -2813,7 +2817,7 @@ class AgentOrchestrator(
                         put("new_content", h.optString("new_content"))
                     })
                 }
-                return@when executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", edits)))
+                executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", edits)))
             }
             else -> ToolResult(false, "unknown_tool_type:${call.type}")
         }
@@ -3264,6 +3268,12 @@ class AgentOrchestrator(
         return obj.toString()
     }
 
+    private fun addMainInstructionsToPrompt(prompt: String): String {
+        if (!Settings.main_instructions_enabled) return prompt
+        val instructions = buildMainInstructionsJson()
+        return "Main Instructions:\n${instructions}\n\nOriginal Prompt:\n${prompt}"
+    }
+
     private suspend fun runBackPlanFixIfNeeded(path: String, intended: String, userInstruction: String, failureNote: String, onStatus: (String) -> Unit, taskId: String? = null): Boolean = withContext(Dispatchers.IO) {
         if (!Settings.backplan_enabled) return@withContext false
         val f = resolvePath(path)
@@ -3364,6 +3374,28 @@ class AgentOrchestrator(
 		}
 	}
 
+    private fun ensureFolderStructureFromPlan(plan: Plan, onStatus: (String) -> Unit) {
+        val created = mutableSetOf<String>()
+        plan.tasks.forEach { task ->
+            task.targets?.forEach { target ->
+                val file = resolvePath(target)
+                file.parentFile?.let {
+                    if (!it.exists()) {
+                        it.mkdirs()
+                        if (it.exists()) {
+                            created.add(it.absolutePath)
+                            notifyWorkspaceChanged(it.absolutePath)
+                        }
+                    }
+                }
+            }
+        }
+        if (created.isNotEmpty()) {
+            onStatus("Ensured folder structure from plan: created ${created.size} dir(s)")
+            appendTaskLog("folder_structure_from_plan") { put("created", JSONArray(created)) }
+        }
+    }
+
 	fun retryBackPlanForTask(taskId: String): Boolean {
 		return runCatching {
 			val file = taskLogFile
@@ -3376,6 +3408,43 @@ class AgentOrchestrator(
 			kotlinx.coroutines.runBlocking { runBackPlanFixIfNeeded(path, intended = "(retry)", userInstruction = instr, failureNote = "user_retry", onStatus = { }, taskId = taskId) }
 		}.getOrElse { false }
 	}
+
+    private fun recordBackgroundPid(pid: Int) {
+        val pids = runCatching {
+            if (backgroundPidsFile.exists()) {
+                val text = backgroundPidsFile.readText()
+                if (text.isNotBlank()) {
+                    val arr = JSONArray(text)
+                    (0 until arr.length()).map { arr.getInt(it) }.toMutableList()
+                } else {
+                    mutableListOf()
+                }
+            } else {
+                mutableListOf()
+            }
+        }.getOrElse { mutableListOf() }
+        pids.add(pid)
+        backgroundPidsFile.writeText(JSONArray(pids).toString())
+    }
+
+    private fun stopAllBackground() {
+        if (!backgroundPidsFile.exists()) return
+        val pids = runCatching {
+            val text = backgroundPidsFile.readText()
+            if (text.isNotBlank()) {
+                val arr = JSONArray(text)
+                (0 until arr.length()).map { arr.getInt(it) }
+            } else {
+                emptyList()
+            }
+        }.getOrElse { emptyList() }
+
+        pids.forEach { pid ->
+            val command = "kill -9 $pid"
+            MainShell.execInMainSession(context as? MainActivity, workingDirProvider(), command, 5000L)
+        }
+        backgroundPidsFile.delete()
+    }
 }
 
 object MainShell {
