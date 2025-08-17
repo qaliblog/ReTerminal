@@ -710,7 +710,10 @@ fun ChatView(mainActivityActivity: MainActivity) {
             Button(
                 onClick = {
                     scope.launch(Dispatchers.IO) {
-                        val stopped = runCatching { agent.stopAllBackground() }.getOrElse { false }
+                        val stopped = runCatching {
+                            agent.stopAllBackground()
+                            true
+                        }.getOrElse { false }
                         scope.launch(Dispatchers.Main) { postStatus(if (stopped) "Stopped background processes" else "No background processes to stop"); saveHistory() }
                     }
                 },
