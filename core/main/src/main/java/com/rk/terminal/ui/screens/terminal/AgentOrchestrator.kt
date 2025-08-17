@@ -2481,7 +2481,8 @@ class AgentOrchestrator(
                 var createdAny = false
                 var modifiedAny = false
                 var retried = false
-                retryOuter@ while (true) {
+
+                fun applyChangesInternal(): ToolResult {
                     outArr.length() // no-op to keep reference
                     results.clear()
                     createdAny = false; modifiedAny = false
@@ -2688,16 +2689,13 @@ class AgentOrchestrator(
                             }
                         }
                         if (retryEdits.length() > 0) {
-                            edits.length() // reference
                             retried = true
-                            executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", retryEdits)))
-                        } else {
-                            ToolResult(ok, summary)
+                            return executeToolCall(ToolCall("apply_changes", JSONObject().put("edits", retryEdits)))
                         }
-                    } else {
-                        ToolResult(ok, summary)
                     }
+                    return ToolResult(ok, summary)
                 }
+                applyChangesInternal()
             }
             "search_replace" -> {
                 val path = call.args.optString("path")
@@ -3409,7 +3407,7 @@ class AgentOrchestrator(
 		}.getOrElse { false }
 	}
 
-    private fun recordBackgroundPid(pid: Int) {
+    internal fun recordBackgroundPid(pid: Int) {
         val pids = runCatching {
             if (backgroundPidsFile.exists()) {
                 val text = backgroundPidsFile.readText()
@@ -3427,7 +3425,7 @@ class AgentOrchestrator(
         backgroundPidsFile.writeText(JSONArray(pids).toString())
     }
 
-    private fun stopAllBackground() {
+    internal fun stopAllBackground() {
         if (!backgroundPidsFile.exists()) return
         val pids = runCatching {
             val text = backgroundPidsFile.readText()
