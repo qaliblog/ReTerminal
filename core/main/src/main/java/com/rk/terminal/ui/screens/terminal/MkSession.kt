@@ -39,15 +39,11 @@ object MkSession {
 
             val workingDir = pendingCommand?.workingDir ?: "/sdcard"
 
-            // Ensure local bin directory exists
-            localBinDir().mkdirs()
-            
             val initFile: File = localBinDir().child("init-host")
 
             if (initFile.exists().not()){
                 initFile.createFileIfNot()
                 initFile.writeText(assets.open("init-host.sh").bufferedReader().use { it.readText() })
-                initFile.setExecutable(true, false)
             }
 
 
@@ -55,7 +51,6 @@ object MkSession {
                 if (exists().not()){
                     createFileIfNot()
                     writeText(assets.open("init.sh").bufferedReader().use { it.readText() })
-                    setExecutable(true, false)
                 }
             }
 
@@ -86,10 +81,6 @@ object MkSession {
 
 
             env.addAll(envVariables.map { "${it.key}=${it.value}" })
-
-            // Ensure required directories exist
-            localDir().mkdirs()
-            localLibDir().mkdirs()
 
             localDir().child("stat").apply {
                 if (exists().not()){
@@ -126,22 +117,12 @@ Updating : apk update && apk upgrade
 
             val shell = if (pendingCommand == null) {
                 args = if (workingMode == WorkingMode.ALPINE){
-                    // Check if Alpine environment is available
-                    val alpineRootfs = File("${filesDir.parentFile!!.path}/local/alpine")
-                    val prootBinary = File("${filesDir.parentFile!!.path}/local/bin/proot")
-                    
-                    if (alpineRootfs.exists() && prootBinary.exists()) {
-                        arrayOf("-c", initFile.absolutePath)
-                    } else {
-                        // Fallback to basic Android shell if Alpine isn't available
-                        android.util.Log.w("MkSession", "Alpine environment not available, using fallback shell")
-                        arrayOf("-c", "echo 'Alpine Linux not available, using basic Android shell'; export PS1='[\\u@android \\w]\\$ '; exec /system/bin/sh")
-                    }
-                } else {
+                    arrayOf("-c",initFile.absolutePath)
+                }else{
                     arrayOf()
                 }
                 "/system/bin/sh"
-            } else {
+            } else{
                 args = pendingCommand!!.args
                 pendingCommand!!.shell
             }
