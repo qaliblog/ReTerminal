@@ -122,7 +122,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 put("session_active", true)
                 if (terminalState != null) put("terminal_state", terminalState)
                 // Save current input state
-                put("current_input", currentInput)
+                put("current_input", input)
                 put("selected_tab", selectedTab)
             }
             sessionStateFile.writeText(state.toString(2))
@@ -177,7 +177,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         val sessionState = loadSessionState()
         if (sessionState.optBoolean("session_active", false)) {
             // Restore input state
-            currentInput = sessionState.optString("current_input", "")
+            input = sessionState.optString("current_input", "")
             selectedTab = sessionState.optInt("selected_tab", 0)
             
             // TODO: Restore cursor position and scroll position when UI supports it
@@ -194,7 +194,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     }
 
     // Save session state when input changes
-    LaunchedEffect(currentInput, selectedTab) {
+    LaunchedEffect(input, selectedTab) {
         saveSessionState()
     }
 

@@ -1128,37 +1128,38 @@ class AgentOrchestrator(
             
             onStatus("Search: synthesizing information from ${fetched.length()} sources...")
             
+            val synthSys = """
+                You are a senior research synthesis and information analysis specialist.
+                Task: Synthesize and summarize information from multiple web sources.
+                Context: Analyze fetched web pages to extract relevant, accurate information for the user's query.
+                Output format: Provide concise, well-structured summaries with inline URL citations.
+                
+                Synthesis guidelines:
+                - Extract the most relevant and accurate information from all sources
+                - Organize information logically and coherently
+                - Cite specific URLs inline when referencing information
+                - Focus on actionable insights and practical solutions
+                - Maintain objectivity and verify information across sources
+                - Prioritize recent and authoritative sources
+                
+                Response style: Clear, concise, and well-cited with practical focus
+            """.trimIndent()
+            val bundle = (0 until fetched.length()).joinToString("\n\n") { idx ->
+                val o = fetched.getJSONObject(idx)
+                "URL: ${o.optString("url")}\nContent:\n" + o.optString("content", o.optString("html", ""))
+            }
+            val synthUser = """
+                Query: ${query}
+                Fetched pages:
+                ${bundle}
+            """.trimIndent()
+            val final = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", synthSys), LlmMessage("user", synthUser))) })
+            return@withContext final
+            
         } catch (e: Exception) {
             onStatus("Search: error occurred - ${e.message}")
             return@withContext "Search failed: ${e.message}"
         }
-        val synthSys = """
-            You are a senior research synthesis and information analysis specialist.
-            Task: Synthesize and summarize information from multiple web sources.
-            Context: Analyze fetched web pages to extract relevant, accurate information for the user's query.
-            Output format: Provide concise, well-structured summaries with inline URL citations.
-            
-            Synthesis guidelines:
-            - Extract the most relevant and accurate information from all sources
-            - Organize information logically and coherently
-            - Cite specific URLs inline when referencing information
-            - Focus on actionable insights and practical solutions
-            - Maintain objectivity and verify information across sources
-            - Prioritize recent and authoritative sources
-            
-            Response style: Clear, concise, and well-cited with practical focus
-        """.trimIndent()
-        val bundle = (0 until fetched.length()).joinToString("\n\n") { idx ->
-            val o = fetched.getJSONObject(idx)
-            "URL: ${o.optString("url")}\nHTML:\n" + o.optString("html")
-        }
-        val synthUser = """
-            Query: ${query}
-            Fetched pages:
-            ${bundle}
-        """.trimIndent()
-        val final = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", synthSys), LlmMessage("user", synthUser))) })
-        return@withContext final
     }
 
     private fun promptSuggestsSearch(prompt: String): Boolean {
@@ -3430,7 +3431,7 @@ if (exit != 0) {
         }.getOrElse { "Untitled" }
     }
 
-    private fun extractDependencies(content: String, language: String): List<String> {
+    private fun extractEnhancedDependencies(content: String, language: String): List<String> {
         return runCatching {
             val deps = mutableListOf<String>()
             when (language) {
@@ -3691,7 +3692,7 @@ if (exit != 0) {
                     else -> "unknown"
                 })
                 // Enhanced codebase analysis
-                val dependencies = extractDependencies(head, when {
+                val dependencies = extractEnhancedDependencies(head, when {
                     rel.endsWith(".py") -> "python"
                     rel.endsWith(".js") -> "javascript"
                     rel.endsWith(".kt") -> "kotlin"
