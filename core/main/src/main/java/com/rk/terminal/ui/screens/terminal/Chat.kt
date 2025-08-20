@@ -207,6 +207,13 @@ fun ChatView(mainActivityActivity: MainActivity) {
         messages.add(ChatMessage("assistant", s))
     }
 
+    // Send mode dropdown: think (default) | plan | chat
+    val sendModes = listOf("think", "plan", "chat")
+    var sendMode by remember {
+        mutableStateOf(loadPrefs().optString("send_mode").ifBlank { "think" })
+    }
+    var showSendMenu by remember { mutableStateOf(false) }
+
     fun saveSessionState(cursorPosition: Int = -1, scrollPosition: Int = 0, terminalState: String? = null) {
         runCatching {
             val state = JSONObject().apply {
@@ -293,13 +300,6 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         }
     }
-
-    // Send mode dropdown: think (default) | plan | chat
-    val sendModes = listOf("think", "plan", "chat")
-    var sendMode by remember {
-        mutableStateOf(loadPrefs().optString("send_mode").ifBlank { "think" })
-    }
-    var showSendMenu by remember { mutableStateOf(false) }
 
     // Scroll state with persistence
     val listState = rememberLazyListState()
