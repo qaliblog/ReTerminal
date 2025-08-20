@@ -100,6 +100,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     // Chat history persistence under chat/<chatId>/history.json
     val chatDir = remember(currentChatId.value) { File(application!!.filesDir, "chat/${currentChatId.value}").apply { mkdirs() } }
     val historyFile = remember(currentChatId.value) { File(chatDir, "history.json") }
+    val sessionStateFile = remember(currentChatId.value) { File(chatDir, "session_state.json") }
     val prefsFile = remember { File(application!!.filesDir, "chat_prefs.json") }
 
     fun saveHistory() {
@@ -109,6 +110,37 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 arr.put(JSONObject().put("role", m.role).put("content", m.content))
             }
             historyFile.writeText(arr.toString(2))
+        }
+    }
+
+    fun saveSessionState(cursorPosition: Int = -1, scrollPosition: Int = 0, terminalState: String? = null) {
+        runCatching {
+            val state = JSONObject().apply {
+                put("cursor_position", cursorPosition)
+                put("scroll_position", scrollPosition)
+                put("last_updated", System.currentTimeMillis())
+                put("session_active", true)
+                if (terminalState != null) put("terminal_state", terminalState)
+                // Save current input state
+                put("current_input", currentInput)
+                put("selected_tab", selectedTab)
+            }
+            sessionStateFile.writeText(state.toString(2))
+        }
+    }
+
+    fun loadSessionState(): JSONObject {
+        return runCatching { 
+            JSONObject(sessionStateFile.takeIf { it.exists() }?.readText() ?: "{}") 
+        }.getOrElse { JSONObject() }
+    }
+
+    fun markSessionInactive() {
+        runCatching {
+            val state = loadSessionState()
+            state.put("session_active", false)
+            state.put("last_updated", System.currentTimeMillis())
+            sessionStateFile.writeText(state.toString(2))
         }
     }
 
@@ -140,10 +172,30 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 }
             }
         }
+        
+        // Restore session state if available
+        val sessionState = loadSessionState()
+        if (sessionState.optBoolean("session_active", false)) {
+            // Restore input state
+            currentInput = sessionState.optString("current_input", "")
+            selectedTab = sessionState.optInt("selected_tab", 0)
+            
+            // TODO: Restore cursor position and scroll position when UI supports it
+            // val cursorPos = sessionState.optInt("cursor_position", -1)
+            // val scrollPos = sessionState.optInt("scroll_position", 0)
+        }
     }
 
     DisposableEffect(messages.size, currentChatId.value) {
-        onDispose { saveHistory() }
+        onDispose { 
+            saveHistory()
+            saveSessionState()
+        }
+    }
+
+    // Save session state when input changes
+    LaunchedEffect(currentInput, selectedTab) {
+        saveSessionState()
     }
 
     // Agent state
@@ -869,6 +921,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                                 currentChatId.value = cid
                                                 showChatManager = false
                                                 savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
+                                                // Count chat selection as a normal user interaction
+                                                messages.add(ChatMessage("system", "Chat session switched to: $cid"))
+                                                saveHistory()
                                             }
                                             .padding(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -901,6 +956,9 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         newChatName.value = ""
                         showChatManager = false
                         savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
+                        // Count new chat creation as a user interaction
+                        messages.add(ChatMessage("system", "New chat session created: $name"))
+                        saveHistory()
                     }) { Text("Create / Switch") }
                 },
                 dismissButton = {

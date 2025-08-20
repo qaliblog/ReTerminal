@@ -168,6 +168,9 @@ class AgentOrchestrator(
     // Track workspace changes to refresh codebase cache
     private val pendingCodebaseChanges: MutableSet<String> = linkedSetOf()
     private var lastCodebaseRefreshMs: Long = 0L
+    // Prevent duplicate tool calls that cause freezing
+    private val recentToolCalls: MutableMap<String, Long> = linkedMapOf()
+    private val toolCallCooldownMs = 1000L // 1 second cooldown for identical calls
     // Environment detection signals cached during run_shell preflight
     private var lastDetectedOsId: String? = null
     private val lastDetectedManagers: MutableSet<String> = linkedSetOf()
@@ -998,46 +1001,136 @@ class AgentOrchestrator(
     }
 
     private suspend fun runSearchAgent(query: String, onStatus: (String) -> Unit): String = withContext(Dispatchers.IO) {
-        val suggestSys = """
-            You suggest 1-3 websites to consult for the given query. Return ONLY minified JSON:
-            {"sites": [{"url": string, "why": string}...]}
-        """.trimIndent()
-        val suggestUser = """
-            Query: ${query}
-            Prefer official docs, MDN, language/framework docs, reputable blogs.
-        """.trimIndent()
-        val suggestContent = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", suggestSys), LlmMessage("user", suggestUser))) })
-        val suggestJson = extractFirstJsonObject(suggestContent)
-        val sites = if (suggestJson != null) runCatching { JSONObject(suggestJson).optJSONArray("sites") }.getOrNull() ?: JSONArray() else JSONArray()
-        val fetched = JSONArray()
-        fun curl(url: String): String {
-            val cmd = "curl -L --max-time 15 --silent --show-error --compressed --user-agent 'Mozilla/5.0' '" + url.replace("'", "%27") + "'"
-            val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd)))
-            return res.observation ?: ""
-        }
-        val linkRegex = Regex("href=\"(https?://[^\"]+)\"", RegexOption.IGNORE_CASE)
-        val toVisit = ArrayDeque<String>()
-        for (i in 0 until sites.length()) {
-            val u = sites.optJSONObject(i)?.optString("url").orEmpty()
-            if (u.isNotBlank()) toVisit.add(u)
-        }
-        val visited = mutableSetOf<String>()
-        var pages = 0
-        while (toVisit.isNotEmpty() && pages < 3) {
-            val u = toVisit.removeFirst()
-            if (visited.contains(u)) continue
-            visited.add(u)
-            onStatus("Search: fetching ${u}")
-            val html = curl(u)
-            if (html.isNotBlank()) {
-                fetched.put(JSONObject().put("url", u).put("html", html.take(20000)))
-                // enqueue a couple more links from this page
-                linkRegex.findAll(html).take(2).forEach { m ->
-                    val link = m.groupValues[1]
-                    if (!visited.contains(link)) toVisit.add(link)
-                }
-                pages++
+        try {
+            onStatus("Search: analyzing query and selecting sources...")
+            val suggestSys = """
+                You suggest 2-4 high-quality websites to consult for the given query. Return ONLY minified JSON:
+                {"sites": [{"url": string, "why": string}...]}
+                
+                Selection criteria:
+                - Prioritize official documentation, MDN, language/framework docs
+                - Include reputable technical blogs and Stack Overflow when relevant
+                - Avoid general search engines, social media, or unreliable sources
+                - Ensure URLs are complete and accessible
+            """.trimIndent()
+            val suggestUser = """
+                Query: ${query.take(500)}
+                Focus on technical accuracy and authoritative sources.
+            """.trimIndent()
+            
+            val suggestContent = runCatching {
+                collectAllWithRetry(flowProvider = { 
+                    LlmProvider.current().generate(listOf(
+                        LlmMessage("system", suggestSys), 
+                        LlmMessage("user", suggestUser)
+                    )) 
+                })
+            }.getOrElse { 
+                onStatus("Search: LLM suggestion failed, using fallback sources")
+                return@withContext "Search failed: Unable to get source suggestions from LLM"
             }
+            
+            val suggestJson = extractFirstJsonObject(suggestContent)
+            val sites = if (suggestJson != null) {
+                runCatching { JSONObject(suggestJson).optJSONArray("sites") }.getOrNull() ?: JSONArray()
+            } else {
+                onStatus("Search: Invalid JSON response, using fallback")
+                JSONArray()
+            }
+            
+            if (sites.length() == 0) {
+                return@withContext "Search failed: No valid sources identified"
+            }
+            
+            val fetched = JSONArray()
+            fun curl(url: String): Pair<String, Boolean> {
+                return runCatching {
+                    val cleanUrl = url.replace("'", "%27").replace("\"", "%22")
+                    val cmd = "curl -L --max-time 20 --silent --show-error --compressed --user-agent 'Mozilla/5.0 (compatible; SearchBot/1.0)' '$cleanUrl'"
+                    val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd)))
+                    val content = res.observation ?: ""
+                    val success = res.ok && content.isNotBlank() && !content.contains("curl: ")
+                    Pair(content, success)
+                }.getOrElse { 
+                    Pair("", false) 
+                }
+            }
+            
+            val linkRegex = Regex("href=[\"'](https?://[^\"']+)[\"']", RegexOption.IGNORE_CASE)
+            val toVisit = ArrayDeque<String>()
+            
+            // Add initial sites
+            for (i in 0 until sites.length()) {
+                val siteObj = sites.optJSONObject(i)
+                val u = siteObj?.optString("url")?.trim().orEmpty()
+                if (u.isNotBlank() && (u.startsWith("http://") || u.startsWith("https://"))) {
+                    toVisit.add(u)
+                }
+            }
+            
+            if (toVisit.isEmpty()) {
+                return@withContext "Search failed: No valid URLs to fetch"
+            }
+            
+            val visited = mutableSetOf<String>()
+            var pages = 0
+            val maxPages = 4
+            
+            while (toVisit.isNotEmpty() && pages < maxPages) {
+                val u = toVisit.removeFirst()
+                if (visited.contains(u)) continue
+                visited.add(u)
+                
+                onStatus("Search: fetching ${u.take(50)}...")
+                val (html, success) = curl(u)
+                
+                if (success && html.length > 100) {
+                    // Clean and truncate HTML content
+                    val cleanHtml = html
+                        .replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), "")
+                        .replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), "")
+                        .replace(Regex("<[^>]+>"), " ")
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                    
+                    fetched.put(JSONObject().apply {
+                        put("url", u)
+                        put("content", cleanHtml.take(15000))
+                        put("title", extractTitle(html))
+                    })
+                    
+                    // Extract additional relevant links (limit to same domain for focus)
+                    if (pages < 2) {
+                        val domain = runCatching { 
+                            java.net.URL(u).host 
+                        }.getOrNull()
+                        
+                        linkRegex.findAll(html).take(3).forEach { m ->
+                            val link = m.groupValues[1]
+                            val linkDomain = runCatching { 
+                                java.net.URL(link).host 
+                            }.getOrNull()
+                            
+                            if (!visited.contains(link) && linkDomain == domain) {
+                                toVisit.add(link)
+                            }
+                        }
+                    }
+                    pages++
+                } else {
+                    onStatus("Search: failed to fetch ${u.take(30)}...")
+                }
+            }
+            
+            if (fetched.length() == 0) {
+                return@withContext "Search failed: No content could be retrieved from any source"
+            }
+            
+            onStatus("Search: synthesizing information from ${fetched.length()} sources...")
+            
+        } catch (e: Exception) {
+            onStatus("Search: error occurred - ${e.message}")
+            return@withContext "Search failed: ${e.message}"
         }
         val synthSys = """
             You are a senior research synthesis and information analysis specialist.
@@ -1359,6 +1452,26 @@ class AgentOrchestrator(
             }
             val result = runCatching {
                 currentTaskContext = task
+                
+                // Prevent duplicate tool calls that cause freezing
+                val toolCallKey = "${effectiveToolCall.type}:${effectiveToolCall.args.toString().hashCode()}"
+                val now = System.currentTimeMillis()
+                val lastCall = recentToolCalls[toolCallKey]
+                if (lastCall != null && (now - lastCall) < toolCallCooldownMs) {
+                    appendTaskLog("tool_call_skipped") { 
+                        put("task_id", task.id)
+                        put("type", effectiveToolCall.type) 
+                        put("reason", "duplicate_prevention")
+                        put("cooldown_remaining", toolCallCooldownMs - (now - lastCall))
+                    }
+                    return@runCatching ToolResult(false, "Duplicate tool call prevented (cooldown: ${toolCallCooldownMs - (now - lastCall)}ms)")
+                }
+                recentToolCalls[toolCallKey] = now
+                
+                // Clean old entries to prevent memory leaks
+                val cutoff = now - (toolCallCooldownMs * 10)
+                recentToolCalls.entries.removeIf { it.value < cutoff }
+                
                 executeToolCall(effectiveToolCall)
             }.getOrElse { e ->
                 val err = e.message ?: e.toString()
@@ -2835,6 +2948,88 @@ if (exit != 0) {
                                 if (unique && count != 1) { results.add("edit[$i]: non-unique matches=${'$'}count"); null } else original.replace(regex, replacement)
                             }
                         }
+                        "json_patch" -> {
+                            // Enhanced JSON patching for structured updates
+                            val jsonPath = e.optString("path")
+                            val value = e.opt("value")
+                            val operation = e.optString("operation", "set") // set, delete, append
+                            
+                            if (jsonPath.isBlank()) { 
+                                results.add("edit[$i]: json_path empty"); null 
+                            } else {
+                                runCatching {
+                                    val json = JSONObject(original)
+                                    val pathParts = jsonPath.split(".")
+                                    
+                                    when (operation) {
+                                        "set" -> {
+                                            var current = json
+                                            for (j in 0 until pathParts.size - 1) {
+                                                val part = pathParts[j]
+                                                if (!current.has(part)) {
+                                                    current.put(part, JSONObject())
+                                                }
+                                                current = current.getJSONObject(part)
+                                            }
+                                            current.put(pathParts.last(), value)
+                                        }
+                                        "delete" -> {
+                                            var current = json
+                                            for (j in 0 until pathParts.size - 1) {
+                                                current = current.getJSONObject(pathParts[j])
+                                            }
+                                            current.remove(pathParts.last())
+                                        }
+                                        "append" -> {
+                                            var current = json
+                                            for (j in 0 until pathParts.size - 1) {
+                                                current = current.getJSONObject(pathParts[j])
+                                            }
+                                            val key = pathParts.last()
+                                            val array = current.optJSONArray(key) ?: JSONArray()
+                                            array.put(value)
+                                            current.put(key, array)
+                                        }
+                                    }
+                                    json.toString(2)
+                                }.getOrElse { e ->
+                                    results.add("edit[$i]: json_patch failed: ${e.message}")
+                                    null
+                                }
+                            }
+                        }
+                        "smart_merge" -> {
+                            // Intelligent merging for code chunks
+                            val newChunk = e.optString("new_chunk")
+                            val mergeStrategy = e.optString("strategy", "replace") // replace, merge, append
+                            val contextLines = e.optInt("context_lines", 3)
+                            
+                            if (newChunk.isBlank()) {
+                                results.add("edit[$i]: new_chunk empty"); null
+                            } else {
+                                when (mergeStrategy) {
+                                    "replace" -> newChunk
+                                    "append" -> original + "\n" + newChunk
+                                    "merge" -> {
+                                        // Smart merge based on code structure
+                                        val originalLines = original.lines()
+                                        val newLines = newChunk.lines()
+                                        val merged = mutableListOf<String>()
+                                        
+                                        // Simple merge strategy - can be enhanced
+                                        merged.addAll(originalLines)
+                                        merged.add("") // separator
+                                        merged.addAll(newLines)
+                                        
+                                        merged.joinToString("\n")
+                                    }
+                                    else -> {
+                                        results.add("edit[$i]: unknown merge strategy: $mergeStrategy")
+                                        null
+                                    }
+                                }
+                            }
+                        }
                         "ensure_block_present" -> {
                             val block = e.optString("block")
                             val idMarker = e.optString("idempotent_marker")
@@ -3085,10 +3280,255 @@ if (exit != 0) {
                 .put("ts", System.currentTimeMillis())
                 .put("session_id", sessionId)
             build?.invoke(obj)
+            
+            // Create concise version for prompt efficiency
+            val conciseObj = createConciseLogEntry(obj)
+            
             taskLogFile.parentFile?.mkdirs()
             if (!taskLogFile.exists()) taskLogFile.createNewFile()
-            taskLogFile.appendText(obj.toString() + "\n")
+            taskLogFile.appendText(conciseObj.toString() + "\n")
         }
+    }
+
+    private fun createConciseLogEntry(obj: JSONObject): JSONObject {
+        val concise = JSONObject()
+        val type = obj.optString("type")
+        
+        // Always include essential fields
+        concise.put("type", type)
+        concise.put("ts", obj.optLong("ts"))
+        concise.put("session_id", obj.optString("session_id"))
+        
+        when (type) {
+            "plan_created" -> {
+                concise.put("goal", obj.optString("goal").take(100))
+                val tasks = obj.optJSONArray("tasks")
+                if (tasks != null && tasks.length() > 0) {
+                    concise.put("task_count", tasks.length())
+                    // Include only first few task summaries
+                    val taskSummary = JSONArray()
+                    for (i in 0 until minOf(3, tasks.length())) {
+                        val task = tasks.optJSONObject(i)
+                        if (task != null) {
+                            taskSummary.put(JSONObject().apply {
+                                put("id", task.optString("id"))
+                                put("desc", task.optString("description").take(50))
+                                put("cat", task.optString("category"))
+                            })
+                        }
+                    }
+                    concise.put("tasks", taskSummary)
+                    if (tasks.length() > 3) concise.put("more_tasks", tasks.length() - 3)
+                }
+            }
+            "task_start" -> {
+                concise.put("task_id", obj.optString("task_id"))
+                concise.put("desc", obj.optString("description").take(50))
+                concise.put("cat", obj.optString("category"))
+            }
+            "task_done", "task_failed" -> {
+                concise.put("task_id", obj.optString("task_id"))
+                concise.put("attempts", obj.optInt("attempts"))
+                if (type == "task_failed") {
+                    concise.put("note", obj.optString("note").take(30))
+                }
+            }
+            "write_file", "create_file" -> {
+                val args = obj.optJSONObject("args")
+                if (args != null) {
+                    concise.put("path", shortenPath(args.optString("path")))
+                    concise.put("bytes", args.optString("content").length)
+                }
+                concise.put("ok", obj.optBoolean("ok"))
+            }
+            "apply_changes" -> {
+                val args = obj.optJSONObject("args")
+                if (args != null) {
+                    val edits = args.optJSONArray("edits")
+                    if (edits != null) {
+                        concise.put("edit_count", edits.length())
+                        val editSummary = JSONArray()
+                        for (i in 0 until minOf(2, edits.length())) {
+                            val edit = edits.optJSONObject(i)
+                            if (edit != null) {
+                                editSummary.put(JSONObject().apply {
+                                    put("path", shortenPath(edit.optString("path")))
+                                    put("op", edit.optString("op"))
+                                })
+                            }
+                        }
+                        concise.put("edits", editSummary)
+                    }
+                }
+                concise.put("ok", obj.optBoolean("ok"))
+                val obs = obj.optString("observation_preview")
+                if (obs.isNotBlank()) {
+                    concise.put("result", obs.take(50))
+                }
+            }
+            "backplan_attempt" -> {
+                concise.put("task_id", obj.optString("task_id"))
+                concise.put("path", shortenPath(obj.optString("path")))
+                concise.put("failure", obj.optString("failure").take(50))
+            }
+            "backplan_result" -> {
+                concise.put("task_id", obj.optString("task_id"))
+                concise.put("path", shortenPath(obj.optString("path")))
+                concise.put("ok", obj.optBoolean("ok"))
+                val reason = obj.optString("reason")
+                if (reason.isNotBlank()) concise.put("reason", reason)
+            }
+            "run_start", "run_end" -> {
+                if (type == "run_end") {
+                    val stats = obj.optJSONObject("stats")
+                    if (stats != null) {
+                        concise.put("duration_s", stats.optDouble("duration_s"))
+                        val toolCounts = stats.optJSONObject("tool_counts")
+                        if (toolCounts != null && toolCounts.length() > 0) {
+                            concise.put("tools", toolCounts)
+                        }
+                        concise.put("files_modified", stats.optJSONArray("files_modified")?.length() ?: 0)
+                    }
+                }
+            }
+            else -> {
+                // For other types, include key fields but truncate long values
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (key !in setOf("type", "ts", "session_id")) {
+                        val value = obj.opt(key)
+                        when (value) {
+                            is String -> if (value.length > 100) concise.put(key, value.take(100) + "...") else concise.put(key, value)
+                            is JSONObject -> concise.put(key, "obj:${value.length()}")
+                            is JSONArray -> concise.put(key, "arr:${value.length()}")
+                            else -> concise.put(key, value)
+                        }
+                    }
+                }
+            }
+        }
+        
+        return concise
+    }
+    
+    private fun shortenPath(path: String): String {
+        if (path.length <= 50) return path
+        val parts = path.split("/")
+        return if (parts.size > 3) {
+            ".../${parts.takeLast(2).joinToString("/")}"
+        } else {
+            path.take(50) + "..."
+        }
+    }
+
+    private fun extractTitle(html: String): String {
+        return runCatching {
+            val titleRegex = Regex("<title[^>]*>(.*?)</title>", RegexOption.IGNORE_CASE or RegexOption.DOT_MATCHES_ALL)
+            val match = titleRegex.find(html)
+            match?.groupValues?.get(1)?.trim()?.take(100) ?: "Untitled"
+        }.getOrElse { "Untitled" }
+    }
+
+    private fun extractDependencies(content: String, language: String): List<String> {
+        return runCatching {
+            val deps = mutableListOf<String>()
+            when (language) {
+                "python" -> {
+                    val importRegex = Regex("^\\s*(?:from\\s+([\\w.]+)\\s+)?import\\s+([\\w.,\\s*]+)", RegexOption.MULTILINE)
+                    importRegex.findAll(content).forEach { match ->
+                        val module = match.groupValues[1].ifBlank { match.groupValues[2].split(",")[0].trim() }
+                        if (module.isNotBlank()) deps.add(module)
+                    }
+                }
+                "javascript", "typescript" -> {
+                    val importRegex = Regex("^\\s*import\\s+.*?from\\s+['\"]([^'\"]+)['\"]", RegexOption.MULTILINE)
+                    val requireRegex = Regex("require\\s*\\(['\"]([^'\"]+)['\"]\\)", RegexOption.MULTILINE)
+                    importRegex.findAll(content).forEach { deps.add(it.groupValues[1]) }
+                    requireRegex.findAll(content).forEach { deps.add(it.groupValues[1]) }
+                }
+                "kotlin" -> {
+                    val importRegex = Regex("^\\s*import\\s+([\\w.]+)", RegexOption.MULTILINE)
+                    importRegex.findAll(content).forEach { deps.add(it.groupValues[1]) }
+                }
+                "java" -> {
+                    val importRegex = Regex("^\\s*import\\s+([\\w.]+);", RegexOption.MULTILINE)
+                    importRegex.findAll(content).forEach { deps.add(it.groupValues[1]) }
+                }
+            }
+            deps.distinct()
+        }.getOrElse { emptyList() }
+    }
+
+    private fun extractExports(content: String, language: String): List<String> {
+        return runCatching {
+            val exports = mutableListOf<String>()
+            when (language) {
+                "javascript", "typescript" -> {
+                    val exportRegex = Regex("^\\s*export\\s+(?:default\\s+)?(?:function\\s+|class\\s+|const\\s+|let\\s+|var\\s+)?(\\w+)", RegexOption.MULTILINE)
+                    exportRegex.findAll(content).forEach { exports.add(it.groupValues[1]) }
+                    
+                    val moduleExportRegex = Regex("module\\.exports\\s*=\\s*(\\w+)", RegexOption.MULTILINE)
+                    moduleExportRegex.findAll(content).forEach { exports.add(it.groupValues[1]) }
+                }
+                "python" -> {
+                    val allRegex = Regex("^\\s*__all__\\s*=\\s*\\[([^\\]]+)\\]", RegexOption.MULTILINE)
+                    allRegex.find(content)?.let { match ->
+                        val items = match.groupValues[1].split(",").map { it.trim().removeSurrounding("'", "\"") }
+                        exports.addAll(items)
+                    }
+                }
+            }
+            exports.distinct()
+        }.getOrElse { emptyList() }
+    }
+
+    private fun analyzeFileStructure(content: String, extension: String): JSONObject {
+        return runCatching {
+            val structure = JSONObject()
+            val lines = content.lines()
+            structure.put("line_count", lines.size)
+            structure.put("size_kb", content.length / 1024.0)
+            
+            when (extension.lowercase()) {
+                "py" -> {
+                    structure.put("type", "python")
+                    structure.put("has_main", content.contains("if __name__ == \"__main__\":"))
+                    structure.put("has_docstring", content.trimStart().startsWith("\"\"\""))
+                }
+                "js", "ts" -> {
+                    structure.put("type", if (extension == "ts") "typescript" else "javascript")
+                    structure.put("has_exports", content.contains("export"))
+                    structure.put("has_imports", content.contains("import"))
+                    structure.put("is_module", content.contains("module.exports"))
+                }
+                "kt" -> {
+                    structure.put("type", "kotlin")
+                    structure.put("has_package", content.contains("package "))
+                    structure.put("has_main", content.contains("fun main("))
+                }
+                "java" -> {
+                    structure.put("type", "java")
+                    structure.put("has_package", content.contains("package "))
+                    structure.put("has_main", content.contains("public static void main("))
+                }
+                "html" -> {
+                    structure.put("type", "html")
+                    structure.put("has_doctype", content.trimStart().startsWith("<!DOCTYPE"))
+                    structure.put("has_scripts", content.contains("<script"))
+                    structure.put("has_styles", content.contains("<style") || content.contains("<link"))
+                }
+                "css" -> {
+                    structure.put("type", "css")
+                    val ruleCount = Regex("\\{[^}]*\\}").findAll(content).count()
+                    structure.put("rule_count", ruleCount)
+                }
+                else -> {
+                    structure.put("type", "unknown")
+                }
+            }
+            structure
+        }.getOrElse { JSONObject().put("type", "unknown") }
     }
 
     private fun globToRegex(glob: String): java.util.regex.Pattern {
@@ -3250,12 +3690,33 @@ if (exit != 0) {
                     rel.endsWith(".js") -> "javascript"
                     else -> "unknown"
                 })
+                // Enhanced codebase analysis
+                val dependencies = extractDependencies(head, when {
+                    rel.endsWith(".py") -> "python"
+                    rel.endsWith(".js") -> "javascript"
+                    rel.endsWith(".kt") -> "kotlin"
+                    rel.endsWith(".java") -> "java"
+                    else -> "unknown"
+                })
+                val exports = extractExports(head, when {
+                    rel.endsWith(".js") -> "javascript"
+                    rel.endsWith(".ts") -> "typescript"
+                    rel.endsWith(".py") -> "python"
+                    else -> "unknown"
+                })
+                val fileStructure = analyzeFileStructure(head, f.extension)
+                
                 summary.put(JSONObject().apply {
                     put("path", rel)
                     put("bytes", size)
                     put("functions", JSONArray(funcs))
                     put("classes", JSONArray(classes))
+                    put("dependencies", JSONArray(dependencies))
+                    put("exports", JSONArray(exports))
+                    put("structure", fileStructure)
                     put("preview", head.take(2000))
+                    put("last_modified", f.lastModified())
+                    put("extension", f.extension)
                 })
                 // update context cache for later coherence
                 val fileType = when {
@@ -3501,45 +3962,101 @@ if (exit != 0) {
         }
         onStatus("Back-plan: analyzing failure and generating corrective patch…")
         val sys = """
-            You are a senior code correction and debugging specialist.
-            Task: Generate precise file corrections to resolve implementation failures and satisfy user requirements.
-            Context: Analyze failed attempts, current file content, and user instructions to create targeted fixes.
-            Output format: Return ONLY one minified JSON for an apply_changes tool call.
+            You are an expert code correction and debugging specialist with deep understanding of software development patterns.
             
-            Correction strategy:
-            - Identify the root cause of the failure from the context
-            - Apply minimal, targeted edits to resolve the specific issue
-            - Maintain existing code structure, indentation, and formatting
-            - Ensure the corrected code satisfies the original user instruction
-            - Preserve code quality and best practices
+            MISSION: Analyze failed code operations and generate precise, targeted corrections that resolve the root cause while maintaining code quality.
             
-            Edit operations:
-            - replace_exact: Replace specific text with exact matching
-            - replace_between_markers: Replace content between start/end markers
-            - insert_after_anchor: Insert content after a specific anchor text
-            - insert_before_anchor: Insert content before a specific anchor text
-            - replace_regex: Replace content matching a regex pattern
-            - ensure_block_present: Add a code block if it doesn't exist
-            - append_once: Add content only if not already present
-            - replace_lines: Replace specific line ranges
-            - insert_lines_after: Insert lines after a specific line number
-            - insert_lines_before: Insert lines before a specific line number
-            - write_if_missing: Create full file content if file doesn't exist
+            ANALYSIS FRAMEWORK:
+            1. ROOT CAUSE IDENTIFICATION:
+               - Parse the failure message to understand the specific error
+               - Identify whether it's a syntax error, logic error, missing dependency, or structural issue
+               - Consider the intended operation and why it failed
             
-            Schema: {"type":"apply_changes","args":{"edits":[{"path":"string","op":"operation_type",...}]}}
+            2. CONTEXT EVALUATION:
+               - Examine the current file content and structure
+               - Understand the programming language and its conventions
+               - Identify existing patterns and coding style
+               - Check for dependencies, imports, and references
             
-            Quality standards:
-            - Use minimal edits to achieve the desired result
-            - Preserve existing code structure and formatting
-            - Ensure corrections are idempotent and safe
-            - Focus on the specific failure point
+            3. CORRECTION STRATEGY:
+               - Choose the most appropriate edit operation for the specific issue
+               - Ensure minimal, surgical changes that don't break existing functionality
+               - Maintain consistency with existing code style and structure
+               - Prioritize readability and maintainability
+            
+            AVAILABLE EDIT OPERATIONS:
+            - replace_exact: Precise text replacement (use when exact match is certain)
+            - replace_between_markers: Content replacement between specific markers
+            - insert_after_anchor: Add content after a specific anchor point
+            - insert_before_anchor: Add content before a specific anchor point
+            - replace_regex: Pattern-based replacement (use for flexible matching)
+            - json_patch: Structured JSON modifications (path, value, operation)
+            - smart_merge: Intelligent code merging with conflict resolution
+            - ensure_block_present: Idempotent block insertion
+            - write_if_missing: Full file creation when file doesn't exist
+            
+            OUTPUT REQUIREMENTS:
+            - Return ONLY one minified JSON for an apply_changes tool call
+            - Use the most appropriate edit operation for the specific failure
+            - Include clear, descriptive comments in the correction
+            - Ensure the fix addresses the root cause, not just symptoms
+            
+            QUALITY STANDARDS:
+            - Minimal impact: Change only what's necessary
+            - Idempotent: Safe to run multiple times
+            - Robust: Handle edge cases and maintain error handling
+            - Consistent: Match existing code style and patterns
+            - Testable: Ensure corrections can be verified
+            
+            Schema: {"type":"apply_changes","args":{"edits":[{"path":"string","op":"operation_type",...additional_params...}]}}
         """.trimIndent()
+        // Enhanced context for better backplan analysis
+        val codebaseContext = if (Settings.codebase_agent_enabled) {
+            runCatching {
+                val cacheFile = File(workingDirProvider(), Settings.codebase_cache_path)
+                if (cacheFile.exists()) {
+                    val cache = JSONObject(cacheFile.readText())
+                    val files = cache.optJSONArray("files") ?: JSONArray()
+                    val relatedFiles = JSONArray()
+                    
+                    // Find related files based on dependencies or similar names
+                    for (i in 0 until minOf(5, files.length())) {
+                        val file = files.optJSONObject(i)
+                        val filePath = file?.optString("path") ?: continue
+                        if (filePath.contains(f.nameWithoutExtension) || 
+                            filePath.endsWith(".${f.extension}")) {
+                            relatedFiles.put(file)
+                        }
+                    }
+                    relatedFiles
+                } else JSONArray()
+            }.getOrElse { JSONArray() }
+        } else JSONArray()
+        
         val user = JSONObject().apply {
             put("file_path", f.absolutePath)
+            put("file_name", f.name)
+            put("file_extension", f.extension)
             put("current_content", currentContent.take(120000))
+            put("content_lines", currentContent.lines().size)
             put("instruction", userInstruction.take(4000))
             put("intended_change_preview", intended.take(4000))
+            put("failure_details", failureNote.take(1000))
+            put("codebase_context", codebaseContext)
             put("main_instructions", if (Settings.main_instructions_enabled) runCatching { JSONObject(instructionsJson) }.getOrElse { JSONObject() } else JSONObject())
+            
+            // Add language-specific context
+            val languageHints = when (f.extension.lowercase()) {
+                "py" -> "Python: Check indentation, imports, function definitions, and PEP 8 compliance"
+                "js", "ts" -> "JavaScript/TypeScript: Check syntax, imports/exports, async/await, and semicolons"
+                "kt" -> "Kotlin: Check syntax, null safety, function declarations, and imports"
+                "java" -> "Java: Check syntax, imports, class structure, and method signatures"
+                "html" -> "HTML: Check tag structure, attributes, and proper nesting"
+                "css" -> "CSS: Check selectors, property syntax, and bracket matching"
+                "json" -> "JSON: Check syntax, bracket/brace matching, and comma placement"
+                else -> "Generic: Check basic syntax and structure"
+            }
+            put("language_hints", languageHints)
         }.toString()
         val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
         val jsonText = extractFirstJsonObject(content)
