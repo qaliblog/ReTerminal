@@ -165,13 +165,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     DisposableEffect(messages.size, currentChatId.value) {
         onDispose { 
             saveHistory()
-            saveSessionState()
         }
-    }
-
-    // Save session state when input changes
-    LaunchedEffect(input, selectedTab) {
-        saveSessionState()
     }
 
     // Agent state
@@ -342,6 +336,18 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 currentWd.value = savedWd
                 svc?.fileManagerWorkingDirBySession?.set(sessionId, savedWd)
             }
+        }
+    }
+
+    // Save session state when variables change (after all variables are declared)
+    LaunchedEffect(input, selectedTab, autoRun, searchAssist, sendMode, currentWd.value) {
+        saveSessionState()
+    }
+
+    // Save session state on dispose
+    DisposableEffect(currentChatId.value) {
+        onDispose { 
+            saveSessionState()
         }
     }
 
