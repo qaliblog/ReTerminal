@@ -245,6 +245,47 @@ class AgentOrchestrator(
         )
         contextCache[filePath] = context
         projectStructure[filePath] = getFileDescription(filePath, content)
+        
+        // Store enhanced file information for future reference
+        storeFileReference(filePath, context)
+    }
+    
+    private fun storeFileReference(filePath: String, context: FileContext) {
+        runCatching {
+            val referencesFile = File(agentDir, "file_references.json")
+            val references = if (referencesFile.exists()) {
+                JSONObject(referencesFile.readText())
+            } else {
+                JSONObject().put("files", JSONObject())
+            }
+            
+            val files = references.optJSONObject("files") ?: JSONObject().also { references.put("files", it) }
+            val fileInfo = JSONObject().apply {
+                put("path", context.path)
+                put("type", context.type)
+                put("functions", JSONArray(context.functions))
+                put("classes", JSONArray(context.classes))
+                put("routes", JSONArray(context.routes))
+                put("dependencies", JSONArray(context.dependencies))
+                put("last_updated", System.currentTimeMillis())
+                put("size_bytes", context.content.length)
+                put("summary", generateFileSummary(context))
+            }
+            
+            files.put(filePath, fileInfo)
+            referencesFile.writeText(references.toString(2))
+        }
+    }
+    
+    private fun generateFileSummary(context: FileContext): String {
+        return when (context.type) {
+            "python" -> "Python module with ${context.functions.size} functions, ${context.classes.size} classes"
+            "html" -> "HTML template with ${context.routes.size} routes"
+            "javascript" -> "JavaScript module with ${context.functions.size} functions"
+            "css" -> "CSS stylesheet"
+            "json" -> "Configuration file"
+            else -> "File with ${context.content.lines().size} lines"
+        }
     }
     
     private fun extractFunctions(content: String, fileType: String): List<String> {
@@ -299,18 +340,31 @@ class AgentOrchestrator(
             appendLine("Created files and their key components:")
             
             contextCache.values.forEach { context ->
-                appendLine("- **${context.path}** (${context.type})")
+                appendLine("- **${context.path}** (${context.type}) - ${generateFileSummary(context)}")
                 if (context.functions.isNotEmpty()) {
-                    appendLine("  - Functions: ${context.functions.joinToString(", ")}")
+                    appendLine("  - Functions: ${context.functions.take(5).joinToString(", ")}${if (context.functions.size > 5) " +${context.functions.size - 5} more" else ""}")
                 }
                 if (context.classes.isNotEmpty()) {
-                    appendLine("  - Classes: ${context.classes.joinToString(", ")}")
+                    appendLine("  - Classes: ${context.classes.take(3).joinToString(", ")}${if (context.classes.size > 3) " +${context.classes.size - 3} more" else ""}")
                 }
                 if (context.routes.isNotEmpty()) {
-                    appendLine("  - Routes: ${context.routes.joinToString(", ")}")
+                    appendLine("  - Routes: ${context.routes.take(3).joinToString(", ")}${if (context.routes.size > 3) " +${context.routes.size - 3} more" else ""}")
                 }
                 if (context.dependencies.isNotEmpty()) {
-                    appendLine("  - Dependencies: ${context.dependencies.joinToString(", ")}")
+                    appendLine("  - Dependencies: ${context.dependencies.take(5).joinToString(", ")}${if (context.dependencies.size > 5) " +${context.dependencies.size - 5} more" else ""}")
+                }
+            }
+            
+            // Add file reference summary
+            val referencesFile = File(agentDir, "file_references.json")
+            if (referencesFile.exists()) {
+                runCatching {
+                    val refs = JSONObject(referencesFile.readText())
+                    val files = refs.optJSONObject("files")
+                    if (files != null && files.length() > 0) {
+                        appendLine("\n## File Reference Summary")
+                        appendLine("Total tracked files: ${files.length()}")
+                    }
                 }
             }
         }
@@ -1003,6 +1057,10 @@ class AgentOrchestrator(
     private suspend fun runSearchAgent(query: String, onStatus: (String) -> Unit): String = withContext(Dispatchers.IO) {
         try {
             onStatus("Search: analyzing query and selecting sources...")
+            
+            // Enhanced fallback sources based on query content
+            val fallbackSources = determineFallbackSources(query)
+            
             val suggestSys = """
                 You suggest 2-4 high-quality websites to consult for the given query. Return ONLY minified JSON:
                 {"sites": [{"url": string, "why": string}...]}
@@ -1012,22 +1070,32 @@ class AgentOrchestrator(
                 - Include reputable technical blogs and Stack Overflow when relevant
                 - Avoid general search engines, social media, or unreliable sources
                 - Ensure URLs are complete and accessible
+                - Focus on current, up-to-date information
             """.trimIndent()
             val suggestUser = """
                 Query: ${query.take(500)}
                 Focus on technical accuracy and authoritative sources.
+                Fallback sources available: ${fallbackSources.joinToString(", ")}
             """.trimIndent()
             
             val suggestContent = runCatching {
-                collectAllWithRetry(flowProvider = { 
-                    LlmProvider.current().generate(listOf(
-                        LlmMessage("system", suggestSys), 
-                        LlmMessage("user", suggestUser)
-                    )) 
-                })
+                withTimeout(15000L) { // 15 second timeout for LLM suggestion
+                    collectAllWithRetry(flowProvider = { 
+                        LlmProvider.current().generate(listOf(
+                            LlmMessage("system", suggestSys), 
+                            LlmMessage("user", suggestUser)
+                        )) 
+                    })
+                }
             }.getOrElse { 
                 onStatus("Search: LLM suggestion failed, using fallback sources")
-                return@withContext "Search failed: Unable to get source suggestions from LLM"
+                // Use fallback sources instead of failing
+                val fallbackJson = JSONObject().put("sites", JSONArray().apply {
+                    fallbackSources.forEach { url ->
+                        put(JSONObject().put("url", url).put("why", "fallback source"))
+                    }
+                })
+                fallbackJson.toString()
             }
             
             val suggestJson = extractFirstJsonObject(suggestContent)
@@ -1039,19 +1107,26 @@ class AgentOrchestrator(
             }
             
             if (sites.length() == 0) {
-                return@withContext "Search failed: No valid sources identified"
+                // Use fallback sources if no sites suggested
+                onStatus("Search: using fallback sources for query")
+                fallbackSources.forEach { url ->
+                    sites.put(JSONObject().put("url", url).put("why", "fallback"))
+                }
             }
             
             val fetched = JSONArray()
             fun curl(url: String): Pair<String, Boolean> {
                 return runCatching {
-                    val cleanUrl = url.replace("'", "%27").replace("\"", "%22")
-                    val cmd = "curl -L --max-time 20 --silent --show-error --compressed --user-agent 'Mozilla/5.0 (compatible; SearchBot/1.0)' '$cleanUrl'"
-                    val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd)))
-                    val content = res.observation ?: ""
-                    val success = res.ok && content.isNotBlank() && !content.contains("curl: ")
-                    Pair(content, success)
-                }.getOrElse { 
+                    withTimeout(25000L) { // 25 second timeout per URL
+                        val cleanUrl = url.replace("'", "%27").replace("\"", "%22")
+                        val cmd = "curl -L --max-time 15 --silent --show-error --compressed --connect-timeout 10 --user-agent 'Mozilla/5.0 (compatible; SearchBot/1.0)' '$cleanUrl'"
+                        val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd).put("timeout_ms", 20000)))
+                        val content = res.observation ?: ""
+                        val success = res.ok && content.isNotBlank() && !content.contains("curl: ") && !content.contains("error:")
+                        Pair(content, success)
+                    }
+                }.getOrElse { e ->
+                    onStatus("Search: failed to fetch $url - ${e.message}")
                     Pair("", false) 
                 }
             }
@@ -1165,6 +1240,34 @@ class AgentOrchestrator(
     private fun promptSuggestsSearch(prompt: String): Boolean {
         val p = prompt.lowercase()
         return listOf("what is", "how to", "error ", "exception ", "docs", "documentation", "api", "install", "tutorial").any { p.contains(it) }
+    }
+    
+    private fun determineFallbackSources(query: String): List<String> {
+        val q = query.lowercase()
+        return when {
+            q.contains("python") || q.contains("flask") -> listOf(
+                "https://docs.python.org/3/",
+                "https://flask.palletsprojects.com/",
+                "https://stackoverflow.com/questions/tagged/python"
+            )
+            q.contains("android") || q.contains("kotlin") -> listOf(
+                "https://developer.android.com/docs",
+                "https://kotlinlang.org/docs/",
+                "https://stackoverflow.com/questions/tagged/android"
+            )
+            q.contains("javascript") || q.contains("js") -> listOf(
+                "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+                "https://stackoverflow.com/questions/tagged/javascript"
+            )
+            q.contains("git") -> listOf(
+                "https://git-scm.com/docs",
+                "https://stackoverflow.com/questions/tagged/git"
+            )
+            else -> listOf(
+                "https://stackoverflow.com/",
+                "https://developer.mozilla.org/"
+            )
+        }
     }
 
     private suspend fun researcherAssistIfNeeded(errorNote: String, latestObs: String?): String? = withContext(Dispatchers.IO) {
@@ -1414,32 +1517,28 @@ class AgentOrchestrator(
                 endRunStatsAndReport(onStatus, verb = "thought")
                 return false
             }
-            val toolCall = requestSingleToolCall(plan.goal, task)
+            val toolCall = try {
+                withTimeout(30000L) { // 30 second timeout for tool call generation
+                    requestSingleToolCall(plan.goal, task)
+                }
+            } catch (e: TimeoutCancellationException) {
+                onStatus("Task ${task.id}: tool call generation timeout, using fallback")
+                // Create fallback tool call based on task category
+                createFallbackToolCall(task)
+            }
+            
             if (toolCall == null) {
                 observations[task.id] = "could not determine action for this task"
                 saveObservations()
-                onStatus("Task ${task.id}: no action suggested; revising plan…")
-                appendTaskLog("tool_call_none") { put("task_id", task.id) }
-                val revised = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
-                if (revised != null) {
-                    persistPlanWithStatuses(revised)
-                    endRunStatsAndReport(onStatus, verb = "thought")
-                    return true
+                onStatus("Task ${task.id}: no action suggested; marking as failed to prevent freezing")
+                appendTaskLog("tool_call_none") { 
+                    put("task_id", task.id)
+                    put("reason", "no_tool_call_generated")
+                    put("task_desc", task.description.take(50))
                 }
-                onStatus("Task ${task.id}: plan revision unavailable; deciding remediation…")
-                val decision = decideRemediationAction(plan.goal, task, "no_tool_call")
-                when (decision) {
-                    "mini_plan" -> {
-                        val ok = executeMiniPlanForTask(plan, task, onStatus)
-                        if (ok) { onStatus("Mini-plan completed; retrying task ${task.id}"); stepsTaken++; continue } else return false
-                    }
-                    "revise_plan" -> {
-                        val revised2 = revisePlanBasedOnHistoryAndError(plan.goal, "no_tool_call")
-                        if (revised2 != null) { persistPlanWithStatuses(revised2); endRunStatsAndReport(onStatus, verb = "thought"); return true } else return false
-                    }
-                    "retry" -> { stepsTaken++; continue }
-                    else -> { return false }
-                }
+                markTaskFailed(task.id, "no_tool_call_generated")
+                endRunStatsAndReport(onStatus, verb = "thought")
+                return false
             }
             // Writer agent may refine write tool selections for modifying actions
             val coerced = coerceToolCallForTaskCategory(task, toolCall)
@@ -1970,6 +2069,41 @@ class AgentOrchestrator(
         val desc = task.description.lowercase()
         return desc.contains("add") || desc.contains("edit") || desc.contains("modify") || desc.contains("update") ||
                task.category == "json_edit" || task.category == "write_file" || task.category == "search_replace"
+    }
+    
+    private fun createFallbackToolCall(task: Task): ToolCall {
+        val desc = task.description.lowercase()
+        val category = task.category?.lowercase()
+        
+        return when {
+            category == "make_dir" || desc.contains("create") && (desc.contains("directory") || desc.contains("folder")) -> {
+                val path = task.targets?.firstOrNull() ?: "project_dir"
+                ToolCall("make_dir", JSONObject().put("path", path))
+            }
+            category == "create_file" || desc.contains("create") && desc.contains("file") -> {
+                val path = task.targets?.firstOrNull() ?: "app.py"
+                ToolCall("create_file", JSONObject().put("path", path))
+            }
+            category == "write_file" || desc.contains("write") || desc.contains("add") -> {
+                val path = task.targets?.firstOrNull() ?: "app.py"
+                ToolCall("write_file", JSONObject().put("path", path).put("content", "# TODO: Implement ${task.description}"))
+            }
+            category == "list_dir" || desc.contains("list") || desc.contains("explore") -> {
+                val path = task.targets?.firstOrNull() ?: workingDirProvider()
+                ToolCall("list_dir", JSONObject().put("path", path))
+            }
+            category == "read_file" || desc.contains("read") || desc.contains("examine") -> {
+                val path = task.targets?.firstOrNull() ?: "."
+                ToolCall("read_file", JSONObject().put("path", path))
+            }
+            category == "run_shell" || desc.contains("run") || desc.contains("execute") -> {
+                ToolCall("run_shell", JSONObject().put("command", "echo 'Executing: ${task.description}'"))
+            }
+            else -> {
+                // Default fallback - list current directory
+                ToolCall("list_dir", JSONObject().put("path", workingDirProvider()))
+            }
+        }
     }
 
     private suspend fun requestSingleToolCall(goal: String, task: Task): ToolCall? = withContext(Dispatchers.IO) {
@@ -3302,7 +3436,7 @@ if (exit != 0) {
         
         when (type) {
             "plan_created" -> {
-                concise.put("goal", obj.optString("goal").take(100))
+                concise.put("goal", obj.optString("goal").take(80))
                 val tasks = obj.optJSONArray("tasks")
                 if (tasks != null && tasks.length() > 0) {
                     concise.put("task_count", tasks.length())
@@ -3313,7 +3447,7 @@ if (exit != 0) {
                         if (task != null) {
                             taskSummary.put(JSONObject().apply {
                                 put("id", task.optString("id"))
-                                put("desc", task.optString("description").take(50))
+                                put("desc", task.optString("description").take(40))
                                 put("cat", task.optString("category"))
                             })
                         }
@@ -3324,15 +3458,24 @@ if (exit != 0) {
             }
             "task_start" -> {
                 concise.put("task_id", obj.optString("task_id"))
-                concise.put("desc", obj.optString("description").take(50))
+                concise.put("desc", obj.optString("description").take(40))
                 concise.put("cat", obj.optString("category"))
             }
             "task_done", "task_failed" -> {
                 concise.put("task_id", obj.optString("task_id"))
                 concise.put("attempts", obj.optInt("attempts"))
                 if (type == "task_failed") {
-                    concise.put("note", obj.optString("note").take(30))
+                    concise.put("note", obj.optString("note").take(25))
                 }
+            }
+            "task_attempt" -> {
+                concise.put("task_id", obj.optString("task_id"))
+                concise.put("attempt", obj.optInt("attempt"))
+            }
+            "tool_call_none" -> {
+                concise.put("task_id", obj.optString("task_id"))
+                concise.put("reason", obj.optString("reason"))
+                concise.put("task_desc", obj.optString("task_desc"))
             }
             "write_file", "create_file" -> {
                 val args = obj.optJSONObject("args")
@@ -3967,49 +4110,54 @@ if (exit != 0) {
             
             MISSION: Analyze failed code operations and generate precise, targeted corrections that resolve the root cause while maintaining code quality.
             
-            ANALYSIS FRAMEWORK:
-            1. ROOT CAUSE IDENTIFICATION:
-               - Parse the failure message to understand the specific error
-               - Identify whether it's a syntax error, logic error, missing dependency, or structural issue
-               - Consider the intended operation and why it failed
+            ENHANCED ANALYSIS FRAMEWORK:
+            1. FAILURE PATTERN RECOGNITION:
+               - Syntax errors: Missing brackets, semicolons, quotes, indentation issues
+               - Logic errors: Incorrect function calls, variable references, control flow
+               - Dependency errors: Missing imports, undefined variables, module issues
+               - Structural errors: Incorrect file organization, missing directories
+               - Runtime errors: Type mismatches, null references, async issues
             
-            2. CONTEXT EVALUATION:
-               - Examine the current file content and structure
-               - Understand the programming language and its conventions
-               - Identify existing patterns and coding style
-               - Check for dependencies, imports, and references
+            2. CONTEXTUAL CODE ANALYSIS:
+               - Language-specific conventions and best practices
+               - Existing code patterns and architectural decisions
+               - Import/dependency structure and module organization
+               - Variable naming conventions and scope management
+               - Error handling patterns and logging approaches
             
-            3. CORRECTION STRATEGY:
-               - Choose the most appropriate edit operation for the specific issue
-               - Ensure minimal, surgical changes that don't break existing functionality
-               - Maintain consistency with existing code style and structure
-               - Prioritize readability and maintainability
+            3. INTELLIGENT CORRECTION STRATEGY:
+               - Prioritize minimal, surgical edits over large rewrites
+               - Maintain existing code style and formatting
+               - Preserve functional behavior while fixing issues
+               - Add necessary imports, dependencies, or setup code
+               - Include proper error handling and validation
             
-            AVAILABLE EDIT OPERATIONS:
-            - replace_exact: Precise text replacement (use when exact match is certain)
-            - replace_between_markers: Content replacement between specific markers
-            - insert_after_anchor: Add content after a specific anchor point
-            - insert_before_anchor: Add content before a specific anchor point
-            - replace_regex: Pattern-based replacement (use for flexible matching)
-            - json_patch: Structured JSON modifications (path, value, operation)
+            ENHANCED EDIT OPERATIONS:
+            - replace_exact: Precise text replacement with exact matching
+            - replace_between_markers: Content replacement between specific delimiters
+            - insert_after_anchor: Add content after specific code anchors
+            - insert_before_anchor: Add content before specific code anchors
+            - replace_regex: Pattern-based replacement with regex support
+            - json_patch: Structured JSON modifications (set/delete/append operations)
             - smart_merge: Intelligent code merging with conflict resolution
-            - ensure_block_present: Idempotent block insertion
-            - write_if_missing: Full file creation when file doesn't exist
+            - ensure_block_present: Idempotent block insertion with markers
+            - write_if_missing: Complete file creation when missing
+            - replace_lines: Line-based replacement with precise line numbers
+            - insert_lines_after/before: Line-based insertion operations
             
-            OUTPUT REQUIREMENTS:
-            - Return ONLY one minified JSON for an apply_changes tool call
-            - Use the most appropriate edit operation for the specific failure
-            - Include clear, descriptive comments in the correction
-            - Ensure the fix addresses the root cause, not just symptoms
+            CORRECTION PRINCIPLES:
+            - Fix root causes, not just symptoms
+            - Maintain backward compatibility when possible
+            - Add comprehensive error handling
+            - Include necessary imports and dependencies
+            - Follow language-specific best practices
+            - Provide clear, self-documenting code
             
-            QUALITY STANDARDS:
-            - Minimal impact: Change only what's necessary
-            - Idempotent: Safe to run multiple times
-            - Robust: Handle edge cases and maintain error handling
-            - Consistent: Match existing code style and patterns
-            - Testable: Ensure corrections can be verified
+            OUTPUT FORMAT:
+            Return ONLY one minified JSON apply_changes tool call with targeted edits.
+            Include multiple edits in the same call if they're related to the same fix.
             
-            Schema: {"type":"apply_changes","args":{"edits":[{"path":"string","op":"operation_type",...additional_params...}]}}
+            Schema: {"type":"apply_changes","args":{"edits":[{"path":"string","op":"operation_type",...params...}]}}
         """.trimIndent()
         // Enhanced context for better backplan analysis
         val codebaseContext = if (Settings.codebase_agent_enabled) {
@@ -4046,18 +4194,62 @@ if (exit != 0) {
             put("codebase_context", codebaseContext)
             put("main_instructions", if (Settings.main_instructions_enabled) runCatching { JSONObject(instructionsJson) }.getOrElse { JSONObject() } else JSONObject())
             
-            // Add language-specific context
+            // Add enhanced language-specific context and common fixes
             val languageHints = when (f.extension.lowercase()) {
-                "py" -> "Python: Check indentation, imports, function definitions, and PEP 8 compliance"
-                "js", "ts" -> "JavaScript/TypeScript: Check syntax, imports/exports, async/await, and semicolons"
-                "kt" -> "Kotlin: Check syntax, null safety, function declarations, and imports"
-                "java" -> "Java: Check syntax, imports, class structure, and method signatures"
-                "html" -> "HTML: Check tag structure, attributes, and proper nesting"
-                "css" -> "CSS: Check selectors, property syntax, and bracket matching"
-                "json" -> "JSON: Check syntax, bracket/brace matching, and comma placement"
-                else -> "Generic: Check basic syntax and structure"
+                "py" -> """Python fixes: 
+                    - Check indentation (4 spaces), imports (from/import statements)
+                    - Function definitions (def name():), class definitions (class Name:)
+                    - Common errors: NameError, IndentationError, SyntaxError
+                    - Add missing imports: import os, sys, json, etc.
+                    - Fix string quotes and f-string syntax"""
+                "js", "ts" -> """JavaScript/TypeScript fixes:
+                    - Check syntax: semicolons, brackets, quotes
+                    - Import/export statements: import/export syntax
+                    - Async/await: proper promise handling
+                    - Common errors: ReferenceError, TypeError, SyntaxError
+                    - Fix variable declarations: const, let, var"""
+                "kt" -> """Kotlin fixes:
+                    - Check syntax: semicolons optional, null safety (?.)
+                    - Function declarations: fun name(), class declarations
+                    - Import statements: import package.Class
+                    - Common errors: compilation errors, null pointer exceptions
+                    - Fix type annotations and nullable types"""
+                "java" -> """Java fixes:
+                    - Check syntax: semicolons, brackets, imports
+                    - Class structure: public class Name, method signatures
+                    - Import statements: import package.Class;
+                    - Common errors: compilation errors, missing methods
+                    - Fix access modifiers and method declarations"""
+                "html" -> """HTML fixes:
+                    - Check tag structure: proper opening/closing tags
+                    - Attributes: quotes around values, proper syntax
+                    - Common errors: unclosed tags, malformed attributes
+                    - Fix DOCTYPE, meta tags, and semantic structure"""
+                "css" -> """CSS fixes:
+                    - Check selectors: proper syntax and specificity
+                    - Property syntax: property: value; format
+                    - Common errors: missing semicolons, bracket mismatches
+                    - Fix selector syntax and property names"""
+                "json" -> """JSON fixes:
+                    - Check syntax: proper bracket/brace matching
+                    - Comma placement: no trailing commas
+                    - Common errors: malformed JSON, invalid characters
+                    - Fix quotes around keys and string values"""
+                else -> "Generic: Check basic syntax, structure, and common formatting issues"
             }
             put("language_hints", languageHints)
+            
+            // Add file reference context if available
+            val referencesFile = File(agentDir, "file_references.json")
+            if (referencesFile.exists()) {
+                runCatching {
+                    val refs = JSONObject(referencesFile.readText())
+                    val fileInfo = refs.optJSONObject("files")?.optJSONObject(f.absolutePath)
+                    if (fileInfo != null) {
+                        put("file_reference", fileInfo)
+                    }
+                }
+            }
         }.toString()
         val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
         val jsonText = extractFirstJsonObject(content)

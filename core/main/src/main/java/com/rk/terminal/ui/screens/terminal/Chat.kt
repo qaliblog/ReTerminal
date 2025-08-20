@@ -124,6 +124,15 @@ fun ChatView(mainActivityActivity: MainActivity) {
                 // Save current input state
                 put("current_input", input)
                 put("selected_tab", selectedTab)
+                // Save terminal session details
+                put("terminal_session_id", sessionId)
+                put("working_directory", currentWd.value)
+                // Save chat context
+                put("message_count", messages.size)
+                put("has_active_plan", activePlan.value != null)
+                put("auto_run_enabled", autoRun)
+                put("search_assist_enabled", searchAssist)
+                put("send_mode", sendMode)
             }
             sessionStateFile.writeText(state.toString(2))
         }
@@ -179,6 +188,20 @@ fun ChatView(mainActivityActivity: MainActivity) {
             // Restore input state
             input = sessionState.optString("current_input", "")
             selectedTab = sessionState.optInt("selected_tab", 0)
+            
+            // Restore chat settings
+            val savedSendMode = sessionState.optString("send_mode", "think")
+            if (savedSendMode.isNotBlank()) sendMode = savedSendMode
+            
+            autoRun = sessionState.optBoolean("auto_run_enabled", false)
+            searchAssist = sessionState.optBoolean("search_assist_enabled", Settings.helper_agent_enabled)
+            
+            // Restore working directory if different
+            val savedWd = sessionState.optString("working_directory")
+            if (savedWd.isNotBlank() && savedWd != currentWd.value) {
+                currentWd.value = savedWd
+                svc?.fileManagerWorkingDirBySession?.set(sessionId, savedWd)
+            }
             
             // TODO: Restore cursor position and scroll position when UI supports it
             // val cursorPos = sessionState.optInt("cursor_position", -1)
@@ -922,7 +945,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                                                 showChatManager = false
                                                 savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                                                 // Count chat selection as a normal user interaction
-                                                messages.add(ChatMessage("system", "Chat session switched to: $cid"))
+                                                messages.add(ChatMessage("user", "Switch to chat session: $cid"))
+                                                messages.add(ChatMessage("assistant", "Switched to chat session: $cid. Ready for new tasks."))
                                                 saveHistory()
                                             }
                                             .padding(8.dp),
@@ -957,7 +981,8 @@ fun ChatView(mainActivityActivity: MainActivity) {
                         showChatManager = false
                         savePrefs(currentChatId.value, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, sendMode)
                         // Count new chat creation as a user interaction
-                        messages.add(ChatMessage("system", "New chat session created: $name"))
+                        messages.add(ChatMessage("user", "Create new chat session: $name"))
+                        messages.add(ChatMessage("assistant", "New chat session '$name' created. Ready for tasks."))
                         saveHistory()
                     }) { Text("Create / Switch") }
                 },
