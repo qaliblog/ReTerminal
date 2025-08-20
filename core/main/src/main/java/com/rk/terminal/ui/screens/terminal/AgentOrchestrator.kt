@@ -3425,7 +3425,7 @@ if (exit != 0) {
 
     private fun extractTitle(html: String): String {
         return runCatching {
-            val titleRegex = Regex("<title[^>]*>(.*?)</title>", RegexOption.IGNORE_CASE or RegexOption.DOT_MATCHES_ALL)
+            val titleRegex = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
             val match = titleRegex.find(html)
             match?.groupValues?.get(1)?.trim()?.take(100) ?: "Untitled"
         }.getOrElse { "Untitled" }
