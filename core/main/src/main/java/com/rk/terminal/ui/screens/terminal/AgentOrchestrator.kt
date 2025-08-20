@@ -1867,6 +1867,7 @@ class AgentOrchestrator(
             
             **CRITICAL IMPLEMENTATION STANDARDS:**
             - Generate complete, functional, production-ready code with no placeholders
+            - **CRITICAL**: Before any modification (`apply_changes`, `search_replace`), you MUST first use a discovery tool (`read_file`, `grep`, `list_dir`) in a separate, preceding step to get the latest state of the workspace. The ONLY exception is `write_file` for creating a new file.
             - Infer requirements from goal analysis and codebase discovery, not pre-made templates
             - Create cohesive, integrated solutions that work together seamlessly
             - Prioritize code quality, maintainability, and best practices
@@ -2045,11 +2046,6 @@ class AgentOrchestrator(
             else -> tc.type
         }
         val call = if (normalizedType == tc.type) tc else ToolCall(normalizedType, tc.args)
-        appendTaskLog("tool_execute") {
-            put("task_id", currentTaskContext?.id ?: JSONObject.NULL)
-            put("type", call.type)
-            put("args", call.args)
-        }
         return when (call.type) {
             "create_file" -> {
                 var path = call.args.optString("path")
@@ -2443,13 +2439,6 @@ if (exit != 0) {
                 persistCliReport()
                 currentRunStats?.commandsRun?.add(command)
                 val isEnvCheck = isEnvPreflightCommand(command)
-                appendTaskLog("run_shell_result") {
-                    put("command", command)
-                    put("wd", wd)
-                    put("exit", exit)
-                    put("output_preview", output.take(800))
-                    put("bytes", output.length)
-                }
                 // Persist environment signals for later tool coercion
                 runCatching {
                     val lower = output.lowercase()
