@@ -1117,14 +1117,12 @@ class AgentOrchestrator(
             val fetched = JSONArray()
             fun curl(url: String): Pair<String, Boolean> {
                 return runCatching {
-                    withTimeout(25000L) { // 25 second timeout per URL
-                        val cleanUrl = url.replace("'", "%27").replace("\"", "%22")
-                        val cmd = "curl -L --max-time 15 --silent --show-error --compressed --connect-timeout 10 --user-agent 'Mozilla/5.0 (compatible; SearchBot/1.0)' '$cleanUrl'"
-                        val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd).put("timeout_ms", 20000)))
-                        val content = res.observation ?: ""
-                        val success = res.ok && content.isNotBlank() && !content.contains("curl: ") && !content.contains("error:")
-                        Pair(content, success)
-                    }
+                    val cleanUrl = url.replace("'", "%27").replace("\"", "%22")
+                    val cmd = "curl -L --max-time 15 --silent --show-error --compressed --connect-timeout 10 --user-agent 'Mozilla/5.0 (compatible; SearchBot/1.0)' '$cleanUrl'"
+                    val res = executeToolCall(ToolCall("run_shell", JSONObject().put("command", cmd).put("timeout_ms", 20000)))
+                    val content = res.observation ?: ""
+                    val success = res.ok && content.isNotBlank() && !content.contains("curl: ") && !content.contains("error:")
+                    Pair(content, success)
                 }.getOrElse { e ->
                     onStatus("Search: failed to fetch $url - ${e.message}")
                     Pair("", false) 

@@ -113,30 +113,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
         }
     }
 
-    fun saveSessionState(cursorPosition: Int = -1, scrollPosition: Int = 0, terminalState: String? = null) {
-        runCatching {
-            val state = JSONObject().apply {
-                put("cursor_position", cursorPosition)
-                put("scroll_position", scrollPosition)
-                put("last_updated", System.currentTimeMillis())
-                put("session_active", true)
-                if (terminalState != null) put("terminal_state", terminalState)
-                // Save current input state
-                put("current_input", input)
-                put("selected_tab", selectedTab)
-                // Save terminal session details
-                put("terminal_session_id", sessionId)
-                put("working_directory", currentWd.value)
-                // Save chat context
-                put("message_count", messages.size)
-                put("has_active_plan", activePlan.value != null)
-                put("auto_run_enabled", autoRun)
-                put("search_assist_enabled", searchAssist)
-                put("send_mode", sendMode)
-            }
-            sessionStateFile.writeText(state.toString(2))
-        }
-    }
+
 
     fun loadSessionState(): JSONObject {
         return runCatching { 
@@ -182,31 +159,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
             }
         }
         
-        // Restore session state if available
-        val sessionState = loadSessionState()
-        if (sessionState.optBoolean("session_active", false)) {
-            // Restore input state
-            input = sessionState.optString("current_input", "")
-            selectedTab = sessionState.optInt("selected_tab", 0)
-            
-            // Restore chat settings
-            val savedSendMode = sessionState.optString("send_mode", "think")
-            if (savedSendMode.isNotBlank()) sendMode = savedSendMode
-            
-            autoRun = sessionState.optBoolean("auto_run_enabled", false)
-            searchAssist = sessionState.optBoolean("search_assist_enabled", Settings.helper_agent_enabled)
-            
-            // Restore working directory if different
-            val savedWd = sessionState.optString("working_directory")
-            if (savedWd.isNotBlank() && savedWd != currentWd.value) {
-                currentWd.value = savedWd
-                svc?.fileManagerWorkingDirBySession?.set(sessionId, savedWd)
-            }
-            
-            // TODO: Restore cursor position and scroll position when UI supports it
-            // val cursorPos = sessionState.optInt("cursor_position", -1)
-            // val scrollPos = sessionState.optInt("scroll_position", 0)
-        }
+
     }
 
     DisposableEffect(messages.size, currentChatId.value) {
@@ -258,6 +211,31 @@ fun ChatView(mainActivityActivity: MainActivity) {
 
     fun postStatus(s: String) {
         messages.add(ChatMessage("assistant", s))
+    }
+
+    fun saveSessionState(cursorPosition: Int = -1, scrollPosition: Int = 0, terminalState: String? = null) {
+        runCatching {
+            val state = JSONObject().apply {
+                put("cursor_position", cursorPosition)
+                put("scroll_position", scrollPosition)
+                put("last_updated", System.currentTimeMillis())
+                put("session_active", true)
+                if (terminalState != null) put("terminal_state", terminalState)
+                // Save current input state
+                put("current_input", input)
+                put("selected_tab", selectedTab)
+                // Save terminal session details
+                put("terminal_session_id", sessionId)
+                put("working_directory", currentWd.value)
+                // Save chat context
+                put("message_count", messages.size)
+                put("has_active_plan", activePlan.value != null)
+                put("auto_run_enabled", autoRun)
+                put("search_assist_enabled", searchAssist)
+                put("send_mode", sendMode)
+            }
+            sessionStateFile.writeText(state.toString(2))
+        }
     }
 
     val hasPlan = activePlan.value != null
@@ -345,6 +323,26 @@ fun ChatView(mainActivityActivity: MainActivity) {
     var isInputFocused by remember { mutableStateOf(false) }
     BackHandler(enabled = isInputFocused) {
         focusManager.clearFocus(force = true)
+    }
+
+    // Restore session state after all variables are declared
+    LaunchedEffect(currentChatId.value) {
+        val sessionState = loadSessionState()
+        if (sessionState.optBoolean("session_active", false)) {
+            // Restore chat settings
+            val savedSendMode = sessionState.optString("send_mode", "think")
+            if (savedSendMode.isNotBlank()) sendMode = savedSendMode
+            
+            autoRun = sessionState.optBoolean("auto_run_enabled", false)
+            searchAssist = sessionState.optBoolean("search_assist_enabled", Settings.helper_agent_enabled)
+            
+            // Restore working directory if different
+            val savedWd = sessionState.optString("working_directory")
+            if (savedWd.isNotBlank() && savedWd != currentWd.value) {
+                currentWd.value = savedWd
+                svc?.fileManagerWorkingDirBySession?.set(sessionId, savedWd)
+            }
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
