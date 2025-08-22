@@ -1528,13 +1528,37 @@ class AgentOrchestrator(
             if (toolCall == null) {
                 observations[task.id] = "could not determine action for this task"
                 saveObservations()
-                onStatus("Task ${task.id}: no action suggested; marking as failed to prevent freezing")
-                appendTaskLog("tool_call_none") { 
+                onStatus("Task ${task.id}: no action suggested; attempting fallback to avoid stalling")
+                appendTaskLog("tool_call_none") {
                     put("task_id", task.id)
                     put("reason", "no_tool_call_generated")
                     put("task_desc", task.description.take(50))
                 }
-                markTaskFailed(task.id, "no_tool_call_generated")
+                // Attempt a sensible fallback based on task category/description
+                val fallback = createFallbackToolCall(task)
+                appendTaskLog("tool_call_selected") { put("task_id", task.id); put("type", fallback.type); put("args", fallback.args) }
+                val fbResult = try {
+                    currentTaskContext = task
+                    executeToolCall(fallback)
+                } catch (e: Exception) {
+                    ToolResult(false, e.message ?: e.toString())
+                } finally {
+                    currentTaskContext = null
+                }
+                appendTaskLog("tool_result") {
+                    put("task_id", task.id)
+                    put("type", fallback.type)
+                    put("ok", fbResult.ok)
+                    fbResult.observation?.let { put("observation_preview", it.take(800)); put("observation_bytes", it.toByteArray(StandardCharsets.UTF_8).size) }
+                }
+                if (fbResult.ok) {
+                    markTaskDone(task.id)
+                    persistPlanWithStatuses(plan)
+                    endRunStatsAndReport(onStatus, verb = "thought")
+                    return true
+                }
+                // Fallback failed; mark as failed but with remediation info
+                markTaskFailed(task.id, "no_tool_call_generated_fallback_failed")
                 endRunStatsAndReport(onStatus, verb = "thought")
                 return false
             }
