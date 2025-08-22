@@ -3058,8 +3058,26 @@ if (exit != 0) {
                         "insert_after_anchor" -> {
                             val anchor = e.optString("anchor")
                             val newContent = e.optString("new_content")
-                            val aIdx = original.indexOf(anchor)
-                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else {
+                            val ignoreCase = e.optBoolean("ignore_case", true)
+                            var aIdx = if (ignoreCase) original.indexOf(anchor, ignoreCase = true) else original.indexOf(anchor)
+                            if (aIdx < 0) {
+                                val anchorRegex = e.optString("anchor_regex")
+                                if (anchorRegex.isNotBlank()) {
+                                    val m = runCatching { Regex(anchorRegex).find(original) }.getOrNull()
+                                    if (m != null) aIdx = m.range.last
+                                }
+                            }
+                            if (aIdx < 0) {
+                                // Fallback: append at end with idempotent behavior to keep integration moving
+                                val already = original.contains(newContent)
+                                if (already) {
+                                    results.add("edit[$i]: anchor not found; content already present")
+                                    null
+                                } else {
+                                    results.add("edit[$i]: anchor not found; appended at end")
+                                    original + "\n" + newContent
+                                }
+                            } else {
                                 val insertPos = aIdx + anchor.length
                                 original.substring(0, insertPos) + newContent + original.substring(insertPos)
                             }
@@ -3067,8 +3085,25 @@ if (exit != 0) {
                         "insert_before_anchor" -> {
                             val anchor = e.optString("anchor")
                             val newContent = e.optString("new_content")
-                            val aIdx = original.indexOf(anchor)
-                            if (aIdx < 0) { results.add("edit[$i]: anchor not found"); null } else original.substring(0, aIdx) + newContent + original.substring(aIdx)
+                            val ignoreCase = e.optBoolean("ignore_case", true)
+                            var aIdx = if (ignoreCase) original.indexOf(anchor, ignoreCase = true) else original.indexOf(anchor)
+                            if (aIdx < 0) {
+                                val anchorRegex = e.optString("anchor_regex")
+                                if (anchorRegex.isNotBlank()) {
+                                    val m = runCatching { Regex(anchorRegex).find(original) }.getOrNull()
+                                    if (m != null) aIdx = m.range.first
+                                }
+                            }
+                            if (aIdx < 0) {
+                                val already = original.contains(newContent)
+                                if (already) {
+                                    results.add("edit[$i]: anchor not found; content already present")
+                                    null
+                                } else {
+                                    results.add("edit[$i]: anchor not found; prepended at start")
+                                    newContent + "\n" + original
+                                }
+                            } else original.substring(0, aIdx) + newContent + original.substring(aIdx)
                         }
                         "replace_regex" -> {
                             val regexObj = e.optJSONObject("regex")
@@ -3235,6 +3270,15 @@ if (exit != 0) {
                         else -> { results.add("edit[$i]: unknown op ${'$'}op"); null }
                     }
                     if (updated != null && updated != original) {
+                        // Idempotency: if file already contains new chunk, treat as ok
+                        val idempotentMarker = e.optString("idempotent_marker")
+                        val alreadyPresent = (idempotentMarker.isNotBlank() && original.contains(idempotentMarker)) || original.contains(updated)
+                        if (alreadyPresent) {
+                            results.add("edit[$i]: already present; no change needed")
+                            entry.put("status", "no_change")
+                            outArr.put(entry)
+                            continue
+                        }
                         if (!previewOnly) {
                             runCatching { file.writeText(updated) }.onSuccess {
                                 results.add("edit[$i]: ok (${path})")
