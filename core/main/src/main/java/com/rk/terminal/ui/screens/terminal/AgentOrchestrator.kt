@@ -3894,7 +3894,7 @@ if (exit != 0) {
         return@withContext requestUpdatedPlan(Plan(goal, emptyList()))
     }
 
-    private suspend fun helperRecommend(kind: String, contextMap: Map<String,String>): JSONObject? = withContext(Dispatchers.IO) {
+    private suspend fun helperRecommend(kind: String, contextMap: Map<String, String>): JSONObject? = withContext(Dispatchers.IO) {
         if (!Settings.helper_agent_enabled) return@withContext null
         val (sys, user) = buildHelperRecommendationPrompt(kind, contextMap)
         val content = collectAllWithRetry(flowProvider = { LlmProvider.current().generate(listOf(LlmMessage("system", sys), LlmMessage("user", user))) })
@@ -4343,6 +4343,28 @@ object MainShell {
             if (outFile.exists()) {
                 content = runCatching { outFile.readText() }.getOrElse { "" }
                 if (content.contains(sentinel)) { saw = true; break }
+                // Early-exit heuristic: if we see typical server-start lines, stop waiting to unblock UI
+                val lower = content.lowercase()
+                val serverSignals = listOf(
+                    "running on http://", // Flask/WSGI
+                    "running on https://",
+                    "serving on http://",
+                    "serving on https://",
+                    " * running on ",
+                    " * debugger is active",
+                    "started server",
+                    "listening on",
+                    "127.0.0.1",
+                    "0.0.0.0",
+                    "http server started",
+                    "press ctrl+c to quit"
+                )
+                if (serverSignals.any { lower.contains(it) }) {
+                    // Synthesize sentinel to mark completion without altering process
+                    content += "\n$sentinel\nEXIT_CODE=0\n"
+                    saw = true
+                    break
+                }
             }
             try { Thread.sleep(100) } catch (_: InterruptedException) {}
         }
