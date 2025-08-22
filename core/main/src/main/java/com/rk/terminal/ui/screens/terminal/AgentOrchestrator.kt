@@ -104,6 +104,7 @@ class AgentOrchestrator(
     private var lastPlanGoal: String? = null
     private var projectRequirements: String? = null // Store the original project requirements
     private var folderStructureEnsured: Boolean = false
+    private var flaskProjectDetected: Boolean = false // Track if this is a Flask project
     
     // Context cache for maintaining code continuity across tasks
     private data class FileContext(
@@ -1145,6 +1146,12 @@ class AgentOrchestrator(
             - Consider best practices for the chosen technology stack
             - Ensure modularity and separation of concerns
             
+            CRITICAL Flask Requirements (if Flask is detected in the goal):
+            - MUST include "templates" module for HTML files (Flask framework requirement)
+            - MUST include "static" module for CSS/JS/images (Flask framework requirement)
+            - NEVER use "frontend", "assets", "views" or other non-standard directory names
+            - Include environment setup with preflight script usage
+            
             Return format: {"name": "string", "summary": "string", "stack": {"lang": "string", "frameworks": ["string"]}, "modules": [{"id": "string", "name": "string", "responsibilities": ["string"]}], "apis": [{"name": "string", "endpoints": [{"path": "string", "method": "string", "desc": "string"}]}]}
         """.trimIndent()
         val user = """
@@ -1713,6 +1720,20 @@ class AgentOrchestrator(
             put("task_id", taskId)
             put("attempts", tObj.optInt("attempts", 0))
             put("ts", tObj.optLong("ts"))
+        }
+        
+        // CRITICAL: Validate Flask project structure when marking tasks complete
+        if (flaskProjectDetected || taskId.contains("flask", ignoreCase = true) || 
+            currentTaskContext?.description?.contains("flask", ignoreCase = true) == true) {
+            try {
+                validateFlaskProjectStructure { /* status updates handled internally */ }
+            } catch (e: Exception) {
+                // Log validation error but don't fail the task
+                appendTaskLog("flask_validation_error") { 
+                    put("task_id", taskId)
+                    put("error", e.message ?: "Unknown validation error")
+                }
+            }
         }
     }
 
@@ -3119,7 +3140,9 @@ class AgentOrchestrator(
              - Use standard naming conventions (e.g., `snake_case` for Python, `camelCase` for JavaScript).
              - Separate concerns: templates, static files, configuration, and tests should be in their own directories.
              - Always include a `README.md` with setup and usage instructions.
-             - For Flask applications, create a proper structure with `templates/` and `static/` directories.
+             - **MANDATORY: Flask applications require `templates/` directory for HTML files (Flask framework requirement).**
+             - **MANDATORY: Flask applications require `static/` directory for CSS/JS/images (Flask framework requirement).**
+             - **NEVER create `frontend/`, `assets/`, `views/`, or other non-standard directories for Flask projects.**
              
              ### Code Quality Standards
              - Write clean, readable, and well-documented code.
@@ -3131,6 +3154,10 @@ class AgentOrchestrator(
              - Use proper HTTP status codes and error responses in web applications.
              
              ### Python/Flask Applications
+             - **CRITICAL: Flask projects MUST use `templates/` directory for HTML files, NEVER `frontend/` or other names.**
+             - **CRITICAL: Flask projects MUST use `static/` directory for CSS, JS, and images, NEVER `assets/` or other names.**
+             - **CRITICAL: Before completing any Flask project, validate that `render_template()` calls can resolve templates.**
+             - **CRITICAL: For environment setup, use the preflight script: `bash scripts/agent_preflight.sh PROJECT_DIR PROJECT_DIR/requirements.txt`**
              - Always use virtual environments: `python3 -m venv venv && . venv/bin/activate`.
              - Create a `requirements.txt` file with all necessary packages and their versions.
              - Use the Flask application factory pattern for larger applications.
@@ -5360,6 +5387,90 @@ if (exit != 0) {
 			appendTaskLog("folder_structure_ensured") { put("created", JSONArray(created)) }
 		}
 	}
+
+    /**
+     * Validates Flask project structure and fixes common directory naming issues
+     * CRITICAL: Prevents jinja2.exceptions.TemplateNotFound errors by ensuring proper Flask conventions
+     */
+    private fun validateFlaskProjectStructure(onStatus: (String) -> Unit): Boolean {
+        val rootDir = File(workingDirProvider())
+        val appPyFile = File(rootDir, "app.py")
+        val mainPyFile = File(rootDir, "main.py")
+        
+        // Check if this is a Flask project
+        val isFlaskProject = appPyFile.exists() || mainPyFile.exists() || 
+            rootDir.listFiles()?.any { it.name.endsWith(".py") && 
+                runCatching { it.readText().contains("from flask import") || it.readText().contains("import flask") }.getOrElse { false } 
+            } == true
+            
+        if (!isFlaskProject) return true
+        
+        flaskProjectDetected = true
+        var hasIssues = false
+        val fixes = mutableListOf<String>()
+        
+        // Check for incorrect directory names and fix them
+        val frontendDir = File(rootDir, "frontend")
+        val templatesDir = File(rootDir, "templates")
+        val assetsDir = File(rootDir, "assets")
+        val staticDir = File(rootDir, "static")
+        
+        // Fix frontend -> templates
+        if (frontendDir.exists() && !templatesDir.exists()) {
+            if (frontendDir.renameTo(templatesDir)) {
+                fixes.add("Renamed 'frontend/' to 'templates/' (Flask requirement)")
+                hasIssues = true
+                notifyWorkspaceChanged(templatesDir.absolutePath)
+            }
+        }
+        
+        // Fix assets -> static  
+        if (assetsDir.exists() && !staticDir.exists()) {
+            if (assetsDir.renameTo(staticDir)) {
+                fixes.add("Renamed 'assets/' to 'static/' (Flask requirement)")
+                hasIssues = true
+                notifyWorkspaceChanged(staticDir.absolutePath)
+            }
+        }
+        
+        // Warn about incorrect directories that still exist
+        if (frontendDir.exists() && templatesDir.exists()) {
+            fixes.add("WARNING: Both 'frontend/' and 'templates/' exist - Flask will only use 'templates/'")
+            hasIssues = true
+        }
+        
+        // Ensure Flask project has proper directory structure
+        if (!templatesDir.exists()) {
+            if (templatesDir.mkdirs()) {
+                fixes.add("Created 'templates/' directory (Flask requirement)")
+                notifyWorkspaceChanged(templatesDir.absolutePath)
+            }
+        }
+        
+        if (!staticDir.exists()) {
+            if (staticDir.mkdirs()) {
+                fixes.add("Created 'static/' directory (Flask requirement)")
+                notifyWorkspaceChanged(staticDir.absolutePath)
+            }
+        }
+        
+        // Run preflight script for Flask projects if requirements.txt exists
+        val requirementsFile = File(rootDir, "requirements.txt")
+        if (requirementsFile.exists() && !fixes.isEmpty()) {
+            fixes.add("Flask project detected - consider running preflight script for environment setup")
+        }
+        
+        if (fixes.isNotEmpty()) {
+            onStatus("Flask structure validation: ${fixes.joinToString("; ")}")
+            appendTaskLog("flask_structure_validation") { 
+                put("fixes", JSONArray(fixes))
+                put("flask_project", true)
+                put("preflight_recommended", requirementsFile.exists())
+            }
+        }
+        
+        return !hasIssues
+    }
 }
 
 object MainShell {
