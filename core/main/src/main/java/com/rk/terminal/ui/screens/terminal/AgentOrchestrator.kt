@@ -4260,30 +4260,77 @@ if (exit != 0) {
             }
             return@withContext false
         }
-        val obj = runCatching { JSONObject(jsonText) }.getOrNull() ?: return@withContext false
-        if (obj.optString("type") != "apply_changes") {
+        val parsed = runCatching { JSONObject(jsonText) }.getOrNull()
+        if (parsed == null) {
             appendTaskLog("backplan_result") {
                 put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
                 put("path", f.absolutePath)
                 put("ok", false)
-                put("reason", "wrong_type")
+                put("reason", "invalid_json")
             }
             return@withContext false
         }
-        val toolCall = ToolCall("apply_changes", obj.optJSONObject("args") ?: JSONObject())
+        var type = parsed.optString("type").lowercase()
+        var args: JSONObject? = parsed.optJSONObject("args")
+        if (type.isBlank()) {
+            // Attempt to infer tool type from payload
+            val edits = parsed.optJSONArray("edits")
+            if (edits != null) {
+                type = "apply_changes"
+                args = JSONObject().put("edits", edits)
+            } else if (parsed.has("path") && (parsed.has("content") || parsed.has("new_content"))) {
+                type = "write_file"
+                args = JSONObject().apply {
+                    put("path", parsed.optString("path"))
+                    put("content", parsed.optString("content", parsed.optString("new_content")))
+                    put("mode", "overwrite")
+                }
+            }
+        }
+        // Normalize/validate type
+        val normalizedType = when (type) {
+            "json_edit" -> "apply_changes"
+            else -> type
+        }
+        val allowed = setOf("apply_changes", "write_file", "search_replace", "create_file", "json_set")
+        if (normalizedType.isBlank() || normalizedType !in allowed) {
+            appendTaskLog("backplan_result") {
+                put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
+                put("path", f.absolutePath)
+                put("ok", false)
+                put("reason", "wrong_type:${type}")
+            }
+            return@withContext false
+        }
+        val toolCall = ToolCall(normalizedType, args ?: JSONObject())
         val res = executeToolCall(toolCall)
-        appendTaskLog("backplan_result") {
-            put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
-            put("path", f.absolutePath)
-            put("ok", res.ok)
-            put("observation_preview", res.observation?.take(400))
-        }
-        if (res.ok) {
-            // Update codebase cache and sync
-            runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, runCatching { f.readText() }.getOrElse { "" }, !f.exists()) }
-            notifyWorkspaceChanged(f.absolutePath)
-        }
-        return@withContext res.ok
+                    appendTaskLog("backplan_result") {
+                put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
+                put("path", f.absolutePath)
+                put("ok", res.ok)
+                put("observation_preview", res.observation?.take(400))
+            }
+            if (res.ok) {
+                // Update codebase cache and sync
+                runCatching { ControlApiClient.syncFile(sessionId, f.absolutePath, runCatching { f.readText() }.getOrElse { "" }, !f.exists()) }
+                notifyWorkspaceChanged(f.absolutePath)
+            } else {
+                // If apply_changes resulted in no_change, try a fallback write_file with intended content
+                val obs = res.observation ?: ""
+                val looksNoChange = obs.contains("no_change") || obs.contains("no edits")
+                if (looksNoChange && intended.isNotBlank()) {
+                    val fallback = ToolCall("write_file", JSONObject().put("path", f.absolutePath).put("content", intended).put("mode", "overwrite"))
+                    val wr = executeToolCall(fallback)
+                    appendTaskLog("backplan_result") {
+                        put("task_id", taskId ?: currentTaskContext?.id ?: JSONObject.NULL)
+                        put("path", f.absolutePath)
+                        put("ok", wr.ok)
+                        put("reason", if (wr.ok) "fallback_write_file" else "fallback_failed")
+                    }
+                    return@withContext wr.ok
+                }
+            }
+            return@withContext res.ok
     }
 
 	private fun ensureFolderStructureFromBlueprint(onStatus: (String) -> Unit) {
