@@ -280,49 +280,7 @@ class SshManager {
         }
     }
     
-    suspend fun executeCommand(sessionId: String, command: String): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            val session = sessions[sessionId] ?: return@withContext Result.failure(Exception("Session not found"))
-            
-            val channel = session.openChannel("exec") as ChannelExec
-            channel.setCommand(command)
-            
-            val inputStream = channel.inputStream
-            val errorStream = channel.errStream
-            
-            channel.connect()
-            
-            val output = StringBuilder()
-            val error = StringBuilder()
-            
-            // Read output
-            val outputReader = BufferedReader(InputStreamReader(inputStream))
-            val errorReader = BufferedReader(InputStreamReader(errorStream))
-            
-            var line: String?
-            while (outputReader.readLine().also { line = it } != null) {
-                output.appendLine(line)
-            }
-            
-            while (errorReader.readLine().also { line = it } != null) {
-                error.appendLine(line)
-            }
-            
-            channel.disconnect()
-            
-            val result = if (error.isNotEmpty()) {
-                "STDOUT:\n$output\nSTDERR:\n$error"
-            } else {
-                output.toString()
-            }
-            
-            Result.success(result)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to execute command: $command", e)
-            Result.failure(e)
-        }
-    }
+
     
     suspend fun listFiles(sessionId: String, path: String): Result<List<SshFileInfo>> = withContext(Dispatchers.IO) {
         try {
