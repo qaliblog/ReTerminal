@@ -43,7 +43,7 @@ class SshTerminalSession(
             // Connect SSH channel streams
             sshInputStream = shellChannel!!.inputStream
             sshOutputStream = shellChannel!!.outputStream
-            shellChannel!!.setErrStream(ByteArrayOutputStream()) // Capture errors
+            // Note: JSch ChannelShell doesn't have setErrStream, errors are mixed with output
             
             // Configure shell channel
             shellChannel!!.setPtyType("xterm-256color")

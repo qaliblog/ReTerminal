@@ -28,6 +28,21 @@ class SessionService : Service() {
     // Per-session File Manager working directory state
     // Key: sessionId, Value: absolute path string
     val fileManagerWorkingDirBySession = mutableStateMapOf<String, String>()
+    
+    // Store SSH session information for integration with other components
+    private val sshSessionInfo = mutableMapOf<String, Pair<String, com.rk.terminal.ui.screens.terminal.SshConnectionConfig>>()
+    
+    fun setSshSessionInfo(sessionId: String, sshSessionId: String, config: com.rk.terminal.ui.screens.terminal.SshConnectionConfig) {
+        sshSessionInfo[sessionId] = Pair(sshSessionId, config)
+    }
+    
+    fun getSshSessionInfo(sessionId: String): Pair<String, com.rk.terminal.ui.screens.terminal.SshConnectionConfig>? {
+        return sshSessionInfo[sessionId]
+    }
+    
+    fun isSshSession(sessionId: String): Boolean {
+        return sshSessionInfo.containsKey(sessionId)
+    }
 
     inner class SessionBinder : Binder() {
         fun getService():SessionService{
@@ -69,21 +84,6 @@ class SessionService : Service() {
                 fileManagerWorkingDirBySession[id] = "/home/${config.username}"
                 updateNotification()
             }
-        }
-        
-        // Store SSH session information for integration with other components
-        private val sshSessionInfo = mutableMapOf<String, Pair<String, com.rk.terminal.ui.screens.terminal.SshConnectionConfig>>()
-        
-        fun setSshSessionInfo(sessionId: String, sshSessionId: String, config: com.rk.terminal.ui.screens.terminal.SshConnectionConfig) {
-            sshSessionInfo[sessionId] = Pair(sshSessionId, config)
-        }
-        
-        fun getSshSessionInfo(sessionId: String): Pair<String, com.rk.terminal.ui.screens.terminal.SshConnectionConfig>? {
-            return sshSessionInfo[sessionId]
-        }
-        
-        fun isSshSession(sessionId: String): Boolean {
-            return sshSessionInfo.containsKey(sessionId)
         }
 
         // Hidden session support removed; only visible sessions are supported

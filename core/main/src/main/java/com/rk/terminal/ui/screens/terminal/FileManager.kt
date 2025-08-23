@@ -85,7 +85,7 @@ suspend fun loadLocalFiles(path: String): List<FileEntry> {
 suspend fun loadSshFiles(path: String, sessionId: String, mainActivity: MainActivity): List<FileEntry> {
     return try {
         val sshSessionInfo = mainActivity.sessionBinder?.getService()?.getSshSessionInfo(sessionId)
-        val sshSessionId = sshSessionInfo?.first
+        val sshSessionId: String? = sshSessionInfo?.first
         
         if (sshSessionId != null) {
             val sshManager = SshManager.getInstance()
