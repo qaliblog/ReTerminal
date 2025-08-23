@@ -32,24 +32,31 @@ class SshManager {
     
     suspend fun connect(config: SshConnectionConfig): Result<String> = withContext(Dispatchers.IO) {
         try {
+            Log.d(TAG, "Starting SSH connection to ${config.username}@${config.host}:${config.port}")
             connectionStatus.value = "Connecting..."
             
             val jsch = JSch()
             
             // Add private key if using key authentication
             if (config.useKey && config.privateKeyPath.isNotBlank()) {
+                Log.d(TAG, "Using SSH key authentication: ${config.privateKeyPath}")
                 if (File(config.privateKeyPath).exists()) {
                     jsch.addIdentity(config.privateKeyPath)
                 } else {
+                    Log.e(TAG, "Private key file not found: ${config.privateKeyPath}")
                     return@withContext Result.failure(Exception("Private key file not found: ${config.privateKeyPath}"))
                 }
+            } else {
+                Log.d(TAG, "Using password authentication")
             }
             
             val session = jsch.getSession(config.username, config.host, config.port)
+            Log.d(TAG, "Created JSch session")
             
             // Set password if not using key authentication
             if (!config.useKey && config.password.isNotBlank()) {
                 session.setPassword(config.password)
+                Log.d(TAG, "Password set for session")
             }
             
             // Configure session properties
@@ -57,9 +64,12 @@ class SshManager {
             sessionConfig["StrictHostKeyChecking"] = "no"
             sessionConfig["PreferredAuthentications"] = if (config.useKey) "publickey" else "password"
             session.setConfig(sessionConfig)
+            Log.d(TAG, "Session configuration applied")
             
-            // Set timeout
+            // Set timeout and connect
+            Log.d(TAG, "Attempting to connect with 30s timeout...")
             session.connect(30000) // 30 seconds timeout
+            Log.d(TAG, "SSH session connected successfully")
             
             val sessionId = generateSessionId(config)
             sessions[sessionId] = session

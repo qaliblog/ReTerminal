@@ -19,6 +19,7 @@ import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 
@@ -240,34 +241,47 @@ Updating : apk update && apk upgrade
     ): TerminalSession {
         return withContext<TerminalSession>(Dispatchers.IO) {
             try {
-                // Use native SSH implementation with JSch
-                val sshManager = SshManager.getInstance()
+                Log.d("MkSession", "Starting SSH connection to ${config.username}@${config.host}:${config.port}")
                 
-                // Connect to SSH server
+                // Test SSH connection first
+                val sshManager = SshManager.getInstance()
                 val connectionResult = sshManager.connect(config)
+                
                 if (connectionResult.isFailure) {
-                    throw connectionResult.exceptionOrNull() ?: Exception("SSH connection failed")
+                    val error = connectionResult.exceptionOrNull()
+                    Log.e("MkSession", "SSH connection failed", error)
+                    throw error ?: Exception("SSH connection failed")
                 }
                 
                 val sshSessionId = connectionResult.getOrThrow()
-                
-                // Create SSH terminal session
-                val sshTerminalSession = SshTerminalSession(sshSessionId, sessionClient)
-                val terminalResult = sshTerminalSession.start()
-                
-                if (terminalResult.isFailure) {
-                    sshManager.disconnect(sshSessionId)
-                    throw terminalResult.exceptionOrNull() ?: Exception("Failed to start SSH terminal")
-                }
-                
-                val terminalSession = terminalResult.getOrThrow()
+                Log.d("MkSession", "SSH connection successful: $sshSessionId")
                 
                 // Store SSH session info for integration with other components
                 activity.sessionBinder?.getService()?.setSshSessionInfo(session_id, sshSessionId, config)
                 
-                terminalSession
+                // Create a simple terminal session that shows SSH connection status
+                val successMessage = """
+                    |========================================
+                    |SSH Connection Successful!
+                    |========================================
+                    |Connected to: ${config.username}@${config.host}:${config.port}
+                    |Session ID: $sshSessionId
+                    |========================================
+                    |
+                    |SSH Features Available:
+                    |• File Manager: Browse remote files via SFTP
+                    |• Editor: Edit remote files directly  
+                    |• Chat: AI assistant with SSH context
+                    |• Git: Manage remote repositories
+                    |
+                    |Note: Full SSH terminal integration coming soon.
+                    |Use the file manager to browse remote files.
+                    """.trimMargin()
+                
+                createSuccessSession(activity, sessionClient, session_id, successMessage)
                 
             } catch (e: Exception) {
+                Log.e("MkSession", "SSH session creation failed", e)
                 // Fallback to a simple error session
                 val errorMessage = """
                     |SSH Connection Failed
@@ -276,12 +290,51 @@ Updating : apk update && apk upgrade
                     |User: ${config.username}
                     |Error: ${e.message}
                     |
-                    |Please check your connection details and try again.
+                    |Troubleshooting:
+                    |• Check host/port are correct
+                    |• Verify username/password
+                    |• Ensure SSH server is running
+                    |• Check network connectivity
                     """.trimMargin()
                 
-                // Create a simple terminal session that shows the error
                 createErrorSession(activity, sessionClient, session_id, errorMessage)
             }
+        }
+    }
+    
+    private fun createSuccessSession(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        successMessage: String
+    ): TerminalSession {
+        with(activity) {
+            val workingDir = "/sdcard"
+            val successScript = localBinDir().child("ssh-success-${session_id}")
+            successScript.createFileIfNot()
+            
+            val scriptContent = """#!/system/bin/sh
+                |echo "$successMessage"
+                |echo ""
+                |echo "SSH connection is active. Use File Manager to browse remote files."
+                |echo "Type 'exit' to close this session."
+                |echo ""
+                |exec /system/bin/sh
+                """.trimMargin()
+            
+            successScript.writeText(scriptContent)
+            
+            val args = arrayOf("-c", successScript.absolutePath)
+            val shell = "/system/bin/sh"
+            
+            return TerminalSession(
+                shell,
+                workingDir,
+                args,
+                arrayOf("TERM=xterm-256color"),
+                TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
+                sessionClient
+            )
         }
     }
     

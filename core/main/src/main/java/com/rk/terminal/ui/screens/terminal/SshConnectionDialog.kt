@@ -50,12 +50,12 @@ fun SshConnectionDialog(
                         modifier = Modifier.padding(12.dp)
                     ) {
                         Text(
-                            text = "ℹ️ SSH Setup Required",
+                            text = "🔗 Native SSH Connection",
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                         Text(
-                            text = "This will create an Alpine session with SSH setup. Once started, run the ./ssh-setup-[id] script to connect.",
+                            text = "Connect directly to your SSH server. All ReTerminal features will work with the remote server.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )

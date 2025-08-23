@@ -335,12 +335,14 @@ fun TerminalScreen(
                             ?.let {
                                 val client = TerminalBackEnd(it, mainActivityActivity)
                                 try {
-                                    mainActivityActivity.sessionBinder!!.createSshSession(
+                                    Log.d("TerminalScreen", "Creating SSH session with config: ${config.host}:${config.port}")
+                                    val session = mainActivityActivity.sessionBinder!!.createSshSession(
                                         sessionId,
                                         client,
                                         mainActivityActivity,
                                         config
                                     )
+                                    Log.d("TerminalScreen", "SSH session created successfully: $sessionId")
                                     // Session creation successful, switch to it
                                     withContext(Dispatchers.Main) {
                                         changeSession(mainActivityActivity, sessionId)
@@ -348,6 +350,10 @@ fun TerminalScreen(
                                 } catch (e: Exception) {
                                     // Handle SSH connection error
                                     Log.e("TerminalScreen", "Failed to create SSH session", e)
+                                    withContext(Dispatchers.Main) {
+                                        // Show error to user (you might want to add a Toast or dialog here)
+                                        Log.e("TerminalScreen", "SSH Connection failed: ${e.message}")
+                                    }
                                 }
                             }
                     }
