@@ -292,23 +292,22 @@ Updating : apk update && apk upgrade
                 activity.sessionBinder?.getService()?.setSshSessionInfo(session_id, sshSessionId, config)
                 
                 // Return success data
-                Result.success(sshSessionId to """
-                    |========================================
-                    |SSH Connection Successful!
-                    |========================================
-                    |Connected to: ${config.username}@${config.host}:${config.port}
-                    |Session ID: $sshSessionId
-                    |========================================
-                    |
-                    |SSH Features Available:
-                    |• File Manager: Browse remote files via SFTP
-                    |• Editor: Edit remote files directly  
-                    |• Chat: AI assistant with SSH context
-                    |• Git: Manage remote repositories
-                    |
-                    |Note: Full SSH terminal integration coming soon.
-                    |Use the file manager to browse remote files.
-                    """.trimMargin())
+                Result.success(sshSessionId to """========================================
+SSH Connection Successful!
+========================================
+Connected to: ${config.username}@${config.host}:${config.port}
+Session ID: $sshSessionId
+========================================
+
+SSH Features Available:
+• File Manager: Browse remote files via SFTP
+• Editor: Edit remote files directly  
+• Chat: AI assistant with SSH context
+• Git: Manage remote repositories
+
+Note: Full SSH terminal integration coming soon.
+Use the file manager to browse remote files.
+""")
                 
             } catch (e: Exception) {
                 Log.e("MkSession", "SSH session creation failed", e)
@@ -330,19 +329,18 @@ Updating : apk update && apk upgrade
                  }
                  else -> {
                      val error = connectionResult.exceptionOrNull()!!
-                     val errorMessage = """
-                         |SSH Connection Failed
-                         |====================
-                         |Host: ${config.host}:${config.port}
-                         |User: ${config.username}
-                         |Error: ${error.message}
-                         |
-                         |Troubleshooting:
-                         |• Check host/port are correct
-                         |• Verify username/password
-                         |• Ensure SSH server is running
-                         |• Check network connectivity
-                         """.trimMargin()
+                     val errorMessage = """SSH Connection Failed
+====================
+Host: ${config.host}:${config.port}
+User: ${config.username}
+Error: ${error.message}
+
+Troubleshooting:
+• Check host/port are correct
+• Verify username/password
+• Ensure SSH server is running
+• Check network connectivity
+"""
                      
                      createErrorSession(activity, sessionClient, session_id, errorMessage)
                  }
@@ -364,71 +362,71 @@ Updating : apk update && apk upgrade
             
             // Create a script that demonstrates the SSH connection is working
             val scriptContent = """#!/system/bin/sh
-                |echo "========================================="
-                |echo "SSH CONNECTION ESTABLISHED"
-                |echo "========================================="
-                |echo "Remote Host: ${config.host}:${config.port}"
-                |echo "Username: ${config.username}"
-                |echo "Session ID: $sshSessionId"
-                |echo ""
-                |echo "Testing remote connection..."
-                |echo ""
-                |
-                |# Set SSH environment variables for other tools
-                |export SSH_SESSION_ID="$sshSessionId"
-                |export SSH_HOST="${config.host}"
-                |export SSH_PORT="${config.port}"
-                |export SSH_USER="${config.username}"
-                |
-                |echo "SSH Environment configured:"
-                |echo "  SSH_HOST=""" + "$" + """SSH_HOST"
-                |echo "  SSH_PORT=""" + "$" + """SSH_PORT"
-                |echo "  SSH_USER=""" + "$" + """SSH_USER"
-                |echo ""
-                |echo "Available SSH Features:"
-                |echo "  • File Manager: Browse remote files via SFTP"
-                |echo "  • Editor: Edit remote files directly"
-                |echo "  • Git: Manage remote repositories"
-                |echo "  • Chat: AI assistant with SSH context"
-                |echo ""
-                |echo "Interactive SSH shell integration:"
-                |echo "  Status: Active connection established ✓"
-                |echo "  Backend: JSch native SSH library"
-                |echo "  Protocol: SSH-2"
-                |echo ""
-                |echo "Available commands:"
-                |echo "  ssh-test   - Test SSH connection"
-                |echo "  ssh-ls     - List remote directory"
-                |echo "  ssh-info   - Show connection details"
-                |echo "  exit       - Close session"
-                |echo ""
-                |
-                |# Create SSH test commands that actually use the connection
-                |ssh-test() {
-                |    echo "Testing SSH connection to """ + "$" + """SSH_HOST..."
-                |    echo "Executing remote command: uname -a"
-                |    echo "Note: Use File Manager to browse remote files via SFTP"
-                |    echo "Connection Status: Active ✓"
-                |}
-                |
-                |ssh-ls() {
-                |    echo "Listing remote home directory via SFTP..."
-                |    echo "Use File Manager -> SSH session to browse files graphically"
-                |    echo "SFTP connection available for file operations"
-                |}
-                |
-                |ssh-info() {
-                |    echo "SSH Session Information:"
-                |    echo "  Host: """ + "$" + """SSH_HOST:""" + "$" + """SSH_PORT"
-                |    echo "  User: """ + "$" + """SSH_USER"
-                |    echo "  Session ID: """ + "$" + """SSH_SESSION_ID"
-                |    echo "  Status: Connected ✓"
-                |    echo "  Features: SFTP, File Manager, Editor integration"
-                |}
-                |
-                |# Start an interactive shell with SSH context
-                |exec /system/bin/sh
-                """.trimMargin()
+echo "========================================="
+echo "SSH CONNECTION ESTABLISHED"
+echo "========================================="
+echo "Remote Host: ${config.host}:${config.port}"
+echo "Username: ${config.username}"
+echo "Session ID: $sshSessionId"
+echo ""
+echo "Testing remote connection..."
+echo ""
+
+# Set SSH environment variables for other tools
+export SSH_SESSION_ID="$sshSessionId"
+export SSH_HOST="${config.host}"
+export SSH_PORT="${config.port}"
+export SSH_USER="${config.username}"
+
+echo "SSH Environment configured:"
+echo "  SSH_HOST=""" + "$" + """SSH_HOST"
+echo "  SSH_PORT=""" + "$" + """SSH_PORT"
+echo "  SSH_USER=""" + "$" + """SSH_USER"
+echo ""
+echo "Available SSH Features:"
+echo "  • File Manager: Browse remote files via SFTP"
+echo "  • Editor: Edit remote files directly"
+echo "  • Git: Manage remote repositories"
+echo "  • Chat: AI assistant with SSH context"
+echo ""
+echo "Interactive SSH shell integration:"
+echo "  Status: Active connection established ✓"
+echo "  Backend: JSch native SSH library"
+echo "  Protocol: SSH-2"
+echo ""
+echo "Available commands:"
+echo "  ssh-test   - Test SSH connection"
+echo "  ssh-ls     - List remote directory"
+echo "  ssh-info   - Show connection details"
+echo "  exit       - Close session"
+echo ""
+
+# Create SSH test commands that actually use the connection
+ssh-test() {
+    echo "Testing SSH connection to """ + "$" + """SSH_HOST..."
+    echo "Executing remote command: uname -a"
+    echo "Note: Use File Manager to browse remote files via SFTP"
+    echo "Connection Status: Active ✓"
+}
+
+ssh-ls() {
+    echo "Listing remote home directory via SFTP..."
+    echo "Use File Manager -> SSH session to browse files graphically"
+    echo "SFTP connection available for file operations"
+}
+
+ssh-info() {
+    echo "SSH Session Information:"
+    echo "  Host: """ + "$" + """SSH_HOST:""" + "$" + """SSH_PORT"
+    echo "  User: """ + "$" + """SSH_USER"
+    echo "  Session ID: """ + "$" + """SSH_SESSION_ID"
+    echo "  Status: Connected ✓"
+    echo "  Features: SFTP, File Manager, Editor integration"
+}
+
+# Start an interactive shell with SSH context
+exec /system/bin/sh
+"""
             
             sshScript.writeText(scriptContent)
             
@@ -464,13 +462,13 @@ Updating : apk update && apk upgrade
             successScript.createFileIfNot()
             
             val scriptContent = """#!/system/bin/sh
-                |echo "$successMessage"
-                |echo ""
-                |echo "SSH connection is active. Use File Manager to browse remote files."
-                |echo "Type 'exit' to close this session."
-                |echo ""
-                |exec /system/bin/sh
-                """.trimMargin()
+echo "$successMessage"
+echo ""
+echo "SSH connection is active. Use File Manager to browse remote files."
+echo "Type 'exit' to close this session."
+echo ""
+exec /system/bin/sh
+"""
             
             successScript.writeText(scriptContent)
             
@@ -500,11 +498,11 @@ Updating : apk update && apk upgrade
             errorScript.createFileIfNot()
             
             val scriptContent = """#!/system/bin/sh
-                |echo "$errorMessage"
-                |echo ""
-                |echo "Press Enter to exit..."
-                |read
-                """.trimMargin()
+echo "$errorMessage"
+echo ""
+echo "Press Enter to exit..."
+read
+"""
             
             errorScript.writeText(scriptContent)
             
