@@ -30,14 +30,23 @@ class SshManager {
         }
         
         // Simple test function to verify JSch is working
-        fun testJSchLibrary(): String {
-            return try {
-                val jsch = JSch()
-                "JSch library loaded successfully"
-            } catch (e: Exception) {
-                "JSch library error: ${e.message}"
-            }
+            fun testJSchLibrary(): String {
+        return try {
+            val jsch = JSch()
+            "JSch library loaded successfully"
+        } catch (e: Exception) {
+            "JSch library error: ${e.message}"
         }
+    }
+    
+    private fun getJSchInfo(): String {
+        return try {
+            val jsch = JSch()
+            "JSch library available"
+        } catch (e: Exception) {
+            "JSch library error: ${e.message}"
+        }
+    }
         
         // Simple connection test
         suspend fun testConnection(host: String, port: Int, username: String, password: String): Result<String> = withContext(Dispatchers.IO) {
@@ -134,6 +143,11 @@ class SshManager {
         } catch (e: Exception) {
             connectionStatus.value = "Connection failed: ${e.message}"
             Log.e(TAG, "SSH connection failed", e)
+            Log.e(TAG, "Connection details: ${config.username}@${config.host}:${config.port}")
+            Log.e(TAG, "Error type: ${e.javaClass.simpleName}")
+            Log.e(TAG, "Error message: ${e.message}")
+            Log.e(TAG, "Error cause: ${e.cause}")
+            Log.e(TAG, "JSch version info: ${getJSchInfo()}")
             Result.failure(e)
         }
     }

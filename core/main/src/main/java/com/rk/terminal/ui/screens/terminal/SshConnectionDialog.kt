@@ -1,5 +1,6 @@
 package com.rk.terminal.ui.screens.terminal
 
+import android.util.Log
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -171,7 +172,11 @@ fun SshConnectionDialog(
                         Text(
                             text = "Connection failed: $error",
                             color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(8.dp)
+                            modifier = Modifier
+                                .padding(8.dp)
+                                .fillMaxWidth(),
+                            softWrap = true, // Allow text wrapping
+                            overflow = TextOverflow.Visible
                         )
                     }
                 }
@@ -195,7 +200,10 @@ fun SshConnectionDialog(
                         )
                         
                         if (saveConnection && connectionName.isNotBlank()) {
+                            Log.d("SshConnectionDialog", "Attempting to save connection: $connectionName")
                             SshConnectionManager.saveConnection(config)
+                        } else {
+                            Log.d("SshConnectionDialog", "Not saving connection: saveConnection=$saveConnection, name='$connectionName'")
                         }
                         
                         // Start connection with result callback

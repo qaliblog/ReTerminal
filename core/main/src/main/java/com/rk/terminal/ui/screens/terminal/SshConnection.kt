@@ -5,6 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import com.rk.libcommons.application
 import android.content.Context
+import android.util.Log
 
 data class SshConnectionConfig(
     val host: String,
@@ -76,6 +77,7 @@ object SshConnectionManager {
     }
 
     fun saveConnection(config: SshConnectionConfig) {
+        Log.d("SshConnectionManager", "Saving connection: ${config.name} (${config.username}@${config.host})")
         val current = _savedConnections.value.toMutableList()
         
         // Remove existing connection with same host/username if it exists
@@ -84,6 +86,8 @@ object SshConnectionManager {
         // Add new connection
         current.add(config)
         _savedConnections.value = current
+        
+        Log.d("SshConnectionManager", "Total saved connections: ${current.size}")
         
         // Save to preferences
         saveToPreferences(current)
@@ -100,16 +104,19 @@ object SshConnectionManager {
     
     private fun saveToPreferences(connections: List<SshConnectionConfig>) {
         try {
+            Log.d("SshConnectionManager", "Saving ${connections.size} connections to preferences")
             val jsonArray = JSONArray()
             connections.forEach { config ->
                 jsonArray.put(config.toJson())
             }
             
-            prefs.edit()
+            val result = prefs.edit()
                 .putString(CONNECTIONS_KEY, jsonArray.toString())
-                .apply()
+                .commit() // Use commit() instead of apply() for immediate feedback
+                
+            Log.d("SshConnectionManager", "Save to preferences result: $result")
         } catch (e: Exception) {
-            // Handle save error silently
+            Log.e("SshConnectionManager", "Failed to save connections to preferences", e)
         }
     }
 }

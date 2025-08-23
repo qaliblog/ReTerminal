@@ -241,9 +241,25 @@ Updating : apk update && apk upgrade
     ): TerminalSession {
         return withContext<TerminalSession>(Dispatchers.IO) {
             try {
-                Log.d("MkSession", "Starting SSH session creation")
+                Log.d("MkSession", "Starting SSH session creation for ${config.username}@${config.host}:${config.port}")
+                Log.d("MkSession", "Auth method: ${if (config.useKey) "Private key" else "Password"}")
+                
+                // Validate config first
+                if (config.host.isBlank()) {
+                    throw Exception("Host cannot be empty")
+                }
+                if (config.username.isBlank()) {
+                    throw Exception("Username cannot be empty")
+                }
+                if (!config.useKey && config.password.isBlank()) {
+                    throw Exception("Password cannot be empty when not using password auth")
+                }
+                if (config.useKey && config.privateKeyPath.isBlank()) {
+                    throw Exception("Private key path cannot be empty when using key auth")
+                }
+                
+                Log.d("MkSession", "Config validation passed")
                 Log.d("MkSession", "JSch test: ${SshManager.testJSchLibrary()}")
-                Log.d("MkSession", "Connecting to ${config.username}@${config.host}:${config.port}")
                 
                 // Simple connection test first if using password
                 if (!config.useKey && config.password.isNotBlank()) {

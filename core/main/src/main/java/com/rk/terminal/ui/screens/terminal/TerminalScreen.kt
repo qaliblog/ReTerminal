@@ -124,6 +124,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.lang.ref.WeakReference
 
@@ -342,12 +343,16 @@ fun TerminalScreen(
                                 val client = TerminalBackEnd(it, mainActivityActivity)
                                 try {
                                     Log.d("TerminalScreen", "Creating SSH session with config: ${config.host}:${config.port}")
-                                    val session = mainActivityActivity.sessionBinder!!.createSshSession(
-                                        sessionId,
-                                        client,
-                                        mainActivityActivity,
-                                        config
-                                    )
+                                    
+                                    // Add timeout to prevent hanging
+                                    val session = withTimeout(30000) { // 30 second timeout
+                                        mainActivityActivity.sessionBinder!!.createSshSession(
+                                            sessionId,
+                                            client,
+                                            mainActivityActivity,
+                                            config
+                                        )
+                                    }
                                     Log.d("TerminalScreen", "SSH session created successfully: $sessionId")
                                     
                                     // Session creation successful, switch to it
@@ -355,11 +360,17 @@ fun TerminalScreen(
                                         changeSession(mainActivityActivity, sessionId)
                                         onResult(true, null) // Report success
                                     }
+                                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                                    // Handle timeout specifically
+                                    Log.e("TerminalScreen", "SSH connection timed out after 30 seconds")
+                                    withContext(Dispatchers.Main) {
+                                        onResult(false, "Connection timed out after 30 seconds. Please check host and network connectivity.")
+                                    }
                                 } catch (e: Exception) {
                                     // Handle SSH connection error
                                     Log.e("TerminalScreen", "Failed to create SSH session", e)
                                     withContext(Dispatchers.Main) {
-                                        onResult(false, e.message) // Report failure
+                                        onResult(false, e.message ?: "Unknown connection error")
                                     }
                                 }
                             } ?: run {
