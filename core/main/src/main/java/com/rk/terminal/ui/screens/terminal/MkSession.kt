@@ -237,51 +237,91 @@ Updating : apk update && apk upgrade
         config: SshConnectionConfig
     ): TerminalSession {
         with(activity) {
+            // Use the same environment setup as Alpine but with SSH-specific env vars
             val envVariables = mapOf(
+                "ANDROID_ART_ROOT" to System.getenv("ANDROID_ART_ROOT"),
+                "ANDROID_DATA" to System.getenv("ANDROID_DATA"),
+                "ANDROID_I18N_ROOT" to System.getenv("ANDROID_I18N_ROOT"),
+                "ANDROID_ROOT" to System.getenv("ANDROID_ROOT"),
+                "ANDROID_RUNTIME_ROOT" to System.getenv("ANDROID_RUNTIME_ROOT"),
+                "ANDROID_TZDATA_ROOT" to System.getenv("ANDROID_TZDATA_ROOT"),
+                "BOOTCLASSPATH" to System.getenv("BOOTCLASSPATH"),
+                "DEX2OATBOOTCLASSPATH" to System.getenv("DEX2OATBOOTCLASSPATH"),
+                "EXTERNAL_STORAGE" to System.getenv("EXTERNAL_STORAGE"),
                 "TERM" to "xterm-256color",
-                "HOME" to "/home/${config.username}",
-                "USER" to config.username,
-                "SHELL" to "/bin/bash"
+                "SSH_HOST" to config.host,
+                "SSH_PORT" to config.port.toString(),
+                "SSH_USER" to config.username,
+                "SSH_PASSWORD" to config.password,
+                "SSH_KEY_PATH" to config.privateKeyPath,
+                "SSH_USE_KEY" to config.useKey.toString()
             )
 
-            val workingDir = "/home/${config.username}"
+            val workingDir = "/sdcard"
 
-            // Build SSH command
-            val sshCommand = buildList {
-                add("ssh")
-                add("-p")
-                add(config.port.toString())
-                add("-o")
-                add("StrictHostKeyChecking=no")
-                add("-o")
-                add("UserKnownHostsFile=/dev/null")
-                
-                if (config.useKey && config.privateKeyPath.isNotBlank()) {
-                    add("-i")
-                    add(config.privateKeyPath)
-                }
-                
-                add("${config.username}@${config.host}")
+                        // Create SSH setup scripts
+            val sshScript = localBinDir().child("ssh-connect-${session_id}")
+            val sshSetupScript = localBinDir().child("ssh-setup-${session_id}")
+            sshScript.createFileIfNot()
+            sshSetupScript.createFileIfNot()
+            
+            // Create the SSH connection helper script
+            val sshConnectionCommand = if (config.useKey && config.privateKeyPath.isNotBlank()) {
+                "ssh -p ${config.port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i \"${config.privateKeyPath}\" ${config.username}@${config.host}"
+            } else {
+                "ssh -p ${config.port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${config.username}@${config.host}"
             }
+            
+            val sshSetupContent = """#!/bin/sh
+                |# SSH setup script - run this after Alpine starts
+                |echo "========================================"
+                |echo "SSH Connection Setup"
+                |echo "========================================"
+                |echo "Host: ${config.host}"
+                |echo "Port: ${config.port}"
+                |echo "User: ${config.username}"
+                |echo "Auth: ${if (config.useKey) "Private Key" else "Password"}"
+                |echo "========================================"
+                |echo ""
+                |echo "Installing SSH client..."
+                |apk add openssh-client
+                |echo ""
+                |echo "SSH client installed! You can now connect using:"
+                |echo "${sshConnectionCommand}"
+                |echo ""
+                |echo "Connecting now..."
+                |${sshConnectionCommand}
+                """.trimMargin()
+            
+            sshSetupScript.writeText(sshSetupContent)
+            
+            val sshScriptContent = """#!/system/bin/sh
+                |# SSH session starter for ${config.username}@${config.host}
+                |echo "=========================================="
+                |echo "ReTerminal SSH Session"
+                |echo "=========================================="
+                |echo "Target: ${config.username}@${config.host}:${config.port}"
+                |echo "=========================================="
+                |echo ""
+                |echo "Starting Alpine Linux environment..."
+                |echo "Once Alpine starts, run: ./ssh-setup-${session_id}"
+                |echo ""
+                |exec ${initFile.absolutePath}
+                """.trimMargin()
+            
+            sshScript.writeText(sshScriptContent)
 
-            val args = sshCommand.drop(1).toTypedArray() // Remove "ssh" from args
-            val shell = "ssh"
+            val args = arrayOf("-c", sshScript.absolutePath)
+            val shell = "/system/bin/sh"
 
             return TerminalSession(
                 shell,
                 workingDir,
                 args,
-                envVariables.entries.map { "${it.key}=${it.value}" }.toTypedArray(),
+                envVariables.entries.mapNotNull { if (it.value != null) "${it.key}=${it.value}" else null }.toTypedArray(),
                 TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                 sessionClient
-            ).apply {
-                // For SSH sessions, we might need to handle password authentication
-                if (!config.useKey && config.password.isNotBlank()) {
-                    // Note: This is a simplified approach. In a real implementation,
-                    // you might want to use a proper SSH library like JSch or similar
-                    // for better password and key management
-                }
-            }
+            )
         }
     }
 }
