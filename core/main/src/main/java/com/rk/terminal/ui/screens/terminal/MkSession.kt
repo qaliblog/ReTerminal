@@ -257,9 +257,17 @@ Updating : apk update && apk upgrade
                 "SSH_USE_KEY" to config.useKey.toString()
             )
 
-            val workingDir = "/sdcard"
+                        val workingDir = "/sdcard"
 
-                        // Create SSH setup scripts
+            // Initialize the Alpine init file (same as regular sessions)
+            val initFile: File = localBinDir().child("init-host")
+
+            if (initFile.exists().not()){
+                initFile.createFileIfNot()
+                initFile.writeText(assets.open("init-host.sh").bufferedReader().use { it.readText() })
+            }
+
+            // Create SSH setup scripts
             val sshScript = localBinDir().child("ssh-connect-${session_id}")
             val sshSetupScript = localBinDir().child("ssh-setup-${session_id}")
             sshScript.createFileIfNot()
