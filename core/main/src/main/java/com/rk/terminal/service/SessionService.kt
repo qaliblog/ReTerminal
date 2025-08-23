@@ -61,7 +61,7 @@ class SessionService : Service() {
             }
         }
 
-        fun createSshSession(id: String, client: TerminalSessionClient, activity: MainActivity, config: com.rk.terminal.ui.screens.terminal.SshConnectionConfig): TerminalSession {
+        suspend fun createSshSession(id: String, client: TerminalSessionClient, activity: MainActivity, config: com.rk.terminal.ui.screens.terminal.SshConnectionConfig): TerminalSession {
             return MkSession.createSshSession(activity, client, id, config).also {
                 sessions[id] = it
                 sessionList[id] = com.rk.terminal.ui.screens.settings.WorkingMode.SSH
@@ -69,6 +69,21 @@ class SessionService : Service() {
                 fileManagerWorkingDirBySession[id] = "/home/${config.username}"
                 updateNotification()
             }
+        }
+        
+        // Store SSH session information for integration with other components
+        private val sshSessionInfo = mutableMapOf<String, Pair<String, com.rk.terminal.ui.screens.terminal.SshConnectionConfig>>()
+        
+        fun setSshSessionInfo(sessionId: String, sshSessionId: String, config: com.rk.terminal.ui.screens.terminal.SshConnectionConfig) {
+            sshSessionInfo[sessionId] = Pair(sshSessionId, config)
+        }
+        
+        fun getSshSessionInfo(sessionId: String): Pair<String, com.rk.terminal.ui.screens.terminal.SshConnectionConfig>? {
+            return sshSessionInfo[sessionId]
+        }
+        
+        fun isSshSession(sessionId: String): Boolean {
+            return sshSessionInfo.containsKey(sessionId)
         }
 
         // Hidden session support removed; only visible sessions are supported

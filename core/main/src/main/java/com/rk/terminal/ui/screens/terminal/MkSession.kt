@@ -17,6 +17,8 @@ import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
@@ -230,103 +232,89 @@ Updating : apk update && apk upgrade
         }
     }
 
-    fun createSshSession(
+    suspend fun createSshSession(
         activity: MainActivity,
         sessionClient: TerminalSessionClient,
         session_id: String,
         config: SshConnectionConfig
     ): TerminalSession {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Use native SSH implementation with JSch
+                val sshManager = SshManager.getInstance()
+                
+                // Connect to SSH server
+                val connectionResult = sshManager.connect(config)
+                if (connectionResult.isFailure) {
+                    throw connectionResult.exceptionOrNull() ?: Exception("SSH connection failed")
+                }
+                
+                val sshSessionId = connectionResult.getOrThrow()
+                
+                // Create SSH terminal session
+                val sshTerminalSession = SshTerminalSession(sshSessionId, sessionClient)
+                val terminalResult = sshTerminalSession.start()
+                
+                if (terminalResult.isFailure) {
+                    sshManager.disconnect(sshSessionId)
+                    throw terminalResult.exceptionOrNull() ?: Exception("Failed to start SSH terminal")
+                }
+                
+                val terminalSession = terminalResult.getOrThrow()
+                
+                // Store SSH session info for integration with other components
+                with(activity) {
+                    sessionBinder?.getService()?.setSshSessionInfo(session_id, sshSessionId, config)
+                }
+                
+                terminalSession
+                
+            } catch (e: Exception) {
+                // Fallback to a simple error session
+                val errorMessage = """
+                    |SSH Connection Failed
+                    |====================
+                    |Host: ${config.host}:${config.port}
+                    |User: ${config.username}
+                    |Error: ${e.message}
+                    |
+                    |Please check your connection details and try again.
+                    """.trimMargin()
+                
+                // Create a simple terminal session that shows the error
+                createErrorSession(activity, sessionClient, session_id, errorMessage)
+            }
+        }
+    }
+    
+    private fun createErrorSession(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        errorMessage: String
+    ): TerminalSession {
         with(activity) {
-            // Use the same environment setup as Alpine but with SSH-specific env vars
-            val envVariables = mapOf(
-                "ANDROID_ART_ROOT" to System.getenv("ANDROID_ART_ROOT"),
-                "ANDROID_DATA" to System.getenv("ANDROID_DATA"),
-                "ANDROID_I18N_ROOT" to System.getenv("ANDROID_I18N_ROOT"),
-                "ANDROID_ROOT" to System.getenv("ANDROID_ROOT"),
-                "ANDROID_RUNTIME_ROOT" to System.getenv("ANDROID_RUNTIME_ROOT"),
-                "ANDROID_TZDATA_ROOT" to System.getenv("ANDROID_TZDATA_ROOT"),
-                "BOOTCLASSPATH" to System.getenv("BOOTCLASSPATH"),
-                "DEX2OATBOOTCLASSPATH" to System.getenv("DEX2OATBOOTCLASSPATH"),
-                "EXTERNAL_STORAGE" to System.getenv("EXTERNAL_STORAGE"),
-                "TERM" to "xterm-256color",
-                "SSH_HOST" to config.host,
-                "SSH_PORT" to config.port.toString(),
-                "SSH_USER" to config.username,
-                "SSH_PASSWORD" to config.password,
-                "SSH_KEY_PATH" to config.privateKeyPath,
-                "SSH_USE_KEY" to config.useKey.toString()
-            )
-
-                        val workingDir = "/sdcard"
-
-            // Initialize the Alpine init file (same as regular sessions)
-            val initFile: File = localBinDir().child("init-host")
-
-            if (initFile.exists().not()){
-                initFile.createFileIfNot()
-                initFile.writeText(assets.open("init-host.sh").bufferedReader().use { it.readText() })
-            }
-
-            // Create SSH setup scripts
-            val sshScript = localBinDir().child("ssh-connect-${session_id}")
-            val sshSetupScript = localBinDir().child("ssh-setup-${session_id}")
-            sshScript.createFileIfNot()
-            sshSetupScript.createFileIfNot()
+            val workingDir = "/sdcard"
+            val errorScript = localBinDir().child("ssh-error-${session_id}")
+            errorScript.createFileIfNot()
             
-            // Create the SSH connection helper script
-            val sshConnectionCommand = if (config.useKey && config.privateKeyPath.isNotBlank()) {
-                "ssh -p ${config.port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i \"${config.privateKeyPath}\" ${config.username}@${config.host}"
-            } else {
-                "ssh -p ${config.port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${config.username}@${config.host}"
-            }
-            
-            val sshSetupContent = """#!/bin/sh
-                |# SSH setup script - run this after Alpine starts
-                |echo "========================================"
-                |echo "SSH Connection Setup"
-                |echo "========================================"
-                |echo "Host: ${config.host}"
-                |echo "Port: ${config.port}"
-                |echo "User: ${config.username}"
-                |echo "Auth: ${if (config.useKey) "Private Key" else "Password"}"
-                |echo "========================================"
+            val scriptContent = """#!/system/bin/sh
+                |echo "$errorMessage"
                 |echo ""
-                |echo "Installing SSH client..."
-                |apk add openssh-client
-                |echo ""
-                |echo "SSH client installed! You can now connect using:"
-                |echo "${sshConnectionCommand}"
-                |echo ""
-                |echo "Connecting now..."
-                |${sshConnectionCommand}
+                |echo "Press Enter to exit..."
+                |read
                 """.trimMargin()
             
-            sshSetupScript.writeText(sshSetupContent)
+            errorScript.writeText(scriptContent)
             
-            val sshScriptContent = """#!/system/bin/sh
-                |# SSH session starter for ${config.username}@${config.host}
-                |echo "=========================================="
-                |echo "ReTerminal SSH Session"
-                |echo "=========================================="
-                |echo "Target: ${config.username}@${config.host}:${config.port}"
-                |echo "=========================================="
-                |echo ""
-                |echo "Starting Alpine Linux environment..."
-                |echo "Once Alpine starts, run: ./ssh-setup-${session_id}"
-                |echo ""
-                |exec ${initFile.absolutePath}
-                """.trimMargin()
-            
-            sshScript.writeText(sshScriptContent)
-
-            val args = arrayOf("-c", sshScript.absolutePath)
+            val args = arrayOf("-c", errorScript.absolutePath)
             val shell = "/system/bin/sh"
-
+            
             return TerminalSession(
                 shell,
                 workingDir,
                 args,
-                envVariables.entries.mapNotNull { if (it.value != null) "${it.key}=${it.value}" else null }.toTypedArray(),
+                arrayOf("TERM=xterm-256color"),
                 TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                 sessionClient
             )

@@ -2,6 +2,7 @@ package com.rk.terminal.ui.screens.terminal
 
 import android.app.Activity
 import android.content.res.Configuration
+import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -329,18 +330,28 @@ fun TerminalScreen(
 
                     val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
 
-                    terminalView.get()
-                        ?.let {
-                            val client = TerminalBackEnd(it, mainActivityActivity)
-                            mainActivityActivity.sessionBinder!!.createSshSession(
-                                sessionId,
-                                client,
-                                mainActivityActivity,
-                                config
-                            )
-                        }
+                    scope.launch {
+                        terminalView.get()
+                            ?.let {
+                                val client = TerminalBackEnd(it, mainActivityActivity)
+                                try {
+                                    mainActivityActivity.sessionBinder!!.createSshSession(
+                                        sessionId,
+                                        client,
+                                        mainActivityActivity,
+                                        config
+                                    )
+                                    // Session creation successful, switch to it
+                                    withContext(Dispatchers.Main) {
+                                        changeSession(mainActivityActivity, sessionId)
+                                    }
+                                } catch (e: Exception) {
+                                    // Handle SSH connection error
+                                    Log.e("TerminalScreen", "Failed to create SSH session", e)
+                                }
+                            }
+                    }
 
-                    changeSession(mainActivityActivity, sessionId)
                     showSshDialog = false
                 },
                 onDismiss = {

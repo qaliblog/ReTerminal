@@ -46,6 +46,25 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import android.util.Log
+import com.rk.terminal.ui.activities.terminal.MainActivity
+
+// Unified file representation for both local and SSH files
+data class FileEntry(
+    val name: String,
+    val path: String,
+    val isDirectory: Boolean,
+    val size: Long = 0,
+    val lastModified: Long = 0,
+    val permissions: String = "",
+    val isLocal: Boolean = true
+) {
+    // Convert to File for local operations
+    fun toFile(): File = File(path)
+    
+    // Check if this entry represents a local file
+    fun isLocalFile(): Boolean = isLocal
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,9 +72,14 @@ fun FileManagerView(
     currentPath: String,
     onNavigate: (String) -> Unit,
     onEditFile: (File) -> Unit,
+    sessionId: String? = null,
+    mainActivity: MainActivity? = null
 ) {
     val scope = rememberCoroutineScope()
-    val entriesState = remember { mutableStateOf<List<File>>(emptyList()) }
+    val entriesState = remember { mutableStateOf<List<FileEntry>>(emptyList()) }
+    val isSSHSession = remember { 
+        sessionId?.let { mainActivity?.sessionBinder?.getService()?.isSshSession(it) } ?: false 
+    }
     val showNewFolderDialog = remember { mutableStateOf(false) }
     val newFolderName = remember { mutableStateOf("") }
     val showDeleteConfirm = remember { mutableStateOf<File?>(null) }
@@ -71,24 +95,86 @@ fun FileManagerView(
     val clipboardAction = remember { mutableStateOf<String?>(null) } // "copy" or "cut"
 
     suspend fun load(path: String) {
-        val dir = File(path)
-        val files = withContext(Dispatchers.IO) {
-            dir.listFiles()?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
+        val entries = withContext(Dispatchers.IO) {
+            if (isSSHSession && sessionId != null && mainActivity != null) {
+                // Load SSH files
+                loadSshFiles(path, sessionId, mainActivity)
+            } else {
+                // Load local files
+                loadLocalFiles(path)
+            }
         }
-        entriesState.value = files
+        entriesState.value = entries
         // Clear selection if items no longer exist
-        selectedPaths.value = selectedPaths.value.filter { p -> files.any { it.absolutePath == p } }.toSet()
+        selectedPaths.value = selectedPaths.value.filter { p -> entries.any { it.path == p } }.toSet()
+    }
+    
+    suspend fun loadLocalFiles(path: String): List<FileEntry> {
+        val dir = File(path)
+        return dir.listFiles()?.map { file ->
+            FileEntry(
+                name = file.name,
+                path = file.absolutePath,
+                isDirectory = file.isDirectory,
+                size = if (file.isFile) file.length() else 0,
+                lastModified = file.lastModified(),
+                permissions = getFilePermissions(file),
+                isLocal = true
+            )
+        }?.sortedWith(compareBy<FileEntry> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
+    }
+    
+    suspend fun loadSshFiles(path: String, sessionId: String, mainActivity: MainActivity): List<FileEntry> {
+        return try {
+            val sshSessionInfo = mainActivity.sessionBinder?.getService()?.getSshSessionInfo(sessionId)
+            val sshSessionId = sshSessionInfo?.first
+            
+            if (sshSessionId != null) {
+                val sshManager = SshManager.getInstance()
+                val result = sshManager.listFiles(sshSessionId, path)
+                
+                if (result.isSuccess) {
+                    result.getOrThrow().map { sshFile ->
+                        FileEntry(
+                            name = sshFile.name,
+                            path = sshFile.path,
+                            isDirectory = sshFile.isDirectory,
+                            size = sshFile.size,
+                            lastModified = sshFile.lastModified,
+                            permissions = sshFile.permissions,
+                            isLocal = false
+                        )
+                    }
+                } else {
+                    Log.e("FileManager", "Failed to load SSH files: ${result.exceptionOrNull()?.message}")
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) {
+            Log.e("FileManager", "Error loading SSH files", e)
+            emptyList()
+        }
+    }
+    
+    fun getFilePermissions(file: File): String {
+        val permissions = StringBuilder()
+        permissions.append(if (file.canRead()) "r" else "-")
+        permissions.append(if (file.canWrite()) "w" else "-")
+        permissions.append(if (file.canExecute()) "x" else "-")
+        return permissions.toString()
     }
 
     LaunchedEffect(currentPath) {
         load(currentPath)
     }
 
-    fun toggleSelection(file: File) {
-        selectedPaths.value = if (selectedPaths.value.contains(file.absolutePath)) {
-            selectedPaths.value - file.absolutePath
+    fun toggleSelection(entry: FileEntry) {
+        selectedPaths.value = if (selectedPaths.value.contains(entry.path)) {
+            selectedPaths.value - entry.path
         } else {
-            selectedPaths.value + file.absolutePath
+            selectedPaths.value + entry.path
         }
     }
 
