@@ -4,7 +4,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.regex.Pattern
-import kotlinx.coroutines.*
 
 /**
  * Smart Template Engine for AI Android Agent
@@ -733,7 +732,7 @@ export class {{className}} {
 {{imports}}
 
 class {{className}}:
-    """{{className}} implementation"""
+    \"\"\"{{className}} implementation\"\"\"
     
     def __init__(self):
         # TODO: Implement constructor
@@ -794,7 +793,7 @@ class {{className}}:
     private fun generateNameFromFile(filePath: String, type: String): String {
         val fileName = File(filePath).nameWithoutExtension
         return when (type) {
-            "class" -> fileName.split("_", "-").joinToString("") { it.capitalize() }
+            "class" -> fileName.split("_", "-").joinToString("") { it.replaceFirstChar { char -> if (char.isLowerCase()) char.titlecase() else char.toString() } }
             else -> fileName
         }
     }
@@ -873,7 +872,7 @@ class {{className}}:
     ): Any {
         return when (variable.type) {
             "string" -> when (name) {
-                "className", "componentName" -> File(request.context.targetFile).nameWithoutExtension.capitalize()
+                "className", "componentName" -> File(request.context.targetFile).nameWithoutExtension.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
                 "functionName" -> "handleRequest"
                 "routePath" -> "/api/endpoint"
                 else -> variable.defaultValue ?: ""
@@ -1098,7 +1097,7 @@ class {{className}}:
         val requirements = mutableListOf<String>()
         
         // Extract from user intent
-        val words = userIntent.toLowerCase().split(" ")
+                 val words = userIntent.lowercase().split(" ")
         
         when (type) {
             GenerationType.COMPONENT_CREATION -> {
@@ -1154,7 +1153,9 @@ class {{className}}:
         // Extract from framework
         analysis.framework?.let { framework ->
             preferences["language"] = framework.language
-            preferences["testingFramework"] = framework.conventions.testingFramework
+            framework.conventions.testingFramework?.let { 
+                preferences["testingFramework"] = it
+            }
         }
         
         return preferences

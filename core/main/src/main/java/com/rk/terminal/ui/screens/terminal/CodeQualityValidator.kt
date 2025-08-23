@@ -893,7 +893,7 @@ class CodeQualityValidator {
                 }
             }
             "python" -> {
-                if (content.count("for ") > 2 && content.contains("range(len(")) {
+                if (content.split("for ").size > 3 && content.contains("range(len(")) {
                     issues.add(ValidationIssue(
                         severity = IssueSeverity.SUGGESTION,
                         type = IssueType.PERFORMANCE,

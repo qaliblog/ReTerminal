@@ -202,7 +202,7 @@ class ProjectObserver(
         analysis.structure.configFiles.forEach { importantFiles.add(it.path) }
 
         // Add critical framework files
-        analysis.framework?.configFiles?.forEach { configFile ->
+        analysis.framework?.conventions?.configFiles?.forEach { configFile ->
             val fullPath = "${analysis.structure.rootPath}/$configFile"
             if (File(fullPath).exists()) {
                 importantFiles.add(fullPath)
