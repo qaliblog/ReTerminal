@@ -28,6 +28,40 @@ class SshManager {
             }
             return instance!!
         }
+        
+        // Simple test function to verify JSch is working
+        fun testJSchLibrary(): String {
+            return try {
+                val jsch = JSch()
+                "JSch library loaded successfully. Version: ${jsch.version}"
+            } catch (e: Exception) {
+                "JSch library error: ${e.message}"
+            }
+        }
+        
+        // Simple connection test
+        suspend fun testConnection(host: String, port: Int, username: String, password: String): Result<String> = withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Testing connection to $username@$host:$port")
+                val jsch = JSch()
+                val session = jsch.getSession(username, host, port)
+                session.setPassword(password)
+                
+                val config = Properties()
+                config["StrictHostKeyChecking"] = "no"
+                session.setConfig(config)
+                
+                session.connect(10000) // 10 second timeout for test
+                val result = "Connection test successful"
+                session.disconnect()
+                Log.d(TAG, result)
+                Result.success(result)
+            } catch (e: Exception) {
+                val error = "Connection test failed: ${e.message}"
+                Log.e(TAG, error, e)
+                Result.failure(e)
+            }
+        }
     }
     
     suspend fun connect(config: SshConnectionConfig): Result<String> = withContext(Dispatchers.IO) {

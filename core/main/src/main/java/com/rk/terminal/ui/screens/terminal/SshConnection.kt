@@ -1,7 +1,10 @@
 package com.rk.terminal.ui.screens.terminal
 
 import androidx.compose.runtime.mutableStateOf
+import org.json.JSONArray
 import org.json.JSONObject
+import com.rk.libcommons.application
+import android.content.Context
 
 data class SshConnectionConfig(
     val host: String,
@@ -40,24 +43,72 @@ data class SshConnectionConfig(
 }
 
 object SshConnectionManager {
+    private const val PREFS_NAME = "ssh_connections"
+    private const val CONNECTIONS_KEY = "saved_connections"
+    
     private val _savedConnections = mutableStateOf<List<SshConnectionConfig>>(emptyList())
     val savedConnections get() = _savedConnections.value
 
+    private val prefs by lazy {
+        application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    init {
+        _savedConnections.value = loadSavedConnections()
+    }
+
     fun loadSavedConnections(): List<SshConnectionConfig> {
-        // TODO: Load from preferences
-        return emptyList()
+        return try {
+            val connectionsJson = prefs.getString(CONNECTIONS_KEY, "[]")
+            val jsonArray = JSONArray(connectionsJson)
+            val connections = mutableListOf<SshConnectionConfig>()
+            
+            for (i in 0 until jsonArray.length()) {
+                val connectionJson = jsonArray.getJSONObject(i)
+                connections.add(SshConnectionConfig.fromJson(connectionJson))
+            }
+            
+            connections
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     fun saveConnection(config: SshConnectionConfig) {
-        // TODO: Save to preferences
         val current = _savedConnections.value.toMutableList()
+        
+        // Remove existing connection with same host/username if it exists
+        current.removeIf { it.host == config.host && it.username == config.username }
+        
+        // Add new connection
         current.add(config)
         _savedConnections.value = current
+        
+        // Save to preferences
+        saveToPreferences(current)
     }
 
     fun deleteConnection(config: SshConnectionConfig) {
         val current = _savedConnections.value.toMutableList()
         current.removeIf { it.host == config.host && it.username == config.username }
         _savedConnections.value = current
+        
+        // Save to preferences
+        saveToPreferences(current)
+    }
+    
+    private fun saveToPreferences(connections: List<SshConnectionConfig>) {
+        try {
+            val jsonArray = JSONArray()
+            connections.forEach { config ->
+                jsonArray.put(config.toJson())
+            }
+            
+            prefs.edit()
+                .putString(CONNECTIONS_KEY, jsonArray.toString())
+                .apply()
+        } catch (e: Exception) {
+            // Handle save error silently
+        }
     }
 }

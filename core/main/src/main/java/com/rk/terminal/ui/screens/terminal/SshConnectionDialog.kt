@@ -13,6 +13,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,6 +31,8 @@ fun SshConnectionDialog(
     var useKey by remember { mutableStateOf(false) }
     var saveConnection by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
+    var isConnecting by remember { mutableStateOf(false) }
+    var connectionError by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -143,12 +147,43 @@ fun SshConnectionDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+
+                // Connection status
+                if (isConnecting) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Connecting...")
+                    }
+                }
+
+                // Error message
+                connectionError?.let { error ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Text(
+                            text = "Connection failed: $error",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
                     if (host.isNotBlank() && username.isNotBlank()) {
+                        isConnecting = true
+                        connectionError = null
+                        
                         val config = SshConnectionConfig(
                             host = host.trim(),
                             port = port.toIntOrNull() ?: 22,
@@ -163,13 +198,24 @@ fun SshConnectionDialog(
                             SshConnectionManager.saveConnection(config)
                         }
                         
-                        onConnect(config)
+                        // Test the connection in the dialog itself
+                        try {
+                            onConnect(config)
+                            // Connection attempt initiated - let the caller handle the result
+                        } catch (e: Exception) {
+                            isConnecting = false
+                            connectionError = e.message
+                        }
                     }
                 },
-                enabled = host.isNotBlank() && username.isNotBlank() && 
+                enabled = !isConnecting && host.isNotBlank() && username.isNotBlank() && 
                          ((!useKey && password.isNotBlank()) || (useKey && privateKeyPath.isNotBlank()))
             ) {
-                Text("Connect")
+                if (isConnecting) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                } else {
+                    Text("Connect")
+                }
             }
         },
         dismissButton = {

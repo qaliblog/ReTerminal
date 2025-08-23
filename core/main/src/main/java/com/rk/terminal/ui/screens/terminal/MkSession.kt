@@ -241,7 +241,20 @@ Updating : apk update && apk upgrade
     ): TerminalSession {
         return withContext<TerminalSession>(Dispatchers.IO) {
             try {
-                Log.d("MkSession", "Starting SSH connection to ${config.username}@${config.host}:${config.port}")
+                Log.d("MkSession", "Starting SSH session creation")
+                Log.d("MkSession", "JSch test: ${SshManager.testJSchLibrary()}")
+                Log.d("MkSession", "Connecting to ${config.username}@${config.host}:${config.port}")
+                
+                // Simple connection test first if using password
+                if (!config.useKey && config.password.isNotBlank()) {
+                    Log.d("MkSession", "Testing simple connection first...")
+                    val testResult = SshManager.testConnection(config.host, config.port, config.username, config.password)
+                    if (testResult.isFailure) {
+                        Log.e("MkSession", "Simple connection test failed: ${testResult.exceptionOrNull()?.message}")
+                    } else {
+                        Log.d("MkSession", "Simple connection test passed: ${testResult.getOrNull()}")
+                    }
+                }
                 
                 // Test SSH connection first
                 val sshManager = SshManager.getInstance()
