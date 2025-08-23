@@ -399,38 +399,38 @@ mkdir -p """ + "$" + """BRIDGE_DIR
 
 # Create remote-ls script
 echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-ls
-echo 'echo "Remote directory listing for ${config.username}@${config.host}:"' >> """ + "$" + """BRIDGE_DIR/remote-ls
-echo 'echo "[Use File Manager -> SSH to browse remote files]"' >> """ + "$" + """BRIDGE_DIR/remote-ls
-echo 'echo "Note: Full SSH integration coming soon."' >> """ + "$" + """BRIDGE_DIR/remote-ls
+echo 'echo Remote directory listing for ${config.username}@${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-ls
+echo 'echo [Use File Manager to browse remote files]' >> """ + "$" + """BRIDGE_DIR/remote-ls
+echo 'echo Note: Full SSH integration coming soon.' >> """ + "$" + """BRIDGE_DIR/remote-ls
 chmod +x """ + "$" + """BRIDGE_DIR/remote-ls
 
 # Create remote-pwd script
 echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-pwd
-echo 'echo "Remote working directory for ${config.username}@${config.host}:"' >> """ + "$" + """BRIDGE_DIR/remote-pwd
-echo 'echo "[Full SSH integration coming soon]"' >> """ + "$" + """BRIDGE_DIR/remote-pwd
+echo 'echo Remote working directory for ${config.username}@${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-pwd
+echo 'echo [Full SSH integration coming soon]' >> """ + "$" + """BRIDGE_DIR/remote-pwd
 chmod +x """ + "$" + """BRIDGE_DIR/remote-pwd
 
 # Create remote-whoami script
 echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-whoami
-echo 'echo "Remote user info for ${config.host}:"' >> """ + "$" + """BRIDGE_DIR/remote-whoami
-echo 'echo "Username: ${config.username}"' >> """ + "$" + """BRIDGE_DIR/remote-whoami
-echo 'echo "[Full SSH integration coming soon]"' >> """ + "$" + """BRIDGE_DIR/remote-whoami
+echo 'echo Remote user info for ${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-whoami
+echo 'echo Username: ${config.username}' >> """ + "$" + """BRIDGE_DIR/remote-whoami
+echo 'echo [Full SSH integration coming soon]' >> """ + "$" + """BRIDGE_DIR/remote-whoami
 chmod +x """ + "$" + """BRIDGE_DIR/remote-whoami
 
 # Create remote-uname script
 echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-uname
-echo 'echo "Remote system info for ${config.host}:"' >> """ + "$" + """BRIDGE_DIR/remote-uname
-echo 'echo "[Full SSH integration coming soon]"' >> """ + "$" + """BRIDGE_DIR/remote-uname
+echo 'echo Remote system info for ${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-uname
+echo 'echo [Full SSH integration coming soon]' >> """ + "$" + """BRIDGE_DIR/remote-uname
 chmod +x """ + "$" + """BRIDGE_DIR/remote-uname
 
 # Create ssh-info script
 echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo "SSH Connection Information:"' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo "  Host: ${config.host}:${config.port}"' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo "  User: ${config.username}"' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo "  Session: ${sshSessionId}"' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo "  Status: Connected ✓"' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo "  Features: SFTP (File Manager), Bridge commands"' >> """ + "$" + """BRIDGE_DIR/ssh-info
+echo 'echo SSH Connection Information:' >> """ + "$" + """BRIDGE_DIR/ssh-info
+echo 'echo   Host: ${config.host}:${config.port}' >> """ + "$" + """BRIDGE_DIR/ssh-info
+echo 'echo   User: ${config.username}' >> """ + "$" + """BRIDGE_DIR/ssh-info
+echo 'echo   Session: ${sshSessionId}' >> """ + "$" + """BRIDGE_DIR/ssh-info
+echo 'echo   Status: Connected' >> """ + "$" + """BRIDGE_DIR/ssh-info
+echo 'echo   Features: SFTP File Manager, Bridge commands' >> """ + "$" + """BRIDGE_DIR/ssh-info
 chmod +x """ + "$" + """BRIDGE_DIR/ssh-info
 
 # Add bridge directory to PATH
