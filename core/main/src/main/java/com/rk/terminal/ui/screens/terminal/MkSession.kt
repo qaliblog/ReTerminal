@@ -381,9 +381,9 @@ Updating : apk update && apk upgrade
                 |export SSH_USER="${config.username}"
                 |
                 |echo "SSH Environment configured:"
-                |echo "  SSH_HOST=$SSH_HOST"
-                |echo "  SSH_PORT=$SSH_PORT"
-                |echo "  SSH_USER=$SSH_USER"
+                |echo "  SSH_HOST=\$SSH_HOST"
+                |echo "  SSH_PORT=\$SSH_PORT"
+                |echo "  SSH_USER=\$SSH_USER"
                 |echo ""
                 |echo "Available SSH Features:"
                 |echo "  • File Manager: Browse remote files via SFTP"
@@ -405,7 +405,7 @@ Updating : apk update && apk upgrade
                 |
                 |# Create SSH test commands that actually use the connection
                 |ssh-test() {
-                |    echo "Testing SSH connection to $SSH_HOST..."
+                |    echo "Testing SSH connection to \$SSH_HOST..."
                 |    echo "Executing remote command: uname -a"
                 |    echo "Note: Use File Manager to browse remote files via SFTP"
                 |    echo "Connection Status: Active ✓"
@@ -419,9 +419,9 @@ Updating : apk update && apk upgrade
                 |
                 |ssh-info() {
                 |    echo "SSH Session Information:"
-                |    echo "  Host: $SSH_HOST:$SSH_PORT"
-                |    echo "  User: $SSH_USER"
-                |    echo "  Session ID: $SSH_SESSION_ID"
+                |    echo "  Host: \$SSH_HOST:\$SSH_PORT"
+                |    echo "  User: \$SSH_USER"
+                |    echo "  Session ID: \$SSH_SESSION_ID"
                 |    echo "  Status: Connected ✓"
                 |    echo "  Features: SFTP, File Manager, Editor integration"
                 |}
