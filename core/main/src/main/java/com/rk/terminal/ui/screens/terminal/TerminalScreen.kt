@@ -233,6 +233,7 @@ fun TerminalScreen(
         val screenWidthDp = configuration.screenWidthDp
         val drawerWidth = (screenWidthDp * 0.84).dp
         var showAddDialog by remember { mutableStateOf(false) }
+        var showSshDialog by remember { mutableStateOf(false) }
 
         BackHandler(enabled = drawerState.isOpen) {
             scope.launch {
@@ -299,8 +300,53 @@ fun TerminalScreen(
                             createSession(workingMode = WorkingMode.ANDROID)
                             showAddDialog = false
                         })
+
+                    SettingsCard(
+                        title = { Text("SSH") },
+                        description = {Text("Connect to remote SSH server")},
+                        onClick = {
+                            showSshDialog = true
+                            showAddDialog = false
+                        })
                 }
             }
+        }
+
+        if (showSshDialog) {
+            SshConnectionDialog(
+                onConnect = { config ->
+                    fun generateUniqueString(existingStrings: List<String>): String {
+                        var index = 1
+                        var newString: String
+
+                        do {
+                            newString = "ssh$index"
+                            index++
+                        } while (newString in existingStrings)
+
+                        return newString
+                    }
+
+                    val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
+
+                    terminalView.get()
+                        ?.let {
+                            val client = TerminalBackEnd(it, mainActivityActivity)
+                            mainActivityActivity.sessionBinder!!.createSshSession(
+                                sessionId,
+                                client,
+                                mainActivityActivity,
+                                config
+                            )
+                        }
+
+                    changeSession(mainActivityActivity, sessionId)
+                    showSshDialog = false
+                },
+                onDismiss = {
+                    showSshDialog = false
+                }
+            )
         }
 
         ModalNavigationDrawer(
@@ -413,6 +459,7 @@ fun TerminalScreen(
                                 return when(workingMode){
                                     0 -> "ALPINE".lowercase()
                                     1 -> "ANDROID".lowercase()
+                                    2 -> "SSH".lowercase()
                                     null -> "null"
                                     else -> "unknown"
                                 }

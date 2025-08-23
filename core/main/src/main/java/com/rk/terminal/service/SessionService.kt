@@ -61,6 +61,16 @@ class SessionService : Service() {
             }
         }
 
+        fun createSshSession(id: String, client: TerminalSessionClient, activity: MainActivity, config: com.rk.terminal.ui.screens.terminal.SshConnectionConfig): TerminalSession {
+            return MkSession.createSshSession(activity, client, id, config).also {
+                sessions[id] = it
+                sessionList[id] = com.rk.terminal.ui.screens.settings.WorkingMode.SSH
+                // SSH sessions start in the home directory
+                fileManagerWorkingDirBySession[id] = "/home/${config.username}"
+                updateNotification()
+            }
+        }
+
         // Hidden session support removed; only visible sessions are supported
         fun getSession(id: String): TerminalSession? {
             return sessions[id]

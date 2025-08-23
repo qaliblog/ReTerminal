@@ -229,4 +229,59 @@ Updating : apk update && apk upgrade
             )
         }
     }
+
+    fun createSshSession(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        config: SshConnectionConfig
+    ): TerminalSession {
+        with(activity) {
+            val envVariables = mapOf(
+                "TERM" to "xterm-256color",
+                "HOME" to "/home/${config.username}",
+                "USER" to config.username,
+                "SHELL" to "/bin/bash"
+            )
+
+            val workingDir = "/home/${config.username}"
+
+            // Build SSH command
+            val sshCommand = buildList {
+                add("ssh")
+                add("-p")
+                add(config.port.toString())
+                add("-o")
+                add("StrictHostKeyChecking=no")
+                add("-o")
+                add("UserKnownHostsFile=/dev/null")
+                
+                if (config.useKey && config.privateKeyPath.isNotBlank()) {
+                    add("-i")
+                    add(config.privateKeyPath)
+                }
+                
+                add("${config.username}@${config.host}")
+            }
+
+            val args = sshCommand.drop(1).toTypedArray() // Remove "ssh" from args
+            val shell = "ssh"
+
+            return TerminalSession(
+                shell,
+                workingDir,
+                args,
+                envVariables.entries.map { "${it.key}=${it.value}" }.toTypedArray(),
+                TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
+                sessionClient
+            ).apply {
+                // For SSH sessions, we might need to handle password authentication
+                if (!config.useKey && config.password.isNotBlank()) {
+                    // Note: This is a simplified approach. In a real implementation,
+                    // you might want to use a proper SSH library like JSch or similar
+                    // for better password and key management
+                }
+            }
+        }
+    }
 }
