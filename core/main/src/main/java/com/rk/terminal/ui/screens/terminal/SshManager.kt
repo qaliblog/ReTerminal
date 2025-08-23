@@ -52,23 +52,49 @@ class SshManager {
         suspend fun testConnection(host: String, port: Int, username: String, password: String): Result<String> = withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "Testing connection to $username@$host:$port")
+                Log.d(TAG, "Password provided: ${password.isNotEmpty()}, length: ${password.length}")
+                
                 val jsch = JSch()
                 val session = jsch.getSession(username, host, port)
                 session.setPassword(password)
                 
                 val config = Properties()
                 config["StrictHostKeyChecking"] = "no"
+                config["UserKnownHostsFile"] = "/dev/null"
+                config["PreferredAuthentications"] = "password,keyboard-interactive"
+                config["PasswordAuthentication"] = "yes"
+                config["KbdInteractiveAuthentication"] = "yes"
+                config["PubkeyAuthentication"] = "no"
                 session.setConfig(config)
                 
+                Log.d(TAG, "Attempting test connection with enhanced auth settings...")
                 session.connect(10000) // 10 second timeout for test
-                val result = "Connection test successful"
+                
+                val result = if (session.isConnected) {
+                    "✓ Authentication successful! Credentials are valid."
+                } else {
+                    "✗ Connection failed - session not connected"
+                }
+                
                 session.disconnect()
                 Log.d(TAG, result)
                 Result.success(result)
             } catch (e: Exception) {
-                val error = "Connection test failed: ${e.message}"
+                val error = "✗ Auth test failed: ${e.message}"
                 Log.e(TAG, error, e)
-                Result.failure(e)
+                
+                // Provide specific authentication guidance
+                val specificError = when {
+                    e.message?.contains("Auth fail") == true -> 
+                        "Authentication failed - verify username/password are exactly correct"
+                    e.message?.contains("Connection refused") == true -> 
+                        "Connection refused - check if SSH server is running on port $port"
+                    e.message?.contains("timeout") == true -> 
+                        "Connection timeout - check network connectivity to $host"
+                    else -> "Connection error: ${e.message}"
+                }
+                
+                Result.failure(Exception(specificError))
             }
         }
     }
@@ -102,16 +128,56 @@ class SshManager {
                 Log.d(TAG, "Password set for session")
             }
             
-            // Configure session properties
+            // Configure session properties with comprehensive settings
             val sessionConfig = Properties()
             sessionConfig["StrictHostKeyChecking"] = "no"
-            sessionConfig["PreferredAuthentications"] = if (config.useKey) "publickey" else "password"
+            sessionConfig["UserKnownHostsFile"] = "/dev/null"
+            sessionConfig["PreferredAuthentications"] = if (config.useKey) "publickey" else "password,keyboard-interactive"
+            sessionConfig["PasswordAuthentication"] = "yes"
+            sessionConfig["KbdInteractiveAuthentication"] = "yes"
+            sessionConfig["PubkeyAuthentication"] = if (config.useKey) "yes" else "no"
+            sessionConfig["HostKeyAlgorithms"] = "+ssh-rsa,ssh-dss"
+            sessionConfig["server_host_key"] = "ssh-rsa,ssh-dss,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521"
             session.setConfig(sessionConfig)
-            Log.d(TAG, "Session configuration applied")
+            Log.d(TAG, "Enhanced session configuration applied")
+            Log.d(TAG, "Auth methods: ${sessionConfig["PreferredAuthentications"]}")
+            Log.d(TAG, "Password auth: ${sessionConfig["PasswordAuthentication"]}")
+            Log.d(TAG, "Keyboard auth: ${sessionConfig["KbdInteractiveAuthentication"]}")
+            
+            // Debug authentication methods before connecting
+            Log.d(TAG, "Available authentication methods for ${config.username}@${config.host}")
             
             // Set timeout and connect
             Log.d(TAG, "Attempting to connect with 15s timeout...")
-            session.connect(15000) // 15 seconds timeout (reduced for better UX)
+            Log.d(TAG, "Connection parameters:")
+            Log.d(TAG, "  Host: ${config.host}")
+            Log.d(TAG, "  Port: ${config.port}")
+            Log.d(TAG, "  Username: ${config.username}")
+            Log.d(TAG, "  Password length: ${config.password.length}")
+            Log.d(TAG, "  Use key: ${config.useKey}")
+            
+            try {
+                session.connect(15000) // 15 seconds timeout (reduced for better UX)
+            } catch (e: com.jcraft.jsch.JSchException) {
+                Log.e(TAG, "JSch connection failed with specific error: ${e.message}")
+                Log.e(TAG, "JSch error code: ${e.javaClass.simpleName}")
+                
+                // Try to provide more specific error information
+                when {
+                    e.message?.contains("Auth fail") == true -> {
+                        throw Exception("Authentication failed. Please verify username and password are correct.")
+                    }
+                    e.message?.contains("timeout") == true -> {
+                        throw Exception("Connection timeout. Check network connectivity and host address.")
+                    }
+                    e.message?.contains("Connection refused") == true -> {
+                        throw Exception("Connection refused. Check if SSH server is running on ${config.host}:${config.port}")
+                    }
+                    else -> {
+                        throw Exception("SSH connection failed: ${e.message}")
+                    }
+                }
+            }
             
             if (!session.isConnected) {
                 throw Exception("SSH session failed to connect (timeout or auth failure)")
@@ -148,6 +214,21 @@ class SshManager {
             Log.e(TAG, "Error message: ${e.message}")
             Log.e(TAG, "Error cause: ${e.cause}")
             Log.e(TAG, "JSch version info: ${getJSchInfo()}")
+            
+            // Additional debugging for authentication failures
+            if (e.message?.contains("Auth fail") == true) {
+                Log.e(TAG, "===== AUTHENTICATION FAILURE DEBUG =====")
+                Log.e(TAG, "Username: '${config.username}' (length: ${config.username.length})")
+                Log.e(TAG, "Password: ${if (config.password.isEmpty()) "EMPTY" else "PROVIDED (length: ${config.password.length})"}")
+                Log.e(TAG, "Host: '${config.host}'")
+                Log.e(TAG, "Port: ${config.port}")
+                Log.e(TAG, "Using key auth: ${config.useKey}")
+                Log.e(TAG, "==========================================")
+                Log.e(TAG, "Try this command to test manually:")
+                Log.e(TAG, "ssh -p ${config.port} ${config.username}@${config.host}")
+                Log.e(TAG, "==========================================")
+            }
+            
             Result.failure(e)
         }
     }
