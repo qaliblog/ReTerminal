@@ -435,44 +435,44 @@ echo ""
 
 # Create bridge command scripts
 BRIDGE_DIR="/data/data/com.rk.terminal.debug/local/bridge"
-mkdir -p "$BRIDGE_DIR"
+mkdir -p """ + "$" + """BRIDGE_DIR
 
 # Create remote-ls script
-cat > "$BRIDGE_DIR/remote-ls" << EOF
+cat > """ + "$" + """BRIDGE_DIR/remote-ls << EOF
 #!/system/bin/sh
 echo "Remote directory listing for ${config.username}@${config.host}:"
 echo "[Use File Manager -> SSH to browse remote files]"
 echo "Note: Full SSH integration coming soon."
 EOF
-chmod +x "$BRIDGE_DIR/remote-ls"
+chmod +x """ + "$" + """BRIDGE_DIR/remote-ls
 
 # Create remote-pwd script
-cat > "$BRIDGE_DIR/remote-pwd" << EOF
+cat > """ + "$" + """BRIDGE_DIR/remote-pwd << EOF
 #!/system/bin/sh
 echo "Remote working directory for ${config.username}@${config.host}:"
 echo "[Full SSH integration coming soon]"
 EOF
-chmod +x "$BRIDGE_DIR/remote-pwd"
+chmod +x """ + "$" + """BRIDGE_DIR/remote-pwd
 
 # Create remote-whoami script
-cat > "$BRIDGE_DIR/remote-whoami" << EOF
+cat > """ + "$" + """BRIDGE_DIR/remote-whoami << EOF
 #!/system/bin/sh
 echo "Remote user info for ${config.host}:"
 echo "Username: ${config.username}"
 echo "[Full SSH integration coming soon]"
 EOF
-chmod +x "$BRIDGE_DIR/remote-whoami"
+chmod +x """ + "$" + """BRIDGE_DIR/remote-whoami
 
 # Create remote-uname script
-cat > "$BRIDGE_DIR/remote-uname" << EOF
+cat > """ + "$" + """BRIDGE_DIR/remote-uname << EOF
 #!/system/bin/sh
 echo "Remote system info for ${config.host}:"
 echo "[Full SSH integration coming soon]"
 EOF
-chmod +x "$BRIDGE_DIR/remote-uname"
+chmod +x """ + "$" + """BRIDGE_DIR/remote-uname
 
 # Create ssh-info script
-cat > "$BRIDGE_DIR/ssh-info" << EOF
+cat > """ + "$" + """BRIDGE_DIR/ssh-info << EOF
 #!/system/bin/sh
 echo "SSH Connection Information:"
 echo "  Host: ${config.host}:${config.port}"
@@ -481,10 +481,10 @@ echo "  Session: $sshSessionId"
 echo "  Status: Connected ✓"
 echo "  Features: SFTP (File Manager), Bridge commands"
 EOF
-chmod +x "$BRIDGE_DIR/ssh-info"
+chmod +x """ + "$" + """BRIDGE_DIR/ssh-info
 
 # Add bridge directory to PATH
-export PATH="$BRIDGE_DIR:$PATH"
+export PATH=""" + "$" + """BRIDGE_DIR:""" + "$" + """PATH"
 
 echo "SSH bridge commands are now available."
 echo "Try: remote-ls, remote-whoami, ssh-info"
