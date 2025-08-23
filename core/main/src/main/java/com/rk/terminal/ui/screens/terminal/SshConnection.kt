@@ -50,7 +50,8 @@ object SshConnectionManager {
     val savedConnections get() = _savedConnections.value
 
     private val prefs by lazy {
-        application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        application?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?: throw IllegalStateException("Application context not available")
     }
 
     init {

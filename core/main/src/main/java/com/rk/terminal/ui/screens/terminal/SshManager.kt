@@ -33,7 +33,7 @@ class SshManager {
         fun testJSchLibrary(): String {
             return try {
                 val jsch = JSch()
-                "JSch library loaded successfully. Version: ${jsch.version}"
+                "JSch library loaded successfully"
             } catch (e: Exception) {
                 "JSch library error: ${e.message}"
             }
