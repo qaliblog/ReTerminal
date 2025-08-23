@@ -1,11 +1,8 @@
 package com.rk.terminal.ui.screens.terminal
 
 import androidx.compose.runtime.mutableStateOf
-import kotlinx.serialization.Serializable
-import org.json.JSONArray
 import org.json.JSONObject
 
-@Serializable
 data class SshConnectionConfig(
     val host: String,
     val port: Int = 22,
