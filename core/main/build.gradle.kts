@@ -119,4 +119,7 @@ dependencies {
     // For extracting tar archives from Hugging Face bundles
     api("org.apache.commons:commons-compress:1.26.2")
     api(libs.security.crypto)
+    
+    // SSH support
+    api("com.github.mwiede:jsch:0.2.17")
 }

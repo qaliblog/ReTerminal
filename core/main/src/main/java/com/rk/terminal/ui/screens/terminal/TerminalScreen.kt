@@ -2,6 +2,7 @@ package com.rk.terminal.ui.screens.terminal
 
 import android.app.Activity
 import android.content.res.Configuration
+import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -102,6 +103,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.rk.components.compose.preferences.base.PreferenceGroup
 import com.rk.libcommons.application
 import com.rk.libcommons.child
+import com.rk.libcommons.toast
 import com.rk.libcommons.dpToPx
 import com.rk.libcommons.pendingCommand
 import com.rk.resources.strings
@@ -122,6 +124,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.lang.ref.WeakReference
 
@@ -233,6 +236,7 @@ fun TerminalScreen(
         val screenWidthDp = configuration.screenWidthDp
         val drawerWidth = (screenWidthDp * 0.84).dp
         var showAddDialog by remember { mutableStateOf(false) }
+        var showSshDialog by remember { mutableStateOf(false) }
 
         BackHandler(enabled = drawerState.isOpen) {
             scope.launch {
@@ -299,8 +303,86 @@ fun TerminalScreen(
                             createSession(workingMode = WorkingMode.ANDROID)
                             showAddDialog = false
                         })
+
+                    SettingsCard(
+                        title = { Text("SSH") },
+                        description = {Text("Connect to remote SSH server")},
+                        onClick = {
+                            showSshDialog = true
+                            showAddDialog = false
+                        })
                 }
             }
+        }
+
+        if (showSshDialog) {
+            SshConnectionDialog(
+                onConnect = { config, onResult ->
+                    fun generateUniqueString(existingStrings: List<String>): String {
+                        var index = 1
+                        var newString: String
+
+                        do {
+                            newString = "ssh$index"
+                            index++
+                        } while (newString in existingStrings)
+
+                        return newString
+                    }
+
+                    val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
+
+                    scope.launch {
+                        // Show immediate feedback
+                        withContext(Dispatchers.Main) {
+                            toast("Starting SSH connection to ${config.host}...")
+                        }
+                        
+                        terminalView.get()
+                            ?.let {
+                                val client = TerminalBackEnd(it, mainActivityActivity)
+                                try {
+                                    Log.d("TerminalScreen", "Creating SSH session with config: ${config.host}:${config.port}")
+                                    
+                                    // Add timeout to prevent hanging
+                                    val session = withTimeout(30000) { // 30 second timeout
+                                        mainActivityActivity.sessionBinder!!.createSshSession(
+                                            sessionId,
+                                            client,
+                                            mainActivityActivity,
+                                            config
+                                        )
+                                    }
+                                    Log.d("TerminalScreen", "SSH session created successfully: $sessionId")
+                                    
+                                    // Session creation successful, switch to it
+                                    withContext(Dispatchers.Main) {
+                                        changeSession(mainActivityActivity, sessionId)
+                                        onResult(true, null) // Report success
+                                    }
+                                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                                    // Handle timeout specifically
+                                    Log.e("TerminalScreen", "SSH connection timed out after 30 seconds")
+                                    withContext(Dispatchers.Main) {
+                                        onResult(false, "Connection timed out after 30 seconds. Please check host and network connectivity.")
+                                    }
+                                } catch (e: Exception) {
+                                    // Handle SSH connection error
+                                    Log.e("TerminalScreen", "Failed to create SSH session", e)
+                                    withContext(Dispatchers.Main) {
+                                        onResult(false, e.message ?: "Unknown connection error")
+                                    }
+                                }
+                            } ?: run {
+                                // Handle case where terminalView is null
+                                onResult(false, "Terminal view not available")
+                            }
+                    }
+                },
+                onDismiss = {
+                    showSshDialog = false
+                }
+            )
         }
 
         ModalNavigationDrawer(
@@ -413,6 +495,7 @@ fun TerminalScreen(
                                 return when(workingMode){
                                     0 -> "ALPINE".lowercase()
                                     1 -> "ANDROID".lowercase()
+                                    2 -> "SSH".lowercase()
                                     null -> "null"
                                     else -> "unknown"
                                 }

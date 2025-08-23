@@ -73,6 +73,7 @@ fun SettingsCard(
 object WorkingMode{
     const val ALPINE = 0
     const val ANDROID = 1
+    const val SSH = 2
 }
 
 
@@ -119,6 +120,24 @@ fun Settings(modifier: Modifier = Modifier,navController: NavController,mainActi
                 },
                 onClick = {
                     selectedOption = WorkingMode.ANDROID
+                    Settings.working_Mode = selectedOption
+                })
+
+            SettingsCard(
+                title = { Text("SSH") },
+                description = {Text("Connect to remote SSH server")},
+                startWidget = {
+                    RadioButton(
+                        modifier = Modifier
+                            .padding(start = 8.dp),
+                        selected = selectedOption == WorkingMode.SSH,
+                        onClick = {
+                            selectedOption = WorkingMode.SSH
+                            Settings.working_Mode = selectedOption
+                        })
+                },
+                onClick = {
+                    selectedOption = WorkingMode.SSH
                     Settings.working_Mode = selectedOption
                 })
         }

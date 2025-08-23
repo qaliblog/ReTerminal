@@ -1,0 +1,239 @@
+package com.rk.terminal.ui.screens.terminal
+
+import android.util.Log
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SshConnectionDialog(
+    onConnect: (SshConnectionConfig, onResult: (Boolean, String?) -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var host by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("22") }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var privateKeyPath by remember { mutableStateOf("") }
+    var connectionName by remember { mutableStateOf("") }
+    var useKey by remember { mutableStateOf(false) }
+    var saveConnection by remember { mutableStateOf(false) }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var isConnecting by remember { mutableStateOf(false) }
+    var connectionError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("SSH Connection") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp)
+                    ) {
+                        Text(
+                            text = "🔗 Native SSH Connection",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            text = "Connect directly to your SSH server. All ReTerminal features will work with the remote server.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("Host") },
+                    placeholder = { Text("192.168.1.100 or example.com") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { port = it },
+                    label = { Text("Port") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text("Username") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Switch(
+                        checked = useKey,
+                        onCheckedChange = { useKey = it }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Use private key")
+                }
+
+                if (useKey) {
+                    OutlinedTextField(
+                        value = privateKeyPath,
+                        onValueChange = { privateKeyPath = it },
+                        label = { Text("Private Key Path") },
+                        placeholder = { Text("/sdcard/ssh/id_rsa") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Password") },
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                    contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Switch(
+                        checked = saveConnection,
+                        onCheckedChange = { saveConnection = it }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Save connection")
+                }
+
+                if (saveConnection) {
+                    OutlinedTextField(
+                        value = connectionName,
+                        onValueChange = { connectionName = it },
+                        label = { Text("Connection Name") },
+                        placeholder = { Text("My Server") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Connection status
+                if (isConnecting) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Connecting...")
+                    }
+                }
+
+                // Error message
+                connectionError?.let { error ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Text(
+                            text = "Connection failed: $error",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier
+                                .padding(8.dp)
+                                .fillMaxWidth(),
+                            softWrap = true, // Allow text wrapping
+                            overflow = TextOverflow.Visible
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (host.isNotBlank() && username.isNotBlank()) {
+                        isConnecting = true
+                        connectionError = null
+                        
+                        val config = SshConnectionConfig(
+                            host = host.trim(),
+                            port = port.toIntOrNull() ?: 22,
+                            username = username.trim(),
+                            password = if (!useKey) password else "",
+                            privateKeyPath = if (useKey) privateKeyPath.trim() else "",
+                            name = if (saveConnection) connectionName.trim() else "",
+                            useKey = useKey
+                        )
+                        
+                        if (saveConnection && connectionName.isNotBlank()) {
+                            Log.d("SshConnectionDialog", "Attempting to save connection: $connectionName")
+                            SshConnectionManager.saveConnection(config)
+                        } else {
+                            Log.d("SshConnectionDialog", "Not saving connection: saveConnection=$saveConnection, name='$connectionName'")
+                        }
+                        
+                        // Start connection with result callback
+                        onConnect(config) { success, error ->
+                            isConnecting = false
+                            if (success) {
+                                // Connection successful, close dialog
+                                onDismiss()
+                            } else {
+                                // Connection failed, show error
+                                connectionError = error ?: "Unknown connection error"
+                            }
+                        }
+                    }
+                },
+                enabled = !isConnecting && host.isNotBlank() && username.isNotBlank() && 
+                         ((!useKey && password.isNotBlank()) || (useKey && privateKeyPath.isNotBlank()))
+            ) {
+                if (isConnecting) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                } else {
+                    Text("Connect")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
