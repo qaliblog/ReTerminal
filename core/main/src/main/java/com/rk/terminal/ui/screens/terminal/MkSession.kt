@@ -258,12 +258,14 @@ Updating : apk update && apk upgrade
                 
                 // Test SSH connection first
                 val sshManager = SshManager.getInstance()
+                Log.d("MkSession", "Calling sshManager.connect()...")
                 val connectionResult = sshManager.connect(config)
+                Log.d("MkSession", "Connection result: success=${connectionResult.isSuccess}")
                 
                 if (connectionResult.isFailure) {
                     val error = connectionResult.exceptionOrNull()
                     Log.e("MkSession", "SSH connection failed", error)
-                    throw error ?: Exception("SSH connection failed")
+                    throw error ?: Exception("SSH connection failed - no error details")
                 }
                 
                 val sshSessionId = connectionResult.getOrThrow()

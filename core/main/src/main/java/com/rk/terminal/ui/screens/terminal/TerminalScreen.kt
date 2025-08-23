@@ -103,6 +103,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.rk.components.compose.preferences.base.PreferenceGroup
 import com.rk.libcommons.application
 import com.rk.libcommons.child
+import com.rk.libcommons.toast
 import com.rk.libcommons.dpToPx
 import com.rk.libcommons.pendingCommand
 import com.rk.resources.strings
@@ -315,7 +316,7 @@ fun TerminalScreen(
 
         if (showSshDialog) {
             SshConnectionDialog(
-                onConnect = { config ->
+                onConnect = { config, onResult ->
                     fun generateUniqueString(existingStrings: List<String>): String {
                         var index = 1
                         var newString: String
@@ -331,6 +332,11 @@ fun TerminalScreen(
                     val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
 
                     scope.launch {
+                        // Show immediate feedback
+                        withContext(Dispatchers.Main) {
+                            toast("Starting SSH connection to ${config.host}...")
+                        }
+                        
                         terminalView.get()
                             ?.let {
                                 val client = TerminalBackEnd(it, mainActivityActivity)
@@ -343,22 +349,24 @@ fun TerminalScreen(
                                         config
                                     )
                                     Log.d("TerminalScreen", "SSH session created successfully: $sessionId")
+                                    
                                     // Session creation successful, switch to it
                                     withContext(Dispatchers.Main) {
                                         changeSession(mainActivityActivity, sessionId)
+                                        onResult(true, null) // Report success
                                     }
                                 } catch (e: Exception) {
                                     // Handle SSH connection error
                                     Log.e("TerminalScreen", "Failed to create SSH session", e)
                                     withContext(Dispatchers.Main) {
-                                        // Show error to user (you might want to add a Toast or dialog here)
-                                        Log.e("TerminalScreen", "SSH Connection failed: ${e.message}")
+                                        onResult(false, e.message) // Report failure
                                     }
                                 }
+                            } ?: run {
+                                // Handle case where terminalView is null
+                                onResult(false, "Terminal view not available")
                             }
                     }
-
-                    showSshDialog = false
                 },
                 onDismiss = {
                     showSshDialog = false

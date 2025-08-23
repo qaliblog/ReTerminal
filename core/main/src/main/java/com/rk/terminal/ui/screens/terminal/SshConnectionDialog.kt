@@ -19,7 +19,7 @@ import androidx.compose.material3.LinearProgressIndicator
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SshConnectionDialog(
-    onConnect: (SshConnectionConfig) -> Unit,
+    onConnect: (SshConnectionConfig, onResult: (Boolean, String?) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     var host by remember { mutableStateOf("") }
@@ -198,13 +198,16 @@ fun SshConnectionDialog(
                             SshConnectionManager.saveConnection(config)
                         }
                         
-                        // Test the connection in the dialog itself
-                        try {
-                            onConnect(config)
-                            // Connection attempt initiated - let the caller handle the result
-                        } catch (e: Exception) {
+                        // Start connection with result callback
+                        onConnect(config) { success, error ->
                             isConnecting = false
-                            connectionError = e.message
+                            if (success) {
+                                // Connection successful, close dialog
+                                onDismiss()
+                            } else {
+                                // Connection failed, show error
+                                connectionError = error ?: "Unknown connection error"
+                            }
                         }
                     }
                 },

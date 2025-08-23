@@ -101,9 +101,25 @@ class SshManager {
             Log.d(TAG, "Session configuration applied")
             
             // Set timeout and connect
-            Log.d(TAG, "Attempting to connect with 30s timeout...")
-            session.connect(30000) // 30 seconds timeout
+            Log.d(TAG, "Attempting to connect with 15s timeout...")
+            session.connect(15000) // 15 seconds timeout (reduced for better UX)
+            
+            if (!session.isConnected) {
+                throw Exception("SSH session failed to connect (timeout or auth failure)")
+            }
+            
             Log.d(TAG, "SSH session connected successfully")
+            
+            // Quick validation - try to open a channel to verify connection works
+            try {
+                val testChannel = session.openChannel("exec")
+                testChannel.connect(3000) // 3 second timeout for test
+                testChannel.disconnect()
+                Log.d(TAG, "SSH connection validation successful")
+            } catch (e: Exception) {
+                Log.w(TAG, "SSH connection validation failed, but proceeding: ${e.message}")
+                // Don't fail the connection for validation issues
+            }
             
             val sessionId = generateSessionId(config)
             sessions[sessionId] = session
