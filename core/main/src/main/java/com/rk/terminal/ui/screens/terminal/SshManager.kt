@@ -39,70 +39,6 @@ class SshManager {
         }
     }
     
-    suspend fun executeCommand(sessionId: String, command: String): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            val session = sessions[sessionId] ?: return@withContext Result.failure(Exception("SSH session not found"))
-            
-            val channel = session.openChannel("exec") as com.jcraft.jsch.ChannelExec
-            channel.setCommand(command)
-            
-            val inputStream = channel.inputStream
-            val errorStream = channel.errStream
-            
-            channel.connect(5000) // 5 second timeout
-            
-            // Read output
-            val output = StringBuilder()
-            val buffer = ByteArray(1024)
-            
-            while (channel.isConnected) {
-                while (inputStream.available() > 0) {
-                    val bytesRead = inputStream.read(buffer)
-                    if (bytesRead > 0) {
-                        output.append(String(buffer, 0, bytesRead))
-                    }
-                }
-                
-                while (errorStream.available() > 0) {
-                    val bytesRead = errorStream.read(buffer)
-                    if (bytesRead > 0) {
-                        output.append(String(buffer, 0, bytesRead))
-                    }
-                }
-                
-                if (channel.isClosed) {
-                    break
-                }
-                
-                Thread.sleep(100)
-            }
-            
-            // Read any remaining output
-            while (inputStream.available() > 0) {
-                val bytesRead = inputStream.read(buffer)
-                if (bytesRead > 0) {
-                    output.append(String(buffer, 0, bytesRead))
-                }
-            }
-            
-            val exitCode = channel.exitStatus
-            channel.disconnect()
-            
-            val result = output.toString()
-            Log.d(TAG, "Command '$command' executed, exit code: $exitCode")
-            
-            if (exitCode == 0) {
-                Result.success(result)
-            } else {
-                Result.failure(Exception("Command failed with exit code $exitCode: $result"))
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to execute command: $command", e)
-            Result.failure(e)
-        }
-    }
-    
     private fun getJSchInfo(): String {
         return try {
             val jsch = JSch()
@@ -501,6 +437,70 @@ class SshManager {
         sessionIds.forEach { disconnect(it) }
     }
     
+    suspend fun executeCommand(sessionId: String, command: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val session = sessions[sessionId] ?: return@withContext Result.failure(Exception("SSH session not found"))
+            
+            val channel = session.openChannel("exec") as com.jcraft.jsch.ChannelExec
+            channel.setCommand(command)
+            
+            val inputStream = channel.inputStream
+            val errorStream = channel.errStream
+            
+            channel.connect(5000) // 5 second timeout
+            
+            // Read output
+            val output = StringBuilder()
+            val buffer = ByteArray(1024)
+            
+            while (channel.isConnected) {
+                while (inputStream.available() > 0) {
+                    val bytesRead = inputStream.read(buffer)
+                    if (bytesRead > 0) {
+                        output.append(String(buffer, 0, bytesRead))
+                    }
+                }
+                
+                while (errorStream.available() > 0) {
+                    val bytesRead = errorStream.read(buffer)
+                    if (bytesRead > 0) {
+                        output.append(String(buffer, 0, bytesRead))
+                    }
+                }
+                
+                if (channel.isClosed) {
+                    break
+                }
+                
+                Thread.sleep(100)
+            }
+            
+            // Read any remaining output
+            while (inputStream.available() > 0) {
+                val bytesRead = inputStream.read(buffer)
+                if (bytesRead > 0) {
+                    output.append(String(buffer, 0, bytesRead))
+                }
+            }
+            
+            val exitCode = channel.exitStatus
+            channel.disconnect()
+            
+            val result = output.toString()
+            Log.d(TAG, "Command '$command' executed, exit code: $exitCode")
+            
+            if (exitCode == 0) {
+                Result.success(result)
+            } else {
+                Result.failure(Exception("Command failed with exit code $exitCode: $result"))
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to execute command: $command", e)
+            Result.failure(e)
+        }
+    }
+
     private fun generateSessionId(config: SshConnectionConfig): String {
         return "${config.username}@${config.host}:${config.port}_${System.currentTimeMillis()}"
     }
