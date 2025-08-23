@@ -66,6 +66,64 @@ data class FileEntry(
     fun isLocalFile(): Boolean = isLocal
 }
 
+// Helper functions for file operations
+suspend fun loadLocalFiles(path: String): List<FileEntry> {
+    val dir = File(path)
+    return dir.listFiles()?.map { file ->
+        FileEntry(
+            name = file.name,
+            path = file.absolutePath,
+            isDirectory = file.isDirectory,
+            size = if (file.isFile) file.length() else 0,
+            lastModified = file.lastModified(),
+            permissions = getFilePermissions(file),
+            isLocal = true
+        )
+    }?.sortedWith(compareBy<FileEntry> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
+}
+
+suspend fun loadSshFiles(path: String, sessionId: String, mainActivity: MainActivity): List<FileEntry> {
+    return try {
+        val sshSessionInfo = mainActivity.sessionBinder?.getService()?.getSshSessionInfo(sessionId)
+        val sshSessionId = sshSessionInfo?.first
+        
+        if (sshSessionId != null) {
+            val sshManager = SshManager.getInstance()
+            val result = sshManager.listFiles(sshSessionId, path)
+            
+            if (result.isSuccess) {
+                result.getOrThrow().map { sshFile ->
+                    FileEntry(
+                        name = sshFile.name,
+                        path = sshFile.path,
+                        isDirectory = sshFile.isDirectory,
+                        size = sshFile.size,
+                        lastModified = sshFile.lastModified,
+                        permissions = sshFile.permissions,
+                        isLocal = false
+                    )
+                }
+            } else {
+                Log.e("FileManager", "Failed to load SSH files: ${result.exceptionOrNull()?.message}")
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+    } catch (e: Exception) {
+        Log.e("FileManager", "Error loading SSH files", e)
+        emptyList()
+    }
+}
+
+fun getFilePermissions(file: File): String {
+    val permissions = StringBuilder()
+    permissions.append(if (file.canRead()) "r" else "-")
+    permissions.append(if (file.canWrite()) "w" else "-")
+    permissions.append(if (file.canExecute()) "x" else "-")
+    return permissions.toString()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileManagerView(
@@ -82,7 +140,7 @@ fun FileManagerView(
     }
     val showNewFolderDialog = remember { mutableStateOf(false) }
     val newFolderName = remember { mutableStateOf("") }
-    val showDeleteConfirm = remember { mutableStateOf<File?>(null) }
+    val showDeleteConfirm = remember { mutableStateOf<FileEntry?>(null) }
     val showNewFileDialog = remember { mutableStateOf(false) }
     val newFileName = remember { mutableStateOf("") }
 
@@ -91,7 +149,7 @@ fun FileManagerView(
     val hasSelection = selectedPaths.value.isNotEmpty()
 
     // Clipboard for copy/cut
-    val clipboardItems = remember { mutableStateOf<List<File>>(emptyList()) }
+    val clipboardItems = remember { mutableStateOf<List<FileEntry>>(emptyList()) }
     val clipboardAction = remember { mutableStateOf<String?>(null) } // "copy" or "cut"
 
     suspend fun load(path: String) {
@@ -107,63 +165,6 @@ fun FileManagerView(
         entriesState.value = entries
         // Clear selection if items no longer exist
         selectedPaths.value = selectedPaths.value.filter { p -> entries.any { it.path == p } }.toSet()
-    }
-    
-    suspend fun loadLocalFiles(path: String): List<FileEntry> {
-        val dir = File(path)
-        return dir.listFiles()?.map { file ->
-            FileEntry(
-                name = file.name,
-                path = file.absolutePath,
-                isDirectory = file.isDirectory,
-                size = if (file.isFile) file.length() else 0,
-                lastModified = file.lastModified(),
-                permissions = getFilePermissions(file),
-                isLocal = true
-            )
-        }?.sortedWith(compareBy<FileEntry> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
-    }
-    
-    suspend fun loadSshFiles(path: String, sessionId: String, mainActivity: MainActivity): List<FileEntry> {
-        return try {
-            val sshSessionInfo = mainActivity.sessionBinder?.getService()?.getSshSessionInfo(sessionId)
-            val sshSessionId = sshSessionInfo?.first
-            
-            if (sshSessionId != null) {
-                val sshManager = SshManager.getInstance()
-                val result = sshManager.listFiles(sshSessionId, path)
-                
-                if (result.isSuccess) {
-                    result.getOrThrow().map { sshFile ->
-                        FileEntry(
-                            name = sshFile.name,
-                            path = sshFile.path,
-                            isDirectory = sshFile.isDirectory,
-                            size = sshFile.size,
-                            lastModified = sshFile.lastModified,
-                            permissions = sshFile.permissions,
-                            isLocal = false
-                        )
-                    }
-                } else {
-                    Log.e("FileManager", "Failed to load SSH files: ${result.exceptionOrNull()?.message}")
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
-        } catch (e: Exception) {
-            Log.e("FileManager", "Error loading SSH files", e)
-            emptyList()
-        }
-    }
-    
-    fun getFilePermissions(file: File): String {
-        val permissions = StringBuilder()
-        permissions.append(if (file.canRead()) "r" else "-")
-        permissions.append(if (file.canWrite()) "w" else "-")
-        permissions.append(if (file.canExecute()) "x" else "-")
-        return permissions.toString()
     }
 
     LaunchedEffect(currentPath) {
@@ -196,19 +197,23 @@ fun FileManagerView(
         }
     }
 
-    suspend fun pasteInto(targetDir: File) {
+    suspend fun pasteInto(targetDir: String) {
         val action = clipboardAction.value ?: return
         val items = clipboardItems.value
         if (items.isEmpty()) return
         withContext(Dispatchers.IO) {
             for (item in items) {
-                val dest = File(targetDir, item.name)
-                if (dest.exists()) dest.deleteRecursively()
-                if (action == "copy") {
-                    copyRecursively(item, dest)
-                } else if (action == "cut") {
-                    item.renameTo(dest)
+                if (item.isLocal) {
+                    val srcFile = item.toFile()
+                    val dstFile = File(targetDir, item.name)
+                    if (dstFile.exists()) dstFile.deleteRecursively()
+                    if (action == "copy") {
+                        copyRecursively(srcFile, dstFile)
+                    } else if (action == "cut") {
+                        srcFile.renameTo(dstFile)
+                    }
                 }
+                // TODO: Add SSH file operations
             }
         }
         clipboardAction.value = null
@@ -238,20 +243,20 @@ fun FileManagerView(
                 IconButton(onClick = {
                     if (hasSelection) {
                         clipboardAction.value = "copy"
-                        clipboardItems.value = entriesState.value.filter { selectedPaths.value.contains(it.absolutePath) }
+                        clipboardItems.value = entriesState.value.filter { selectedPaths.value.contains(it.path) }
                         selectedPaths.value = emptySet()
                     }
                 }, enabled = hasSelection) { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") }
                 IconButton(onClick = {
                     if (hasSelection) {
                         clipboardAction.value = "cut"
-                        clipboardItems.value = entriesState.value.filter { selectedPaths.value.contains(it.absolutePath) }
+                        clipboardItems.value = entriesState.value.filter { selectedPaths.value.contains(it.path) }
                         selectedPaths.value = emptySet()
                     }
                 }, enabled = hasSelection) { Icon(Icons.Default.ContentCut, contentDescription = "Cut") }
                 // Paste visible when clipboard has items
                 IconButton(onClick = {
-                    scope.launch { pasteInto(File(currentPath)) }
+                    scope.launch { pasteInto(currentPath) }
                 }, enabled = clipboardItems.value.isNotEmpty()) { Icon(Icons.Default.ContentPaste, contentDescription = "Paste") }
             },
             colors = TopAppBarDefaults.topAppBarColors(
@@ -267,7 +272,7 @@ fun FileManagerView(
             item {
                 Breadcrumbs(currentPath = currentPath, onNavigate = onNavigate)
             }
-            items(entriesState.value, key = { it.absolutePath }) { file ->
+            items(entriesState.value, key = { it.path }) { file ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -275,7 +280,7 @@ fun FileManagerView(
                             if (selectedPaths.value.isNotEmpty()) {
                                 toggleSelection(file)
                             } else if (file.isDirectory) {
-                                onNavigate(file.absolutePath)
+                                onNavigate(file.path)
                             }
                         }
                         .padding(12.dp),
@@ -286,19 +291,19 @@ fun FileManagerView(
                         contentDescription = null
                     )
                     Text(
-                        text = file.name.ifBlank { file.absolutePath },
+                        text = file.name.ifBlank { file.path },
                         style = MaterialTheme.typography.bodyLarge,
                         modifier = Modifier.padding(start = 12.dp)
                     )
                     Spacer(modifier = Modifier.weight(1f))
                     // Selection checkbox
                     Checkbox(
-                        checked = selectedPaths.value.contains(file.absolutePath),
+                        checked = selectedPaths.value.contains(file.path),
                         onCheckedChange = { toggleSelection(file) }
                     )
-                    if (file.isFile) {
+                    if (!file.isDirectory) {
                         IconButton(onClick = {
-                            onEditFile(file)
+                            onEditFile(file.toFile())
                             TabSwitchBus.request(2) // Editor tab index
                         }) {
                             Icon(Icons.Default.Edit, contentDescription = "Edit")
@@ -396,7 +401,12 @@ fun FileManagerView(
             confirmButton = {
                 Button(onClick = {
                     scope.launch(Dispatchers.IO) {
-                        runCatching { target.deleteRecursively() }
+                        runCatching { 
+                            if (target.isLocal) {
+                                target.toFile().deleteRecursively() 
+                            }
+                            // TODO: Add SSH file deletion
+                        }
                             .onSuccess {
                                 scope.launch { load(currentPath) }
                             }

@@ -43,7 +43,7 @@ class SshTerminalSession(
             // Connect SSH channel streams
             sshInputStream = shellChannel!!.inputStream
             sshOutputStream = shellChannel!!.outputStream
-            shellChannel!!.errStream = ByteArrayOutputStream() // Capture errors
+            shellChannel!!.setErrStream(ByteArrayOutputStream()) // Capture errors
             
             // Configure shell channel
             shellChannel!!.setPtyType("xterm-256color")
@@ -127,7 +127,7 @@ class SshTerminalSession(
                     val bytesRead = sshInputStream!!.read(buffer)
                     if (bytesRead > 0) {
                         // Write to terminal emulator
-                        terminalSession?.emulator?.append(buffer, 0, bytesRead)
+                        terminalSession?.emulator?.append(buffer, bytesRead)
                     }
                 }
             } catch (e: Exception) {

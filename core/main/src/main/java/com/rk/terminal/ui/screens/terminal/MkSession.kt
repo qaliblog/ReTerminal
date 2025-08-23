@@ -238,7 +238,7 @@ Updating : apk update && apk upgrade
         session_id: String,
         config: SshConnectionConfig
     ): TerminalSession {
-        return withContext(Dispatchers.IO) {
+        return withContext<TerminalSession>(Dispatchers.IO) {
             try {
                 // Use native SSH implementation with JSch
                 val sshManager = SshManager.getInstance()
@@ -263,9 +263,7 @@ Updating : apk update && apk upgrade
                 val terminalSession = terminalResult.getOrThrow()
                 
                 // Store SSH session info for integration with other components
-                with(activity) {
-                    sessionBinder?.getService()?.setSshSessionInfo(session_id, sshSessionId, config)
-                }
+                activity.sessionBinder?.getService()?.setSshSessionInfo(session_id, sshSessionId, config)
                 
                 terminalSession
                 
