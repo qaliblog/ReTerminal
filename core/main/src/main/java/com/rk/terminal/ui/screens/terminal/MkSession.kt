@@ -387,47 +387,7 @@ export SSH_HOST="${config.host}"
 export SSH_PORT="${config.port}"
 export SSH_USER="${config.username}"
 
-# Create bridge functions that execute commands on the SSH server
-remote() {
-    if [ -z "$1" ]; then
-        echo "Usage: remote <command>"
-        echo "Example: remote ls -la"
-        return 1
-    fi
-    echo "Executing on ${config.host}: $*"
-    echo "[This would execute '$*' on the remote server]"
-    echo "Note: Full SSH integration coming soon. Use File Manager for file operations."
-}
 
-remote-ls() {
-    echo "Remote directory listing for ${config.username}@${config.host}:"
-    echo "[Use File Manager -> SSH to browse remote files]"
-    remote "ls -la"
-}
-
-remote-pwd() {
-    echo "Remote working directory:"
-    remote "pwd"
-}
-
-remote-whoami() {
-    echo "Remote user info:"
-    remote "whoami && id"
-}
-
-remote-uname() {
-    echo "Remote system info:"
-    remote "uname -a"
-}
-
-ssh-info() {
-    echo "SSH Connection Information:"
-    echo "  Host: ${config.host}:${config.port}"
-    echo "  User: ${config.username}"
-    echo "  Session: $sshSessionId"
-    echo "  Status: Connected ✓"
-    echo "  Features: SFTP (File Manager), Bridge commands"
-}
 
 echo "SSH bridge ready. Type 'remote <command>' to execute commands remotely."
 echo "Example: remote ls -la"
@@ -468,7 +428,7 @@ echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/ssh-info
 echo 'echo "SSH Connection Information:"' >> """ + "$" + """BRIDGE_DIR/ssh-info
 echo 'echo "  Host: ${config.host}:${config.port}"' >> """ + "$" + """BRIDGE_DIR/ssh-info
 echo 'echo "  User: ${config.username}"' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo "  Session: $sshSessionId"' >> """ + "$" + """BRIDGE_DIR/ssh-info
+echo 'echo "  Session: ${sshSessionId}"' >> """ + "$" + """BRIDGE_DIR/ssh-info
 echo 'echo "  Status: Connected ✓"' >> """ + "$" + """BRIDGE_DIR/ssh-info
 echo 'echo "  Features: SFTP (File Manager), Bridge commands"' >> """ + "$" + """BRIDGE_DIR/ssh-info
 chmod +x """ + "$" + """BRIDGE_DIR/ssh-info
