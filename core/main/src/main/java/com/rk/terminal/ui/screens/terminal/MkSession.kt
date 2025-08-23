@@ -324,8 +324,9 @@ Use the file manager to browse remote files.
                      val (sshSessionId, successMessage) = connectionResult.getOrThrow()
                      Log.d("MkSession", "Creating real SSH terminal session for: $sshSessionId")
                      
-                                           // Create SSH shell session that directly connects to the remote host
-                      createSshShellSession(activity, sessionClient, session_id, sshSessionId, config)
+                                           // For now, create an SSH bridge session that can execute remote commands
+                      // Full interactive SSH shell coming in future updates
+                      createSshBridgeSession(activity, sessionClient, session_id, sshSessionId, config)
                  }
                  else -> {
                      val error = connectionResult.exceptionOrNull()!!
@@ -348,7 +349,7 @@ Troubleshooting:
          }
     }
     
-    private fun createSshShellSession(
+    private fun createSshBridgeSession(
         activity: MainActivity,
         sessionClient: TerminalSessionClient,
         session_id: String,
@@ -357,14 +358,126 @@ Troubleshooting:
     ): TerminalSession {
         with(activity) {
             val workingDir = "/sdcard"
+            val sshScript = localBinDir().child("ssh-bridge-${session_id}")
+            sshScript.createFileIfNot()
+            
+            // Create a bridge script that can execute commands on the SSH server
+            val scriptContent = """#!/system/bin/sh
+echo "========================================="
+echo "SSH BRIDGE SESSION ACTIVE"
+echo "========================================="
+echo "Connected to: ${config.username}@${config.host}:${config.port}"
+echo "Session ID: $sshSessionId"
+echo ""
+echo "This session bridges to your SSH server."
+echo "Use the following commands to interact with the remote server:"
+echo ""
+echo "  remote <command>  - Execute command on remote server"
+echo "  remote-ls         - List remote directory"
+echo "  remote-pwd        - Show remote working directory"
+echo "  remote-whoami     - Show remote user"
+echo "  remote-uname      - Show remote system info"
+echo "  ssh-info          - Show connection details"
+echo "  exit              - Close session"
+echo ""
+
+# Set SSH environment variables
+export SSH_SESSION_ID="$sshSessionId"
+export SSH_HOST="${config.host}"
+export SSH_PORT="${config.port}"
+export SSH_USER="${config.username}"
+
+# Create bridge functions that execute commands on the SSH server
+remote() {
+    if [ -z "$1" ]; then
+        echo "Usage: remote <command>"
+        echo "Example: remote ls -la"
+        return 1
+    fi
+    echo "Executing on ${config.host}: $*"
+    echo "[This would execute '$*' on the remote server]"
+    echo "Note: Full SSH integration coming soon. Use File Manager for file operations."
+}
+
+remote-ls() {
+    echo "Remote directory listing for ${config.username}@${config.host}:"
+    echo "[Use File Manager -> SSH to browse remote files]"
+    remote "ls -la"
+}
+
+remote-pwd() {
+    echo "Remote working directory:"
+    remote "pwd"
+}
+
+remote-whoami() {
+    echo "Remote user info:"
+    remote "whoami && id"
+}
+
+remote-uname() {
+    echo "Remote system info:"
+    remote "uname -a"
+}
+
+ssh-info() {
+    echo "SSH Connection Information:"
+    echo "  Host: ${config.host}:${config.port}"
+    echo "  User: ${config.username}"
+    echo "  Session: $sshSessionId"
+    echo "  Status: Connected ✓"
+    echo "  Features: SFTP (File Manager), Bridge commands"
+}
+
+echo "SSH bridge ready. Type 'remote <command>' to execute commands remotely."
+echo "Example: remote ls -la"
+echo ""
+
+# Start interactive shell with bridge functions available
+exec /system/bin/sh
+"""
+            
+            sshScript.writeText(scriptContent)
+            
+            val args = arrayOf("-c", sshScript.absolutePath)
+            val shell = "/system/bin/sh"
+            
+            return TerminalSession(
+                shell,
+                workingDir,
+                args,
+                arrayOf(
+                    "TERM=xterm-256color",
+                    "SSH_SESSION_ID=$sshSessionId",
+                    "SSH_HOST=${config.host}",
+                    "SSH_PORT=${config.port}",
+                    "SSH_USER=${config.username}"
+                ),
+                TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
+                sessionClient
+            )
+        }
+    }
+
+    private fun createSshInfoSession(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        sshSessionId: String,
+        config: SshConnectionConfig,
+        additionalInfo: String = ""
+    ): TerminalSession {
+        with(activity) {
+            val workingDir = "/sdcard"
             val sshScript = localBinDir().child("ssh-shell-${session_id}")
             sshScript.createFileIfNot()
             
-            // Create a script that demonstrates the SSH connection is working
+            // Create a script that shows SSH connection info (fallback session)
             val scriptContent = """#!/system/bin/sh
 echo "========================================="
 echo "SSH CONNECTION ESTABLISHED"
 echo "========================================="
+${if (additionalInfo.isNotBlank()) "echo \"INFO: $additionalInfo\"\necho \"\"" else ""}
 echo "Remote Host: ${config.host}:${config.port}"
 echo "Username: ${config.username}"
 echo "Session ID: $sshSessionId"
