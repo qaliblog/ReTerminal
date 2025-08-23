@@ -365,6 +365,10 @@ Troubleshooting:
             val scriptContent = """#!/system/bin/sh
 set -e
 
+# Ensure a writable TMPDIR for shell temporary files
+export TMPDIR="${cacheDir.absolutePath}"
+mkdir -p "${cacheDir.absolutePath}"
+
 cat <<'BANNER'
 =========================================
 SSH BRIDGE SESSION ACTIVE
@@ -394,7 +398,7 @@ export SSH_PORT="${config.port}"
 export SSH_USER="${config.username}"
 
 # Create bridge command scripts
-BRIDGE_DIR="/data/data/com.rk.terminal.debug/files/bridge"
+BRIDGE_DIR="${filesDir.absolutePath}/bridge"
 mkdir -p "${'$'}BRIDGE_DIR"
 
 # remote (stub)
@@ -477,7 +481,8 @@ exec /system/bin/sh
                     "SSH_SESSION_ID=$sshSessionId",
                     "SSH_HOST=${config.host}",
                     "SSH_PORT=${config.port}",
-                    "SSH_USER=${config.username}"
+                    "SSH_USER=${config.username}",
+                    "TMPDIR=${cacheDir.absolutePath}"
                 ),
                 TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                 sessionClient
