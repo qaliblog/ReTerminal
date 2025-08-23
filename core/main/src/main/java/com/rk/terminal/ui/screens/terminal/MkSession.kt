@@ -239,7 +239,8 @@ Updating : apk update && apk upgrade
         session_id: String,
         config: SshConnectionConfig
     ): TerminalSession {
-        return withContext<TerminalSession>(Dispatchers.IO) {
+        // Perform SSH connection on IO thread
+        val connectionResult = withContext(Dispatchers.IO) {
             try {
                 Log.d("MkSession", "Starting SSH session creation for ${config.username}@${config.host}:${config.port}")
                 Log.d("MkSession", "Auth method: ${if (config.useKey) "Private key" else "Password"}")
@@ -290,8 +291,8 @@ Updating : apk update && apk upgrade
                 // Store SSH session info for integration with other components
                 activity.sessionBinder?.getService()?.setSshSessionInfo(session_id, sshSessionId, config)
                 
-                // Create a simple terminal session that shows SSH connection status
-                val successMessage = """
+                // Return success data
+                Result.success(sshSessionId to """
                     |========================================
                     |SSH Connection Successful!
                     |========================================
@@ -307,28 +308,41 @@ Updating : apk update && apk upgrade
                     |
                     |Note: Full SSH terminal integration coming soon.
                     |Use the file manager to browse remote files.
-                    """.trimMargin()
-                
-                createSuccessSession(activity, sessionClient, session_id, successMessage)
+                    """.trimMargin())
                 
             } catch (e: Exception) {
                 Log.e("MkSession", "SSH session creation failed", e)
-                // Fallback to a simple error session
-                val errorMessage = """
-                    |SSH Connection Failed
-                    |====================
-                    |Host: ${config.host}:${config.port}
-                    |User: ${config.username}
-                    |Error: ${e.message}
-                    |
-                    |Troubleshooting:
-                    |• Check host/port are correct
-                    |• Verify username/password
-                    |• Ensure SSH server is running
-                    |• Check network connectivity
-                    """.trimMargin()
                 
-                createErrorSession(activity, sessionClient, session_id, errorMessage)
+                // Return error data
+                Result.failure<Pair<String, String>>(e)
+            }
+        }
+        
+        // Create terminal session on main thread using connection result
+        return withContext(Dispatchers.Main) {
+            when {
+                connectionResult.isSuccess -> {
+                    val (sshSessionId, successMessage) = connectionResult.getOrThrow()
+                    createSuccessSession(activity, sessionClient, session_id, successMessage)
+                }
+                else -> {
+                    val error = connectionResult.exceptionOrNull()!!
+                    val errorMessage = """
+                        |SSH Connection Failed
+                        |====================
+                        |Host: ${config.host}:${config.port}
+                        |User: ${config.username}
+                        |Error: ${error.message}
+                        |
+                        |Troubleshooting:
+                        |• Check host/port are correct
+                        |• Verify username/password
+                        |• Ensure SSH server is running
+                        |• Check network connectivity
+                        """.trimMargin()
+                    
+                    createErrorSession(activity, sessionClient, session_id, errorMessage)
+                }
             }
         }
     }

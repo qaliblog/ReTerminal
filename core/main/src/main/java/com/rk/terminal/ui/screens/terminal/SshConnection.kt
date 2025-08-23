@@ -6,6 +6,10 @@ import org.json.JSONObject
 import com.rk.libcommons.application
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class SshConnectionConfig(
     val host: String,
@@ -78,19 +82,25 @@ object SshConnectionManager {
 
     fun saveConnection(config: SshConnectionConfig) {
         Log.d("SshConnectionManager", "Saving connection: ${config.name} (${config.username}@${config.host})")
-        val current = _savedConnections.value.toMutableList()
         
-        // Remove existing connection with same host/username if it exists
-        current.removeIf { it.host == config.host && it.username == config.username }
-        
-        // Add new connection
-        current.add(config)
-        _savedConnections.value = current
-        
-        Log.d("SshConnectionManager", "Total saved connections: ${current.size}")
-        
-        // Save to preferences
-        saveToPreferences(current)
+        // Ensure save operation runs on main thread to avoid handler issues
+        GlobalScope.launch(Dispatchers.Main) {
+            val current = _savedConnections.value.toMutableList()
+            
+            // Remove existing connection with same host/username if it exists
+            current.removeIf { it.host == config.host && it.username == config.username }
+            
+            // Add new connection
+            current.add(config)
+            _savedConnections.value = current
+            
+            Log.d("SshConnectionManager", "Total saved connections: ${current.size}")
+            
+            // Save to preferences on IO thread
+            withContext(Dispatchers.IO) {
+                saveToPreferences(current)
+            }
+        }
     }
 
     fun deleteConnection(config: SshConnectionConfig) {
