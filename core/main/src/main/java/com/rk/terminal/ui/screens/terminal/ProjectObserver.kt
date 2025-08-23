@@ -258,7 +258,7 @@ class ProjectObserver(
             // Register subdirectories
             dir.listFiles()?.forEach { file ->
                 if (file.isDirectory && !file.name.startsWith(".") && 
-                    !file.name in setOf("node_modules", "build", "dist", "target", ".git")) {
+                    file.name !in setOf("node_modules", "build", "dist", "target", ".git")) {
                     registerDirectoryRecursively(file)
                 }
             }
