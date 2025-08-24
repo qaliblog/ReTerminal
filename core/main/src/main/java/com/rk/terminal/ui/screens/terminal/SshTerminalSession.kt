@@ -22,6 +22,7 @@ class SshTerminalSession(
     private var sshOutputStream: OutputStream? = null
     private var isRunning = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var streamsReplaced = false
     
     companion object {
         private const val TAG = "SshTerminalSession"
@@ -67,8 +68,10 @@ class SshTerminalSession(
             
             isRunning = true
             
-            // Start I/O forwarding
-            startIoForwarding()
+            // If reflection-based stream replacement failed, fall back to manual I/O forwarding
+            if (!streamsReplaced) {
+                startIoForwarding()
+            }
             
             Log.d(TAG, "SSH terminal session started successfully")
             Result.success(terminalSession!!)
@@ -82,20 +85,40 @@ class SshTerminalSession(
     
     private fun replaceTerminalStreams() {
         try {
-            // Use reflection to replace terminal session streams with SSH streams
+            if (terminalSession == null || sshInputStream == null || sshOutputStream == null) return
             val terminalSessionClass = terminalSession!!.javaClass
-            
-            // Replace input stream (from terminal to SSH)
+
+            // Replace output stream from terminal to SSH
             val mTerminalInputField = terminalSessionClass.getDeclaredField("mTerminalInput")
             mTerminalInputField.isAccessible = true
-            val terminalInput = mTerminalInputField.get(terminalSession) as OutputStream
-            
-            // Replace output stream (from SSH to terminal)
+            val sshOut = sshOutputStream!!
+            val proxyOut = object : OutputStream() {
+                override fun write(b: Int) {
+                    sshOut.write(b)
+                    sshOut.flush()
+                }
+                override fun write(b: ByteArray) {
+                    sshOut.write(b)
+                    sshOut.flush()
+                }
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    sshOut.write(b, off, len)
+                    sshOut.flush()
+                }
+                override fun flush() { sshOut.flush() }
+                override fun close() { sshOut.close() }
+            }
+            mTerminalInputField.set(terminalSession, proxyOut)
+
+            // Replace input stream from SSH to terminal
             val mTerminalOutputField = terminalSessionClass.getDeclaredField("mTerminalOutput")
             mTerminalOutputField.isAccessible = true
-            // We'll handle this through our I/O forwarding
-            
+            mTerminalOutputField.set(terminalSession, sshInputStream)
+
+            streamsReplaced = true
+            Log.d(TAG, "Successfully replaced TerminalSession streams with SSH streams")
         } catch (e: Exception) {
+            streamsReplaced = false
             Log.w(TAG, "Could not replace terminal streams directly, using I/O forwarding", e)
         }
     }

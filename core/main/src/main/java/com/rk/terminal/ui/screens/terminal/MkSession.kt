@@ -323,10 +323,22 @@ Use the file manager to browse remote files.
                  connectionResult.isSuccess -> {
                      val (sshSessionId, successMessage) = connectionResult.getOrThrow()
                      Log.d("MkSession", "Creating real SSH terminal session for: $sshSessionId")
-                     
-                                           // For now, create an SSH bridge session that can execute remote commands
-                      // Full interactive SSH shell coming in future updates
-                      createSshBridgeSession(activity, sessionClient, session_id, sshSessionId, config)
+
+                     // Attempt to create an interactive SSH terminal session
+                     try {
+                         val sshTerminal = SshTerminalSession(sshSessionId, sessionClient)
+                         val terminalResult = withContext(Dispatchers.IO) { sshTerminal.start() }
+                         if (terminalResult.isSuccess) {
+                             return@withContext terminalResult.getOrThrow()
+                         } else {
+                             Log.w("MkSession", "SSH interactive session fallback to bridge: ${terminalResult.exceptionOrNull()?.message}")
+                         }
+                     } catch (e: Exception) {
+                         Log.w("MkSession", "SSH interactive session start failed, using bridge", e)
+                     }
+
+                     // Fallback: create an SSH bridge session that can execute remote-like commands
+                     createSshBridgeSession(activity, sessionClient, session_id, sshSessionId, config)
                  }
                  else -> {
                      val error = connectionResult.exceptionOrNull()!!
