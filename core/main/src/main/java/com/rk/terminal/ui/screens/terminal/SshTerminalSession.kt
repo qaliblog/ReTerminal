@@ -138,16 +138,9 @@ class SshTerminalSession(
             shellChannel?.disconnect()
             shellChannel = null
             
-            inputStream?.close()
-            outputStream?.close()
-            errorStream?.close()
-            
             sshInputStream?.close()
             sshOutputStream?.close()
             
-            inputStream = null
-            outputStream = null
-            errorStream = null
             sshInputStream = null
             sshOutputStream = null
             

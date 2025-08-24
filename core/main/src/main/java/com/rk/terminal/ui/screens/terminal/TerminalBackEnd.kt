@@ -171,21 +171,22 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
         // For interactive SSH, forward navigation/control keys explicitly if needed
         val service = activity.sessionBinder?.getService()
         if (service?.isInteractiveSsh(session) == true) {
+            val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    session.write("\u001b[A")
+                    sshTerm?.sendInput("\u001b[A")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    session.write("\u001b[B")
+                    sshTerm?.sendInput("\u001b[B")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    session.write("\u001b[C")
+                    sshTerm?.sendInput("\u001b[C")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    session.write("\u001b[D")
+                    sshTerm?.sendInput("\u001b[D")
                     return true
                 }
             }
@@ -230,7 +231,8 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
         val service = activity.sessionBinder?.getService()
         if (service?.isInteractiveSsh(session) == true) {
             val ch = Character.toChars(codePoint)
-            session.write(String(ch))
+            val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+            sshTerm?.sendInput(String(ch))
             return true
         }
         return false
