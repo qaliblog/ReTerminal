@@ -38,7 +38,8 @@ class SshTerminalSession(
             sshOutputStream = shellChannel!!.outputStream
             // Note: JSch ChannelShell doesn't have setErrStream, errors are mixed with output
             
-            // Configure shell channel
+            // Configure shell channel with PTY
+            shellChannel!!.setPty(true)
             shellChannel!!.setPtyType("xterm-256color")
             shellChannel!!.setPtySize(80, 24, 640, 480) // cols, rows, width, height
             
@@ -51,7 +52,11 @@ class SshTerminalSession(
                     TerminalSession(
                         "/system/bin/sh",
                         "/",
-                        arrayOf("-c", "tail -f /dev/null"),
+                        arrayOf(
+                            "-c",
+                            // Silence local output and keep process alive indefinitely
+                            "exec >/dev/null 2>&1; while true; do sleep 3600; done"
+                        ),
                         arrayOf("TERM=xterm-256color"),
                         TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                         terminalSessionClient
