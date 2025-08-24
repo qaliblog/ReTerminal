@@ -47,7 +47,12 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     override fun onPasteTextFromClipboard(session: TerminalSession) {
         val clip = ClipboardUtils.getText().toString()
         if (clip.trim { it <= ' ' }.isNotEmpty() && terminal.mEmulator != null) {
-            terminal.mEmulator.paste(clip)
+            val service = activity.sessionBinder?.getService()
+            if (service?.isInteractiveSsh(session) == true) {
+                session.write(clip)
+            } else {
+                terminal.mEmulator.paste(clip)
+            }
         }
     }
     
@@ -222,6 +227,12 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     }
     
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        val service = activity.sessionBinder?.getService()
+        if (service?.isInteractiveSsh(session) == true) {
+            val ch = Character.toChars(codePoint)
+            session.write(String(ch))
+            return true
+        }
         return false
     }
     
