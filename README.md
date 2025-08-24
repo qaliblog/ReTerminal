@@ -1,151 +1,214 @@
-# 🎹 Piano Tiles Game
+# SSH Development Environment Setup
 
-A beautiful and modern web-based piano tiles game built with Python Flask and HTML5/CSS3/JavaScript.
+This repository provides a complete SSH development environment with integrated shell, file manager, editor, and communication tools.
 
-## Features
+## 🚀 Quick Start
 
-- 🎵 **Piano Tiles Gameplay**: Tap falling tiles to play piano notes
-- 📱 **Responsive Design**: Works on desktop and mobile devices
-- 🎨 **Modern UI**: Beautiful gradient backgrounds and smooth animations
-- 🔊 **Sound Effects**: Audio feedback when tapping tiles
-- 📊 **Score Tracking**: Real-time score and lives display
-- 🎮 **Touch Support**: Full touch support for mobile devices
-
-## How to Play
-
-1. **Objective**: Tap the tiles as they fall from the top of the screen
-2. **Scoring**: Each successful tap earns 10 points
-3. **Lives**: You start with 3 lives. Missing a tile costs 1 life
-4. **Difficulty**: The game speeds up as you progress
-5. **Game Over**: When you lose all lives, the game ends
-
-## Installation
-
-### Prerequisites
-
-- Python 3.7 or higher
-- pip (Python package installer)
-
-### Setup
-
-1. **Clone or download the project files**
-
-2. **Install dependencies**:
+1. **Make scripts executable:**
    ```bash
-   pip install -r requirements.txt
+   chmod +x ssh_environment_setup.sh ssh_connect.sh
    ```
 
-3. **Run the application**:
+2. **Connect to your SSH server:**
    ```bash
-   python main.py
+   ./ssh_connect.sh user@your-server.com
+   # or with custom port
+   ./ssh_connect.sh user@your-server.com 2222
    ```
 
-4. **Open your browser** and navigate to:
+3. **Start the integrated environment:**
+   ```bash
+   env
    ```
-   http://localhost:5000
-   ```
 
-## Project Structure
+## 🛠️ What's Included
 
+### 🖥️ Terminal Session Manager (Tmux)
+- **4-pane layout** with dedicated spaces for:
+  - File Manager
+  - Chat/Communication
+  - Editor
+  - Main Shell
+- **Mouse support** enabled
+- **Custom key bindings**:
+  - `Ctrl-a` as prefix
+  - `|` for horizontal split
+  - `-` for vertical split
+  - `Alt + arrows` for pane navigation
+
+### 📁 File Manager (Ranger)
+- **Visual file browser** with preview
+- **Mouse support**
+- **Hidden files** toggle (`Ctrl-h`)
+- **Search functionality** (`Ctrl-f`)
+- **Image preview** support
+
+### 📝 Editor (NeoVim)
+- **Syntax highlighting**
+- **Line numbers** and relative numbers
+- **Mouse support**
+- **Split navigation** with `Ctrl + hjkl`
+- **File explorer** with `Ctrl-n`
+- **Built-in terminal** support
+
+### 💬 Chat/Communication
+- **Simple chat server** using netcat
+- **Multi-user support**
+- **Custom port configuration**
+
+## 🎯 Quick Commands
+
+After setup, use these commands in your SSH session:
+
+| Command | Description |
+|---------|-------------|
+| `env` | Start integrated development environment |
+| `fm` | Launch file manager (Ranger) |
+| `e <file>` | Edit file with NeoVim |
+| `chat` | Start chat session |
+| `fix-terminal` | Fix terminal display issues |
+
+## 🔧 Manual Setup
+
+If you prefer to run the setup manually:
+
+```bash
+# Transfer the setup script
+scp ssh_environment_setup.sh user@server:/tmp/
+
+# SSH into your server
+ssh user@server
+
+# Run the setup
+chmod +x /tmp/ssh_environment_setup.sh
+/tmp/ssh_environment_setup.sh
+
+# Reload your shell configuration
+source ~/.bashrc
 ```
-piano-tiles-game/
-├── main.py              # Flask application and game logic
-├── requirements.txt     # Python dependencies
-├── README.md           # This file
-└── templates/
-    └── index.html      # Game UI and frontend logic
+
+## 🎮 Using the Environment
+
+### Starting the Integrated Environment
+```bash
+env
 ```
 
-## Game Controls
+This creates a tmux session with 4 panes:
+- **Top-left**: File Manager area
+- **Top-right**: Chat/Communication area  
+- **Bottom-left**: Editor area
+- **Bottom-right**: Main shell
 
-- **Mouse**: Click on tiles to tap them
-- **Touch**: Tap tiles on mobile devices
-- **Keyboard**: Not required (touch/mouse only)
+### File Management
+```bash
+# Quick file manager
+fm
 
-## Technical Details
-
-### Backend (Python/Flask)
-- **Flask**: Web framework for the server
-- **Game Logic**: Python class managing game state
-- **API Endpoints**: RESTful API for game interactions
-
-### Frontend (HTML/CSS/JavaScript)
-- **HTML5**: Semantic markup structure
-- **CSS3**: Modern styling with gradients and animations
-- **JavaScript**: Game loop and user interaction handling
-- **Web Audio API**: Sound effects for tile taps
-
-## API Endpoints
-
-- `GET /` - Main game page
-- `GET /api/game-state` - Get current game state
-- `POST /api/tap` - Handle tile tap (x, y coordinates)
-- `POST /api/reset` - Reset game state
-- `POST /api/update` - Update game state and generate new tiles
-
-## Customization
-
-### Changing Game Speed
-Edit the `speed` variable in the `PianoTilesGame` class in `main.py`:
-```python
-self.speed = 2.0  # Initial speed in seconds
+# Navigate with arrow keys, Enter to open
+# Press 'q' to quit
 ```
 
-### Modifying Visual Style
-Edit the CSS in `templates/index.html` to customize:
-- Colors and gradients
-- Tile appearance
-- Animations
-- Layout and sizing
+### Editing Files
+```bash
+# Edit a file
+e myfile.txt
 
-### Adding Sound Effects
-Modify the `playTapSound()` method in the JavaScript to add different audio effects.
+# Or use nvim directly
+nvim myfile.txt
+```
 
-## Troubleshooting
+### Chat/Communication
+```bash
+# Start a chat server (on port 9999)
+chat 9999 localhost server
 
-### Common Issues
+# Connect to chat server
+chat 9999 server-ip
+```
 
-1. **Port already in use**:
-   - Change the port in `main.py`: `app.run(debug=True, host='0.0.0.0', port=5001)`
+## 🔑 Tmux Key Bindings
 
-2. **Dependencies not found**:
-   - Ensure you're using the correct Python environment
-   - Run: `pip install -r requirements.txt`
+| Key Combination | Action |
+|----------------|--------|
+| `Ctrl-a` | Prefix key |
+| `Ctrl-a \|` | Split horizontally |
+| `Ctrl-a -` | Split vertically |
+| `Alt + arrows` | Navigate panes |
+| `Ctrl-a r` | Reload config |
 
-3. **Game not responding**:
-   - Check browser console for JavaScript errors
-   - Ensure Flask server is running
+## 🛠️ Customization
 
-### Browser Compatibility
+### Tmux Configuration
+Edit `~/.tmux.conf` to customize your tmux setup.
 
-- **Chrome/Edge**: Full support
-- **Firefox**: Full support
-- **Safari**: Full support
-- **Mobile browsers**: Full touch support
+### NeoVim Configuration  
+Edit `~/.config/nvim/init.vim` to customize your editor.
 
-## Development
+### Ranger Configuration
+Edit `~/.config/ranger/rc.conf` to customize your file manager.
 
-### Running in Development Mode
-The Flask app runs in debug mode by default, which provides:
-- Auto-reload on code changes
-- Detailed error messages
-- Debug console
+## 🚨 Troubleshooting
 
-### Adding Features
-1. **New Game Modes**: Extend the `PianoTilesGame` class
-2. **Power-ups**: Add new tile types and effects
-3. **Multiplayer**: Implement WebSocket support
-4. **Leaderboards**: Add database integration
+### Terminal Display Issues
+```bash
+fix-terminal
+```
 
-## License
+### Characters Not Appearing
+```bash
+stty echo
+reset
+export TERM=xterm-256color
+```
 
-This project is open source and available under the MIT License.
+### Tmux Session Issues
+```bash
+# Kill existing sessions
+tmux kill-server
 
-## Contributing
+# Start fresh
+env
+```
 
-Feel free to submit issues, feature requests, or pull requests to improve the game!
+### Package Installation Issues
+The setup script supports multiple package managers:
+- **Debian/Ubuntu**: `apt-get`
+- **RHEL/CentOS**: `yum`
+- **Arch Linux**: `pacman`
+
+## 📋 Requirements
+
+### Local Machine
+- `ssh` client
+- `scp` for file transfer
+
+### Remote Server
+- **sudo access** (for package installation)
+- **Internet connection** (for downloading packages)
+- **Modern terminal** support
+
+## 🎨 Environment Features
+
+- **Color-coded output** for better visibility
+- **Enhanced prompt** with user/host/path
+- **Mouse support** across all tools
+- **Persistent sessions** with tmux
+- **Quick access commands** and aliases
+- **Automatic terminal fixes** for SSH issues
+
+## 📝 Notes
+
+- The setup script automatically detects your package manager
+- All configurations are stored in standard locations
+- The environment is designed to work over SSH with minimal bandwidth
+- Sessions persist even if SSH connection drops (tmux)
+
+## 🤝 Contributing
+
+Feel free to customize the scripts for your specific needs. The modular design makes it easy to add or remove components.
 
 ---
 
-**Enjoy playing Piano Tiles!** 🎹✨
+**Enjoy your enhanced SSH development environment!** 🎉
 
