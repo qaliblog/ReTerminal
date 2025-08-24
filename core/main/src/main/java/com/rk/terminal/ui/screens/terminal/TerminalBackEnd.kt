@@ -47,7 +47,12 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     override fun onPasteTextFromClipboard(session: TerminalSession) {
         val clip = ClipboardUtils.getText().toString()
         if (clip.trim { it <= ' ' }.isNotEmpty() && terminal.mEmulator != null) {
-            terminal.mEmulator.paste(clip)
+            val service = activity.sessionBinder?.getService()
+            if (service?.isInteractiveSsh(session) == true) {
+                session.write(clip)
+            } else {
+                terminal.mEmulator.paste(clip)
+            }
         }
     }
     
@@ -163,6 +168,29 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
                 }
                 return true
             }
+        // For interactive SSH, forward navigation/control keys explicitly if needed
+        val service = activity.sessionBinder?.getService()
+        if (service?.isInteractiveSsh(session) == true) {
+            val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    sshTerm?.sendInput("\u001b[A")
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    sshTerm?.sendInput("\u001b[B")
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    sshTerm?.sendInput("\u001b[C")
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    sshTerm?.sendInput("\u001b[D")
+                    return true
+                }
+            }
+        }
         return false
     }
     
@@ -200,6 +228,13 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     }
     
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        val service = activity.sessionBinder?.getService()
+        if (service?.isInteractiveSsh(session) == true) {
+            val ch = Character.toChars(codePoint)
+            val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+            sshTerm?.sendInput(String(ch))
+            return true
+        }
         return false
     }
     

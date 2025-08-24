@@ -15,13 +15,11 @@ class SshTerminalSession(
     private val sshManager = SshManager.getInstance()
     private var shellChannel: ChannelShell? = null
     private var terminalSession: TerminalSession? = null
-    private var inputStream: PipedInputStream? = null
-    private var outputStream: PipedOutputStream? = null
-    private var errorStream: PipedInputStream? = null
     private var sshInputStream: InputStream? = null
     private var sshOutputStream: OutputStream? = null
     private var isRunning = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var streamsReplaced = false
     
     companion object {
         private const val TAG = "SshTerminalSession"
@@ -35,40 +33,47 @@ class SshTerminalSession(
             shellChannel = sshManager.getShellChannel(sshSessionId)
                 ?: return@withContext Result.failure(Exception("Failed to create SSH shell channel"))
             
-            // Create piped streams for terminal communication
-            inputStream = PipedInputStream()
-            outputStream = PipedOutputStream(inputStream!!)
-            errorStream = PipedInputStream()
-            
             // Connect SSH channel streams
             sshInputStream = shellChannel!!.inputStream
             sshOutputStream = shellChannel!!.outputStream
             // Note: JSch ChannelShell doesn't have setErrStream, errors are mixed with output
             
-            // Configure shell channel
+            // Configure shell channel with PTY
+            shellChannel!!.setPty(true)
             shellChannel!!.setPtyType("xterm-256color")
             shellChannel!!.setPtySize(80, 24, 640, 480) // cols, rows, width, height
             
             // Connect the shell channel
             shellChannel!!.connect()
-            
-            // Create terminal session
-            terminalSession = TerminalSession(
-                "/system/bin/sh", // This won't be used since we override the streams
-                "/", // Working directory (not used)
-                arrayOf(), // Args (not used)
-                arrayOf("TERM=xterm-256color"), // Environment
-                TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
-                terminalSessionClient
-            )
-            
-            // Replace terminal session streams with our SSH streams
+
+            // Create a local terminal session used only as a UI container. We'll replace its I/O streams.
+            val created = withContext(Dispatchers.Main) {
+                try {
+                    TerminalSession(
+                        "/system/bin/sh",
+                        "/",
+                        arrayOf(),
+                        arrayOf("TERM=xterm-256color"),
+                        TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
+                        terminalSessionClient
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+            }
+
+            if (created == null) {
+                return@withContext Result.failure(Exception("Failed to create TerminalSession"))
+            }
+
+            terminalSession = created
+
+            // Replace TerminalSession streams with SSH channel streams so Terminal handles I/O natively
             replaceTerminalStreams()
-            
             isRunning = true
-            
-            // Start I/O forwarding
-            startIoForwarding()
+            if (!streamsReplaced) {
+                startIoForwarding()
+            }
             
             Log.d(TAG, "SSH terminal session started successfully")
             Result.success(terminalSession!!)
@@ -82,51 +87,52 @@ class SshTerminalSession(
     
     private fun replaceTerminalStreams() {
         try {
-            // Use reflection to replace terminal session streams with SSH streams
+            if (terminalSession == null || sshInputStream == null || sshOutputStream == null) return
             val terminalSessionClass = terminalSession!!.javaClass
-            
-            // Replace input stream (from terminal to SSH)
+
+            // Replace output stream from terminal to SSH (keyboard -> SSH)
             val mTerminalInputField = terminalSessionClass.getDeclaredField("mTerminalInput")
             mTerminalInputField.isAccessible = true
-            val terminalInput = mTerminalInputField.get(terminalSession) as OutputStream
-            
-            // Replace output stream (from SSH to terminal)
+            val sshOut = sshOutputStream!!
+            val proxyOut = object : OutputStream() {
+                override fun write(b: Int) {
+                    sshOut.write(b)
+                    sshOut.flush()
+                }
+                override fun write(b: ByteArray) {
+                    sshOut.write(b)
+                    sshOut.flush()
+                }
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    sshOut.write(b, off, len)
+                    sshOut.flush()
+                }
+                override fun flush() { sshOut.flush() }
+                override fun close() { sshOut.flush(); /* don't close SSH out here */ }
+            }
+            mTerminalInputField.set(terminalSession, proxyOut)
+
+            // Replace input stream from SSH to terminal (SSH -> screen)
             val mTerminalOutputField = terminalSessionClass.getDeclaredField("mTerminalOutput")
             mTerminalOutputField.isAccessible = true
-            // We'll handle this through our I/O forwarding
-            
+            mTerminalOutputField.set(terminalSession, sshInputStream)
+
+            streamsReplaced = true
+            Log.d(TAG, "Replaced TerminalSession I/O streams with SSH channel streams")
         } catch (e: Exception) {
-            Log.w(TAG, "Could not replace terminal streams directly, using I/O forwarding", e)
+            streamsReplaced = false
+            Log.w(TAG, "Failed to replace TerminalSession streams; interactive I/O may be limited", e)
         }
     }
     
     private fun startIoForwarding() {
-        // Forward input from terminal to SSH
+        // Forward output from SSH to terminal emulator if reflection replacement failed
         scope.launch {
             try {
-                val buffer = ByteArray(1024)
-                while (isRunning && inputStream != null && sshOutputStream != null) {
-                    val bytesRead = inputStream!!.read(buffer)
-                    if (bytesRead > 0) {
-                        sshOutputStream!!.write(buffer, 0, bytesRead)
-                        sshOutputStream!!.flush()
-                    }
-                }
-            } catch (e: Exception) {
-                if (isRunning) {
-                    Log.e(TAG, "Error forwarding input to SSH", e)
-                }
-            }
-        }
-        
-        // Forward output from SSH to terminal
-        scope.launch {
-            try {
-                val buffer = ByteArray(1024)
+                val buffer = ByteArray(4096)
                 while (isRunning && sshInputStream != null) {
                     val bytesRead = sshInputStream!!.read(buffer)
                     if (bytesRead > 0) {
-                        // Write to terminal emulator
                         terminalSession?.emulator?.append(buffer, bytesRead)
                     }
                 }
@@ -173,16 +179,9 @@ class SshTerminalSession(
             shellChannel?.disconnect()
             shellChannel = null
             
-            inputStream?.close()
-            outputStream?.close()
-            errorStream?.close()
-            
             sshInputStream?.close()
             sshOutputStream?.close()
             
-            inputStream = null
-            outputStream = null
-            errorStream = null
             sshInputStream = null
             sshOutputStream = null
             

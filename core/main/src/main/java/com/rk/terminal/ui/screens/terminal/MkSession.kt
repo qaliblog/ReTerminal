@@ -118,13 +118,19 @@ Updating : apk update && apk upgrade
 
             val args: Array<String>
 
+            val preferredShell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
+
             val shell = if (pendingCommand == null) {
                 args = if (workingMode == WorkingMode.ALPINE){
                     arrayOf("-c",initFile.absolutePath)
                 }else{
                     arrayOf()
                 }
-                "/system/bin/sh"
+                preferredShell
             } else{
                 args = pendingCommand!!.args
                 pendingCommand!!.shell
@@ -220,7 +226,11 @@ Updating : apk update && apk upgrade
 
             val workingDir = "/sdcard"
             val args: Array<String> = if (workingMode == WorkingMode.ALPINE) arrayOf("-c", initFile.absolutePath) else arrayOf()
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
 
             return TerminalSession(
                 shell,
@@ -323,10 +333,24 @@ Use the file manager to browse remote files.
                  connectionResult.isSuccess -> {
                      val (sshSessionId, successMessage) = connectionResult.getOrThrow()
                      Log.d("MkSession", "Creating real SSH terminal session for: $sshSessionId")
-                     
-                                           // For now, create an SSH bridge session that can execute remote commands
-                      // Full interactive SSH shell coming in future updates
-                      createSshBridgeSession(activity, sessionClient, session_id, sshSessionId, config)
+
+                     // Attempt to create an interactive SSH terminal session
+                     try {
+                         val sshTerminal = SshTerminalSession(sshSessionId, sessionClient)
+                         val terminalResult = withContext(Dispatchers.IO) { sshTerminal.start() }
+                         if (terminalResult.isSuccess) {
+                             // Register this interactive SSH session with the service for I/O bridging
+                             activity.sessionBinder?.getService()?.setSshTerminalSession(session_id, sshTerminal)
+                             return@withContext terminalResult.getOrThrow()
+                         } else {
+                             Log.w("MkSession", "SSH interactive session fallback to bridge: ${terminalResult.exceptionOrNull()?.message}")
+                         }
+                     } catch (e: Exception) {
+                         Log.w("MkSession", "SSH interactive session start failed, using bridge", e)
+                     }
+
+                     // Fallback: create an SSH bridge session that can execute remote-like commands
+                     createSshBridgeSession(activity, sessionClient, session_id, sshSessionId, config)
                  }
                  else -> {
                      val error = connectionResult.exceptionOrNull()!!
@@ -363,23 +387,33 @@ Troubleshooting:
             
             // Create a bridge script that can execute commands on the SSH server
             val scriptContent = """#!/system/bin/sh
-echo "========================================="
-echo "SSH BRIDGE SESSION ACTIVE"
-echo "========================================="
-echo "Connected to: ${config.username}@${config.host}:${config.port}"
-echo "Session ID: $sshSessionId"
-echo ""
-echo "This session bridges to your SSH server."
-echo "Use the following commands to interact with the remote server:"
-echo ""
-echo "  remote <command>  - Execute command on remote server"
-echo "  remote-ls         - List remote directory"
-echo "  remote-pwd        - Show remote working directory"
-echo "  remote-whoami     - Show remote user"
-echo "  remote-uname      - Show remote system info"
-echo "  ssh-info          - Show connection details"
-echo "  exit              - Close session"
-echo ""
+set -e
+
+# Ensure a writable TMPDIR for shell temporary files
+export TMPDIR="${cacheDir.absolutePath}"
+mkdir -p "${cacheDir.absolutePath}"
+
+cat <<'BANNER'
+=========================================
+SSH BRIDGE SESSION ACTIVE
+=========================================
+Connected to: ${config.username}@${config.host}:${config.port}
+Session ID: $sshSessionId
+
+This session bridges to your SSH server.
+Use the following commands to interact with the remote server:
+
+  remote <command>  - Execute command on remote server
+  remote-ls         - List remote directory
+  remote-pwd        - Show remote working directory
+  remote-whoami     - Show remote user
+  remote-uname      - Show remote system info
+  ssh-info          - Show connection details
+  exit              - Close session
+
+SSH bridge ready. Type 'remote <command>' to execute commands remotely.
+Example: remote ls -la
+BANNER
 
 # Set SSH environment variables
 export SSH_SESSION_ID="$sshSessionId"
@@ -387,54 +421,67 @@ export SSH_HOST="${config.host}"
 export SSH_PORT="${config.port}"
 export SSH_USER="${config.username}"
 
+# Create bridge command scripts
+BRIDGE_DIR="${filesDir.absolutePath}/bridge"
+mkdir -p "${'$'}BRIDGE_DIR"
 
+# remote (stub)
+cat > "${'$'}BRIDGE_DIR/remote" <<'EOF'
+#!/system/bin/sh
+echo "Remote exec not enabled in this preview."
+echo "Use: remote-whoami, remote-uname, ssh-info"
+exit 1
+EOF
+chmod +x "${'$'}BRIDGE_DIR/remote"
 
-echo "SSH bridge ready. Type 'remote <command>' to execute commands remotely."
-echo "Example: remote ls -la"
-echo ""
+# remote-ls
+cat > "${'$'}BRIDGE_DIR/remote-ls" <<'EOF'
+#!/system/bin/sh
+echo "Remote directory listing for ${config.username}@${config.host}:"
+echo "[Use File Manager to browse remote files]"
+echo "Note: Full SSH integration coming soon."
+EOF
+chmod +x "${'$'}BRIDGE_DIR/remote-ls"
 
-# Create bridge command scripts  
-BRIDGE_DIR="/data/data/com.rk.terminal.debug/files/bridge"
-mkdir -p """ + "$" + """BRIDGE_DIR
+# remote-pwd
+cat > "${'$'}BRIDGE_DIR/remote-pwd" <<'EOF'
+#!/system/bin/sh
+echo "Remote working directory for ${config.username}@${config.host}:"
+echo "[Full SSH integration coming soon]"
+EOF
+chmod +x "${'$'}BRIDGE_DIR/remote-pwd"
 
-# Create remote-ls script
-echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-ls
-echo 'echo Remote directory listing for ${config.username}@${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-ls
-echo 'echo [Use File Manager to browse remote files]' >> """ + "$" + """BRIDGE_DIR/remote-ls
-echo 'echo Note: Full SSH integration coming soon.' >> """ + "$" + """BRIDGE_DIR/remote-ls
-chmod +x """ + "$" + """BRIDGE_DIR/remote-ls
+# remote-whoami
+cat > "${'$'}BRIDGE_DIR/remote-whoami" <<'EOF'
+#!/system/bin/sh
+echo "Remote user info for ${config.host}:"
+echo "Username: ${config.username}"
+echo "[Full SSH integration coming soon]"
+EOF
+chmod +x "${'$'}BRIDGE_DIR/remote-whoami"
 
-# Create remote-pwd script
-echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-pwd
-echo 'echo Remote working directory for ${config.username}@${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-pwd
-echo 'echo [Full SSH integration coming soon]' >> """ + "$" + """BRIDGE_DIR/remote-pwd
-chmod +x """ + "$" + """BRIDGE_DIR/remote-pwd
+# remote-uname
+cat > "${'$'}BRIDGE_DIR/remote-uname" <<'EOF'
+#!/system/bin/sh
+echo "Remote system info for ${config.host}:"
+echo "[Full SSH integration coming soon]"
+EOF
+chmod +x "${'$'}BRIDGE_DIR/remote-uname"
 
-# Create remote-whoami script
-echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-whoami
-echo 'echo Remote user info for ${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-whoami
-echo 'echo Username: ${config.username}' >> """ + "$" + """BRIDGE_DIR/remote-whoami
-echo 'echo [Full SSH integration coming soon]' >> """ + "$" + """BRIDGE_DIR/remote-whoami
-chmod +x """ + "$" + """BRIDGE_DIR/remote-whoami
-
-# Create remote-uname script
-echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/remote-uname
-echo 'echo Remote system info for ${config.host}:' >> """ + "$" + """BRIDGE_DIR/remote-uname
-echo 'echo [Full SSH integration coming soon]' >> """ + "$" + """BRIDGE_DIR/remote-uname
-chmod +x """ + "$" + """BRIDGE_DIR/remote-uname
-
-# Create ssh-info script
-echo '#!/system/bin/sh' > """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo SSH Connection Information:' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo   Host: ${config.host}:${config.port}' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo   User: ${config.username}' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo   Session: ${sshSessionId}' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo   Status: Connected' >> """ + "$" + """BRIDGE_DIR/ssh-info
-echo 'echo   Features: SFTP File Manager, Bridge commands' >> """ + "$" + """BRIDGE_DIR/ssh-info
-chmod +x """ + "$" + """BRIDGE_DIR/ssh-info
+# ssh-info
+cat > "${'$'}BRIDGE_DIR/ssh-info" <<'EOF'
+#!/system/bin/sh
+echo "SSH Connection Information:"
+echo "  Host: ${config.host}:${config.port}"
+echo "  User: ${config.username}"
+echo "  Session: ${sshSessionId}"
+echo "  Status: Connected"
+echo "  Features: SFTP File Manager, Bridge commands"
+EOF
+chmod +x "${'$'}BRIDGE_DIR/ssh-info"
 
 # Add bridge directory to PATH
-export PATH=""" + "$" + """BRIDGE_DIR:""" + "$" + """PATH"
+export PATH="${'$'}BRIDGE_DIR:${'$'}PATH"
 
 echo "SSH bridge commands are now available."
 echo "Try: remote-ls, remote-whoami, ssh-info"
@@ -447,7 +494,11 @@ exec /system/bin/sh
             sshScript.writeText(scriptContent)
             
             val args = arrayOf("-c", sshScript.absolutePath)
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
             
             return TerminalSession(
                 shell,
@@ -458,7 +509,8 @@ exec /system/bin/sh
                     "SSH_SESSION_ID=$sshSessionId",
                     "SSH_HOST=${config.host}",
                     "SSH_PORT=${config.port}",
-                    "SSH_USER=${config.username}"
+                    "SSH_USER=${config.username}",
+                    "TMPDIR=${cacheDir.absolutePath}"
                 ),
                 TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                 sessionClient
@@ -551,7 +603,11 @@ exec /system/bin/sh
             sshScript.writeText(scriptContent)
             
             val args = arrayOf("-c", sshScript.absolutePath)
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
             
             return TerminalSession(
                 shell,
@@ -627,7 +683,11 @@ read
             errorScript.writeText(scriptContent)
             
             val args = arrayOf("-c", errorScript.absolutePath)
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
             
             return TerminalSession(
                 shell,
