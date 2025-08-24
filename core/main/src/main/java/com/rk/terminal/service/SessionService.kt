@@ -15,6 +15,7 @@ import com.rk.resources.drawables
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.Settings
 import com.rk.terminal.ui.screens.terminal.MkSession
+import com.rk.terminal.ui.screens.terminal.SshTerminalSession
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import okhttp3.internal.wait
@@ -31,6 +32,7 @@ class SessionService : Service() {
     
     // Store SSH session information for integration with other components
     private val sshSessionInfo = mutableMapOf<String, Pair<String, com.rk.terminal.ui.screens.terminal.SshConnectionConfig>>()
+    private val sshInteractiveSessions = mutableMapOf<String, SshTerminalSession>()
     
     fun setSshSessionInfo(sessionId: String, sshSessionId: String, config: com.rk.terminal.ui.screens.terminal.SshConnectionConfig) {
         sshSessionInfo[sessionId] = Pair(sshSessionId, config)
@@ -42,6 +44,23 @@ class SessionService : Service() {
     
     fun isSshSession(sessionId: String): Boolean {
         return sshSessionInfo.containsKey(sessionId)
+    }
+
+    fun setSshTerminalSession(sessionId: String, sshTerminal: SshTerminalSession) {
+        sshInteractiveSessions[sessionId] = sshTerminal
+    }
+
+    fun getSshTerminalSessionById(sessionId: String): SshTerminalSession? {
+        return sshInteractiveSessions[sessionId]
+    }
+
+    fun getSshTerminalSessionForTerminalSession(term: TerminalSession): SshTerminalSession? {
+        val id = sessions.entries.firstOrNull { it.value === term }?.key ?: return null
+        return sshInteractiveSessions[id]
+    }
+
+    fun isInteractiveSsh(term: TerminalSession): Boolean {
+        return getSshTerminalSessionForTerminalSession(term) != null
     }
 
     inner class SessionBinder : Binder() {

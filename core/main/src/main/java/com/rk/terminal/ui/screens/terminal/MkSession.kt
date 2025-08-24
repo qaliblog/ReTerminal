@@ -329,6 +329,8 @@ Use the file manager to browse remote files.
                          val sshTerminal = SshTerminalSession(sshSessionId, sessionClient)
                          val terminalResult = withContext(Dispatchers.IO) { sshTerminal.start() }
                          if (terminalResult.isSuccess) {
+                             // Register this interactive SSH session with the service for I/O bridging
+                             activity.sessionBinder?.getService()?.setSshTerminalSession(session_id, sshTerminal)
                              return@withContext terminalResult.getOrThrow()
                          } else {
                              Log.w("MkSession", "SSH interactive session fallback to bridge: ${terminalResult.exceptionOrNull()?.message}")
