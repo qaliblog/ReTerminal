@@ -118,13 +118,19 @@ Updating : apk update && apk upgrade
 
             val args: Array<String>
 
+            val preferredShell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
+
             val shell = if (pendingCommand == null) {
                 args = if (workingMode == WorkingMode.ALPINE){
                     arrayOf("-c",initFile.absolutePath)
                 }else{
                     arrayOf()
                 }
-                "/system/bin/sh"
+                preferredShell
             } else{
                 args = pendingCommand!!.args
                 pendingCommand!!.shell
@@ -220,7 +226,11 @@ Updating : apk update && apk upgrade
 
             val workingDir = "/sdcard"
             val args: Array<String> = if (workingMode == WorkingMode.ALPINE) arrayOf("-c", initFile.absolutePath) else arrayOf()
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
 
             return TerminalSession(
                 shell,
@@ -484,7 +494,11 @@ exec /system/bin/sh
             sshScript.writeText(scriptContent)
             
             val args = arrayOf("-c", sshScript.absolutePath)
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
             
             return TerminalSession(
                 shell,
@@ -589,7 +603,11 @@ exec /system/bin/sh
             sshScript.writeText(scriptContent)
             
             val args = arrayOf("-c", sshScript.absolutePath)
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
             
             return TerminalSession(
                 shell,
@@ -665,7 +683,11 @@ read
             errorScript.writeText(scriptContent)
             
             val args = arrayOf("-c", errorScript.absolutePath)
-            val shell = "/system/bin/sh"
+            val shell = if (File("/data/data/com.termux/files/usr/bin/bash").exists()) {
+                "/data/data/com.termux/files/usr/bin/bash"
+            } else {
+                "/system/bin/sh"
+            }
             
             return TerminalSession(
                 shell,
