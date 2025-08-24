@@ -46,17 +46,13 @@ class SshTerminalSession(
             // Connect the shell channel
             shellChannel!!.connect()
 
-            // Create an inert local terminal session on the main thread
+            // Create a local terminal session used only as a UI container. We'll replace its I/O streams.
             val created = withContext(Dispatchers.Main) {
                 try {
                     TerminalSession(
                         "/system/bin/sh",
                         "/",
-                        arrayOf(
-                            "-c",
-                            // Silence local output and keep process alive indefinitely
-                            "exec >/dev/null 2>&1; while true; do sleep 3600; done"
-                        ),
+                        arrayOf(),
                         arrayOf("TERM=xterm-256color"),
                         TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                         terminalSessionClient
@@ -72,9 +68,12 @@ class SshTerminalSession(
 
             terminalSession = created
 
-            // Start output forwarding from SSH to terminal emulator
+            // Replace TerminalSession streams with SSH channel streams so Terminal handles I/O natively
+            replaceTerminalStreams()
             isRunning = true
-            startIoForwarding()
+            if (!streamsReplaced) {
+                startIoForwarding()
+            }
             
             Log.d(TAG, "SSH terminal session started successfully")
             Result.success(terminalSession!!)
@@ -86,17 +85,54 @@ class SshTerminalSession(
         }
     }
     
-    private fun replaceTerminalStreams() { /* no-op with inert session */ }
+    private fun replaceTerminalStreams() {
+        try {
+            if (terminalSession == null || sshInputStream == null || sshOutputStream == null) return
+            val terminalSessionClass = terminalSession!!.javaClass
+
+            // Replace output stream from terminal to SSH (keyboard -> SSH)
+            val mTerminalInputField = terminalSessionClass.getDeclaredField("mTerminalInput")
+            mTerminalInputField.isAccessible = true
+            val sshOut = sshOutputStream!!
+            val proxyOut = object : OutputStream() {
+                override fun write(b: Int) {
+                    sshOut.write(b)
+                    sshOut.flush()
+                }
+                override fun write(b: ByteArray) {
+                    sshOut.write(b)
+                    sshOut.flush()
+                }
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    sshOut.write(b, off, len)
+                    sshOut.flush()
+                }
+                override fun flush() { sshOut.flush() }
+                override fun close() { sshOut.flush(); /* don't close SSH out here */ }
+            }
+            mTerminalInputField.set(terminalSession, proxyOut)
+
+            // Replace input stream from SSH to terminal (SSH -> screen)
+            val mTerminalOutputField = terminalSessionClass.getDeclaredField("mTerminalOutput")
+            mTerminalOutputField.isAccessible = true
+            mTerminalOutputField.set(terminalSession, sshInputStream)
+
+            streamsReplaced = true
+            Log.d(TAG, "Replaced TerminalSession I/O streams with SSH channel streams")
+        } catch (e: Exception) {
+            streamsReplaced = false
+            Log.w(TAG, "Failed to replace TerminalSession streams; interactive I/O may be limited", e)
+        }
+    }
     
     private fun startIoForwarding() {
-        // Forward output from SSH to terminal
+        // Forward output from SSH to terminal emulator if reflection replacement failed
         scope.launch {
             try {
-                val buffer = ByteArray(1024)
+                val buffer = ByteArray(4096)
                 while (isRunning && sshInputStream != null) {
                     val bytesRead = sshInputStream!!.read(buffer)
                     if (bytesRead > 0) {
-                        // Write to terminal emulator
                         terminalSession?.emulator?.append(buffer, bytesRead)
                     }
                 }
