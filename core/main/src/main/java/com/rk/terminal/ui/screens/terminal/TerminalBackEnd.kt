@@ -402,13 +402,22 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
             kotlinx.coroutines.delay(10000) // Wait 10 seconds
             
             val service = activity.sessionBinder?.getService()
-            val currentSession = terminal.mEmulator?.mSession
-            
-            if (currentSession != null && service?.isInteractiveSsh(currentSession) == true) {
-                val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
-                
-                Log.d("TerminalBackEnd", "🔧 TESTING: Manually triggering command since no user input detected")
-                sshTerm?.simulateCommand("echo 'Manual test - input detection working'")
+            if (service != null) {
+                try {
+                    // Find SSH sessions and test them
+                    for ((sessionId, workingMode) in service.sessionList) {
+                        if (workingMode == com.rk.terminal.ui.screens.settings.WorkingMode.SSH) {
+                            val sshTerm = service.getSshTerminalSessionById(sessionId)
+                            if (sshTerm != null) {
+                                Log.d("TerminalBackEnd", "🔧 TESTING: Manually triggering command since no user input detected")
+                                sshTerm.simulateCommand("echo 'Manual test - input detection working'")
+                                break
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("TerminalBackEnd", "Error in input test", e)
+                }
             }
         }
     }
@@ -416,11 +425,19 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     fun manualTestInput(text: String) {
         Log.d("TerminalBackEnd", "Manual test input: $text")
         val service = activity.sessionBinder?.getService()
-        val currentSession = terminal.mEmulator?.mSession
-        
-        if (currentSession != null && service?.isInteractiveSsh(currentSession) == true) {
-            val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
-            sshTerm?.sendInput(text)
+        if (service != null) {
+            try {
+                // Find SSH sessions and send input
+                for ((sessionId, workingMode) in service.sessionList) {
+                    if (workingMode == com.rk.terminal.ui.screens.settings.WorkingMode.SSH) {
+                        val sshTerm = service.getSshTerminalSessionById(sessionId)
+                        sshTerm?.sendInput(text)
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("TerminalBackEnd", "Error in manual test input", e)
+            }
         }
     }
 }

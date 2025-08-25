@@ -31,6 +31,7 @@ import com.rk.libcommons.toast
 import com.rk.terminal.service.SessionService
 import com.rk.terminal.ui.navHosts.MainActivityNavHost
 import com.rk.terminal.ui.screens.terminal.TerminalScreen
+import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ui.theme.KarbonTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -154,45 +155,52 @@ class MainActivity : ComponentActivity() {
         // Try to forward input to SSH session if available
         val service = sessionBinder?.getService()
         if (service != null) {
-            // Get the current session and check if it's SSH
-            val currentSessionId = service.currentSession.value.first
-            val currentSession = service.getSession(currentSessionId)
-            
-            if (currentSession != null && service.isInteractiveSsh(currentSession)) {
-                val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
+            try {
+                // Get the current session and check if it's SSH
+                val currentSessionId = service.currentSession.value.first
+                val sessionList = service.sessionList
                 
-                if (sshTerm != null) {
-                    android.util.Log.d("MainActivity", "🔥🔥 Forwarding key to SSH: $keyCode")
-                    
-                    // Handle specific keys
-                    when (keyCode) {
-                        android.view.KeyEvent.KEYCODE_ENTER -> {
-                            sshTerm.sendInput("\r\n")
-                            return true
-                        }
-                        android.view.KeyEvent.KEYCODE_DEL -> {
-                            sshTerm.sendInput("\u007f")
-                            return true
-                        }
-                        in android.view.KeyEvent.KEYCODE_A..android.view.KeyEvent.KEYCODE_Z -> {
-                            val char = ('a' + (keyCode - android.view.KeyEvent.KEYCODE_A)).toString()
-                            android.util.Log.d("MainActivity", "🔥🔥 Sending letter: $char")
-                            sshTerm.sendInput(char)
-                            return true
-                        }
-                        in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
-                            val char = ('0' + (keyCode - android.view.KeyEvent.KEYCODE_0)).toString()
-                            android.util.Log.d("MainActivity", "🔥🔥 Sending number: $char")
-                            sshTerm.sendInput(char)
-                            return true
-                        }
-                        android.view.KeyEvent.KEYCODE_SPACE -> {
-                            android.util.Log.d("MainActivity", "🔥🔥 Sending space")
-                            sshTerm.sendInput(" ")
-                            return true
+                // Find SSH sessions and forward input
+                for ((sessionId, workingMode) in sessionList) {
+                    if (workingMode == WorkingMode.SSH) {
+                        val sshTerm = service.getSshTerminalSessionById(sessionId)
+                        
+                        if (sshTerm != null) {
+                            android.util.Log.d("MainActivity", "🔥🔥 Forwarding key to SSH: $keyCode")
+                            
+                            // Handle specific keys
+                            when (keyCode) {
+                                android.view.KeyEvent.KEYCODE_ENTER -> {
+                                    sshTerm.sendInput("\r\n")
+                                    return true
+                                }
+                                android.view.KeyEvent.KEYCODE_DEL -> {
+                                    sshTerm.sendInput("\u007f")
+                                    return true
+                                }
+                                in android.view.KeyEvent.KEYCODE_A..android.view.KeyEvent.KEYCODE_Z -> {
+                                    val char = ('a' + (keyCode - android.view.KeyEvent.KEYCODE_A)).toString()
+                                    android.util.Log.d("MainActivity", "🔥🔥 Sending letter: $char")
+                                    sshTerm.sendInput(char)
+                                    return true
+                                }
+                                in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
+                                    val char = ('0' + (keyCode - android.view.KeyEvent.KEYCODE_0)).toString()
+                                    android.util.Log.d("MainActivity", "🔥🔥 Sending number: $char")
+                                    sshTerm.sendInput(char)
+                                    return true
+                                }
+                                android.view.KeyEvent.KEYCODE_SPACE -> {
+                                    android.util.Log.d("MainActivity", "🔥🔥 Sending space")
+                                    sshTerm.sendInput(" ")
+                                    return true
+                                }
+                            }
                         }
                     }
                 }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "Error forwarding input to SSH", e)
             }
         }
         
