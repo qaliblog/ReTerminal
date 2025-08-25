@@ -49,7 +49,14 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
         if (clip.trim { it <= ' ' }.isNotEmpty() && terminal.mEmulator != null) {
             val service = activity.sessionBinder?.getService()
             if (service?.isInteractiveSsh(session) == true) {
-                session.write(clip)
+                val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+                if (sshTerm != null) {
+                    Log.d("TerminalBackEnd", "Pasting text to SSH session: '${clip.take(50)}...'")
+                    sshTerm.sendInput(clip)
+                } else {
+                    // Fallback to regular session write
+                    session.write(clip)
+                }
             } else {
                 terminal.mEmulator.paste(clip)
             }
@@ -174,19 +181,48 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
             val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP -> {
+                    Log.v("TerminalBackEnd", "Sending UP arrow key to SSH")
                     sshTerm?.sendInput("\u001b[A")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    Log.v("TerminalBackEnd", "Sending DOWN arrow key to SSH")
                     sshTerm?.sendInput("\u001b[B")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    Log.v("TerminalBackEnd", "Sending RIGHT arrow key to SSH")
                     sshTerm?.sendInput("\u001b[C")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    Log.v("TerminalBackEnd", "Sending LEFT arrow key to SSH")
                     sshTerm?.sendInput("\u001b[D")
+                    return true
+                }
+                KeyEvent.KEYCODE_ENTER -> {
+                    Log.v("TerminalBackEnd", "Sending ENTER key to SSH")
+                    sshTerm?.sendInput("\r")
+                    return true
+                }
+                KeyEvent.KEYCODE_DEL -> {
+                    Log.v("TerminalBackEnd", "Sending BACKSPACE key to SSH")
+                    sshTerm?.sendInput("\u007f")
+                    return true
+                }
+                KeyEvent.KEYCODE_FORWARD_DEL -> {
+                    Log.v("TerminalBackEnd", "Sending DELETE key to SSH")
+                    sshTerm?.sendInput("\u001b[3~")
+                    return true
+                }
+                KeyEvent.KEYCODE_TAB -> {
+                    Log.v("TerminalBackEnd", "Sending TAB key to SSH")
+                    sshTerm?.sendInput("\t")
+                    return true
+                }
+                KeyEvent.KEYCODE_ESCAPE -> {
+                    Log.v("TerminalBackEnd", "Sending ESCAPE key to SSH")
+                    sshTerm?.sendInput("\u001b")
                     return true
                 }
             }
@@ -232,7 +268,23 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
         if (service?.isInteractiveSsh(session) == true) {
             val ch = Character.toChars(codePoint)
             val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
-            sshTerm?.sendInput(String(ch))
+            
+            // Use enhanced input handling with proper control key support
+            val inputStr = if (ctrlDown) {
+                // Handle Ctrl+key combinations
+                when (codePoint.toChar().toLowerCase()) {
+                    'c' -> "\u0003" // Ctrl+C (SIGINT)
+                    'd' -> "\u0004" // Ctrl+D (EOF)
+                    'z' -> "\u001a" // Ctrl+Z (SIGTSTP)
+                    'l' -> "\u000c" // Ctrl+L (clear screen)
+                    else -> String(ch)
+                }
+            } else {
+                String(ch)
+            }
+            
+            Log.v("TerminalBackEnd", "Sending codepoint: $codePoint, char: '${inputStr}', ctrlDown: $ctrlDown")
+            sshTerm?.sendInput(inputStr)
             return true
         }
         return false

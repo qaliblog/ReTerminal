@@ -31,17 +31,45 @@ class SshTerminalSession(
             
             // Get shell channel from SSH manager
             shellChannel = sshManager.getShellChannel(sshSessionId)
-                ?: return@withContext Result.failure(Exception("Failed to create SSH shell channel"))
+            if (shellChannel == null) {
+                Log.e(TAG, "Failed to create SSH shell channel for session: $sshSessionId")
+                return@withContext Result.failure(Exception("Failed to create SSH shell channel"))
+            }
+            
+            Log.d(TAG, "SSH shell channel created successfully")
             
             // Connect SSH channel streams
             sshInputStream = shellChannel!!.inputStream
             sshOutputStream = shellChannel!!.outputStream
+            
+            if (sshInputStream == null || sshOutputStream == null) {
+                Log.e(TAG, "SSH streams are null after channel creation")
+                return@withContext Result.failure(Exception("SSH streams are null"))
+            }
+            
+            Log.d(TAG, "SSH streams obtained successfully")
             // Note: JSch ChannelShell doesn't have setErrStream, errors are mixed with output
             
-            // Configure shell channel with PTY
+            // Configure shell channel with enhanced PTY settings
             shellChannel!!.setPty(true)
             shellChannel!!.setPtyType("xterm-256color")
             shellChannel!!.setPtySize(80, 24, 640, 480) // cols, rows, width, height
+            
+            // Set additional PTY environment variables for better compatibility
+            val env = mutableMapOf<String, String>()
+            env["TERM"] = "xterm-256color"
+            env["LANG"] = "en_US.UTF-8"
+            env["LC_ALL"] = "en_US.UTF-8"
+            env["SHELL"] = "/bin/bash"
+            
+            // Apply environment variables
+            for ((key, value) in env) {
+                try {
+                    shellChannel!!.setEnv(key, value)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not set environment variable $key=$value", e)
+                }
+            }
             
             // Connect the shell channel
             shellChannel!!.connect()
@@ -90,50 +118,118 @@ class SshTerminalSession(
             if (terminalSession == null || sshInputStream == null || sshOutputStream == null) return
             val terminalSessionClass = terminalSession!!.javaClass
 
-            // Replace output stream from terminal to SSH (keyboard -> SSH)
-            val mTerminalInputField = terminalSessionClass.getDeclaredField("mTerminalInput")
-            mTerminalInputField.isAccessible = true
-            val sshOut = sshOutputStream!!
-            val proxyOut = object : OutputStream() {
-                override fun write(b: Int) {
-                    sshOut.write(b)
-                    sshOut.flush()
+            // Try multiple possible field names for terminal input/output streams
+            val inputFieldNames = listOf("mTerminalInput", "terminalInput", "mTerminalToProcessIOQueue", "mProcessToTerminalIOQueue")
+            val outputFieldNames = listOf("mTerminalOutput", "terminalOutput", "mProcessToTerminalIOQueue", "mTerminalToProcessIOQueue")
+            
+            var inputFieldSet = false
+            var outputFieldSet = false
+
+            // Try to find and replace input stream (terminal to SSH)
+            for (fieldName in inputFieldNames) {
+                try {
+                    val field = terminalSessionClass.getDeclaredField(fieldName)
+                    field.isAccessible = true
+                    val sshOut = sshOutputStream!!
+                    val proxyOut = object : OutputStream() {
+                        override fun write(b: Int) {
+                            try {
+                                sshOut.write(b)
+                                sshOut.flush()
+                                Log.v(TAG, "SSH input: ${b.toChar()}")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error writing to SSH output stream", e)
+                            }
+                        }
+                        override fun write(b: ByteArray) {
+                            try {
+                                sshOut.write(b)
+                                sshOut.flush()
+                                Log.v(TAG, "SSH input: ${String(b)}")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error writing to SSH output stream", e)
+                            }
+                        }
+                        override fun write(b: ByteArray, off: Int, len: Int) {
+                            try {
+                                sshOut.write(b, off, len)
+                                sshOut.flush()
+                                Log.v(TAG, "SSH input: ${String(b, off, len)}")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error writing to SSH output stream", e)
+                            }
+                        }
+                        override fun flush() { 
+                            try {
+                                sshOut.flush()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error flushing SSH output stream", e)
+                            }
+                        }
+                        override fun close() { 
+                            try {
+                                sshOut.flush() 
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error closing SSH output stream", e)
+                            }
+                        }
+                    }
+                    field.set(terminalSession, proxyOut)
+                    inputFieldSet = true
+                    Log.d(TAG, "Successfully replaced terminal input field: $fieldName")
+                    break
+                } catch (e: NoSuchFieldException) {
+                    Log.v(TAG, "Field $fieldName not found, trying next")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to set field $fieldName", e)
                 }
-                override fun write(b: ByteArray) {
-                    sshOut.write(b)
-                    sshOut.flush()
-                }
-                override fun write(b: ByteArray, off: Int, len: Int) {
-                    sshOut.write(b, off, len)
-                    sshOut.flush()
-                }
-                override fun flush() { sshOut.flush() }
-                override fun close() { sshOut.flush(); /* don't close SSH out here */ }
             }
-            mTerminalInputField.set(terminalSession, proxyOut)
 
-            // Replace input stream from SSH to terminal (SSH -> screen)
-            val mTerminalOutputField = terminalSessionClass.getDeclaredField("mTerminalOutput")
-            mTerminalOutputField.isAccessible = true
-            mTerminalOutputField.set(terminalSession, sshInputStream)
+            // Try to find and replace output stream (SSH to terminal)
+            for (fieldName in outputFieldNames) {
+                try {
+                    val field = terminalSessionClass.getDeclaredField(fieldName)
+                    field.isAccessible = true
+                    field.set(terminalSession, sshInputStream)
+                    outputFieldSet = true
+                    Log.d(TAG, "Successfully replaced terminal output field: $fieldName")
+                    break
+                } catch (e: NoSuchFieldException) {
+                    Log.v(TAG, "Field $fieldName not found, trying next")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to set field $fieldName", e)
+                }
+            }
 
-            streamsReplaced = true
-            Log.d(TAG, "Replaced TerminalSession I/O streams with SSH channel streams")
+            streamsReplaced = inputFieldSet && outputFieldSet
+            if (streamsReplaced) {
+                Log.d(TAG, "Successfully replaced TerminalSession I/O streams with SSH channel streams")
+            } else {
+                Log.w(TAG, "Could not replace all terminal streams (input: $inputFieldSet, output: $outputFieldSet)")
+            }
         } catch (e: Exception) {
             streamsReplaced = false
-            Log.w(TAG, "Failed to replace TerminalSession streams; interactive I/O may be limited", e)
+            Log.w(TAG, "Failed to replace TerminalSession streams; will use I/O forwarding fallback", e)
         }
     }
     
     private fun startIoForwarding() {
-        // Forward output from SSH to terminal emulator if reflection replacement failed
+        // Enhanced I/O forwarding as fallback when stream replacement fails
+        Log.d(TAG, "Starting I/O forwarding for SSH session")
+        
+        // Forward output from SSH to terminal emulator
         scope.launch {
             try {
-                val buffer = ByteArray(4096)
+                val buffer = ByteArray(1024) // Smaller buffer for better responsiveness
                 while (isRunning && sshInputStream != null) {
                     val bytesRead = sshInputStream!!.read(buffer)
                     if (bytesRead > 0) {
+                        val output = String(buffer, 0, bytesRead)
+                        Log.v(TAG, "SSH output: $output")
                         terminalSession?.emulator?.append(buffer, bytesRead)
+                    } else if (bytesRead == -1) {
+                        Log.d(TAG, "SSH input stream closed")
+                        break
                     }
                 }
             } catch (e: Exception) {
@@ -142,13 +238,50 @@ class SshTerminalSession(
                 }
             }
         }
+        
+        // Initialize the terminal with a welcome message and prompt
+        scope.launch {
+            try {
+                // Wait a bit for the connection to stabilize
+                kotlinx.coroutines.delay(500)
+                
+                // Send initial commands to set up the terminal properly
+                val initCommands = listOf(
+                    "stty echo",           // Ensure echo is enabled
+                    "export PS1='\\u@\\h:\\w\\$ '", // Set a proper prompt
+                    "clear"                // Clear the screen
+                )
+                
+                for (cmd in initCommands) {
+                    if (isRunning && sshOutputStream != null) {
+                        sshOutputStream!!.write((cmd + "\n").toByteArray())
+                        sshOutputStream!!.flush()
+                        kotlinx.coroutines.delay(100) // Small delay between commands
+                    }
+                }
+                
+                Log.d(TAG, "SSH terminal initialization completed")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing SSH terminal", e)
+            }
+        }
     }
     
     fun sendInput(data: ByteArray) {
         try {
             if (isRunning && sshOutputStream != null) {
+                Log.v(TAG, "Sending input to SSH: ${String(data)}")
                 sshOutputStream!!.write(data)
                 sshOutputStream!!.flush()
+                
+                // If stream replacement failed, manually echo the input for better UX
+                if (!streamsReplaced && terminalSession != null) {
+                    // Echo the input to the terminal so user can see what they're typing
+                    val echoStr = String(data)
+                    if (echoStr.isNotEmpty() && !echoStr.contains('\n') && !echoStr.contains('\r')) {
+                        terminalSession!!.emulator?.append(data, data.size)
+                    }
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send input to SSH", e)
@@ -157,6 +290,24 @@ class SshTerminalSession(
     
     fun sendInput(text: String) {
         sendInput(text.toByteArray())
+    }
+    
+    fun sendInputWithEcho(text: String) {
+        try {
+            if (isRunning && sshOutputStream != null) {
+                Log.d(TAG, "Sending input with echo: $text")
+                val data = text.toByteArray()
+                sshOutputStream!!.write(data)
+                sshOutputStream!!.flush()
+                
+                // Always echo for interactive commands
+                if (terminalSession != null) {
+                    terminalSession!!.emulator?.append(data, data.size)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send input with echo to SSH", e)
+        }
     }
     
     fun resize(cols: Int, rows: Int) {
