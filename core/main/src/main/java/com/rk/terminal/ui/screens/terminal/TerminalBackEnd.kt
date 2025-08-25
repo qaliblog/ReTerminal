@@ -28,6 +28,24 @@ import java.io.File
 import java.io.FileOutputStream
 
 class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : TerminalViewClient, TerminalSessionClient {
+    
+    init {
+        Log.d("TerminalBackEnd", "TerminalBackEnd initialized for SSH support")
+        // Ensure terminal can receive focus and input
+        terminal.isFocusable = true
+        terminal.isFocusableInTouchMode = true
+        
+        // Request focus for the terminal
+        terminal.requestFocus()
+        
+        // Log when terminal receives/loses focus
+        terminal.setOnFocusChangeListener { _, hasFocus ->
+            Log.d("TerminalBackEnd", "Terminal focus changed: $hasFocus")
+            if (hasFocus) {
+                checkSshSessionForInput()
+            }
+        }
+    }
     override fun onTextChanged(changedSession: TerminalSession) {
         terminal.onScreenUpdated()
         Log.v("TerminalBackEnd", "Terminal text changed for session")
@@ -166,7 +184,7 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     override fun copyModeChanged(copyMode: Boolean) {}
     
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-        Log.v("TerminalBackEnd", "onKeyDown called - keyCode: $keyCode, session: ${session.javaClass.simpleName}")
+        Log.d("TerminalBackEnd", "🔥 onKeyDown called - keyCode: $keyCode, char: '${e.unicodeChar.toChar()}', session: ${session.javaClass.simpleName}")
         
         // Handle session termination on Enter for non-running sessions
         if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
@@ -291,7 +309,7 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     }
     
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
-        Log.v("TerminalBackEnd", "onCodePoint called - codepoint: $codePoint, char: '${codePoint.toChar()}', ctrlDown: $ctrlDown")
+        Log.d("TerminalBackEnd", "🔥 onCodePoint called - codepoint: $codePoint, char: '${codePoint.toChar()}', ctrlDown: $ctrlDown")
         
         val service = activity.sessionBinder?.getService()
         if (service?.isInteractiveSsh(session) == true) {
@@ -346,5 +364,25 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     private fun showSoftInput() {
         terminal.requestFocus()
         KeyboardUtils.showSoftInput(terminal)
+    }
+    
+    private fun checkSshSessionForInput() {
+        Log.d("TerminalBackEnd", "Checking SSH session for input capability")
+        val service = activity.sessionBinder?.getService()
+        val currentSession = terminal.mEmulator?.session
+        
+        if (currentSession != null && service?.isInteractiveSsh(currentSession) == true) {
+            val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
+            Log.d("TerminalBackEnd", "SSH session found: ${sshTerm?.getConnectionInfo()}")
+            
+            // Test the SSH connection by sending a test character
+            sshTerm?.let { ssh ->
+                Log.d("TerminalBackEnd", "Testing SSH input with test character")
+                // Don't send automatically, just log that we could
+                Log.d("TerminalBackEnd", "SSH ready for input - connection info: ${ssh.getConnectionInfo()}")
+            }
+        } else {
+            Log.d("TerminalBackEnd", "No SSH session found or session not interactive")
+        }
     }
 }

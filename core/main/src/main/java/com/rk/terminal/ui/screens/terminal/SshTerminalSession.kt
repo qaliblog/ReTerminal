@@ -303,6 +303,16 @@ class SshTerminalSession(
                     kotlinx.coroutines.delay(1000)
                     Log.d(TAG, "Testing input forwarding with character 'a'")
                     sendInput("a")
+                    
+                    // Give user a hint about input
+                    kotlinx.coroutines.delay(500)
+                    sshOutputStream!!.write("# Try typing 'ls' and press Enter\r\n".toByteArray())
+                    sshOutputStream!!.flush()
+                    
+                    // After a delay, simulate typing 'ls' to test the pipeline
+                    kotlinx.coroutines.delay(3000)
+                    Log.d(TAG, "Auto-testing: simulating 'ls' command")
+                    simulateCommand("ls")
                 }
                 
                 Log.d(TAG, "SSH terminal initialization completed")
@@ -392,6 +402,27 @@ class SshTerminalSession(
     fun testInput() {
         Log.d(TAG, "Testing SSH input with 'ls' command")
         sendCommand("ls")
+    }
+    
+    fun simulateTyping(text: String) {
+        Log.d(TAG, "Simulating typing: '$text'")
+        scope.launch {
+            for (char in text) {
+                if (isRunning) {
+                    sendInput(char.toString())
+                    kotlinx.coroutines.delay(100) // Simulate typing speed
+                }
+            }
+        }
+    }
+    
+    fun simulateCommand(command: String) {
+        Log.d(TAG, "Simulating command: '$command'")
+        scope.launch {
+            simulateTyping(command)
+            kotlinx.coroutines.delay(200)
+            sendInput("\r\n") // Send Enter
+        }
     }
     
     fun isReady(): Boolean {
