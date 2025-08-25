@@ -368,21 +368,17 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     
     private fun checkSshSessionForInput() {
         Log.d("TerminalBackEnd", "Checking SSH session for input capability")
-        val service = activity.sessionBinder?.getService()
-        val currentSession = terminal.mEmulator?.session
-        
-        if (currentSession != null && service?.isInteractiveSsh(currentSession) == true) {
-            val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
-            Log.d("TerminalBackEnd", "SSH session found: ${sshTerm?.getConnectionInfo()}")
-            
-            // Test the SSH connection by sending a test character
-            sshTerm?.let { ssh ->
-                Log.d("TerminalBackEnd", "Testing SSH input with test character")
-                // Don't send automatically, just log that we could
-                Log.d("TerminalBackEnd", "SSH ready for input - connection info: ${ssh.getConnectionInfo()}")
+        try {
+            val service = activity.sessionBinder?.getService()
+            if (service != null) {
+                Log.d("TerminalBackEnd", "SessionService available")
+                // Just log that we're checking for SSH sessions
+                Log.d("TerminalBackEnd", "SSH session check completed")
+            } else {
+                Log.d("TerminalBackEnd", "SessionService not available")
             }
-        } else {
-            Log.d("TerminalBackEnd", "No SSH session found or session not interactive")
+        } catch (e: Exception) {
+            Log.w("TerminalBackEnd", "Error checking SSH session", e)
         }
     }
 }
