@@ -150,7 +150,10 @@ class MainActivity : ComponentActivity() {
     }
     
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
-        android.util.Log.d("MainActivity", "🔥🔥 ACTIVITY onKeyDown - keyCode: $keyCode, char: '${event?.unicodeChar?.toChar()}'")
+        android.util.Log.d("MainActivity", "🔥🔥🔥 ACTIVITY onKeyDown CALLED - keyCode: $keyCode, char: '${event?.unicodeChar?.toChar()}'")
+        
+        // Always log this to verify the method is being called
+        android.util.Log.d("MainActivity", "🔥🔥🔥 ACTIVITY INPUT DETECTED!!!")
         
         // Try to forward input to SSH session if available
         val service = sessionBinder?.getService()

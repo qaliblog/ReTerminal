@@ -309,15 +309,28 @@ class SshTerminalSession(
                     sshOutputStream!!.write("# Try typing 'ls' and press Enter\r\n".toByteArray())
                     sshOutputStream!!.flush()
                     
+                    // Immediate test to verify SSH pipeline
+                    kotlinx.coroutines.delay(1000)
+                    Log.d(TAG, "Immediate test: sending direct command")
+                    sendCommand("echo 'TEST: SSH pipeline working'")
+                    
                     // After a delay, simulate typing 'ls' to test the pipeline
-                    kotlinx.coroutines.delay(3000)
+                    kotlinx.coroutines.delay(2000)
                     Log.d(TAG, "Auto-testing: simulating 'ls' command")
                     simulateCommand("ls")
                     
                     // Additional test after more delay
-                    kotlinx.coroutines.delay(5000)
+                    kotlinx.coroutines.delay(3000)
                     Log.d(TAG, "Auto-testing: simulating 'whoami' command")
                     simulateCommand("whoami")
+                    
+                    // Test activity input by sending a message
+                    kotlinx.coroutines.delay(2000)
+                    sendCommand("echo 'Now try typing on keyboard - activity input should work'")
+                    
+                    // Final test after a longer delay
+                    kotlinx.coroutines.delay(5000)
+                    sendCommand("echo 'If you see this, SSH works but keyboard input may need fixing'")
                 }
                 
                 Log.d(TAG, "SSH terminal initialization completed")
