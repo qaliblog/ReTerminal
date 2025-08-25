@@ -30,6 +30,7 @@ import java.io.FileOutputStream
 class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : TerminalViewClient, TerminalSessionClient {
     override fun onTextChanged(changedSession: TerminalSession) {
         terminal.onScreenUpdated()
+        Log.v("TerminalBackEnd", "Terminal text changed for session")
     }
     
     override fun onTitleChanged(changedSession: TerminalSession) {
@@ -264,10 +265,17 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     }
     
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        Log.v("TerminalBackEnd", "onCodePoint called - codepoint: $codePoint, char: '${codePoint.toChar()}', ctrlDown: $ctrlDown")
+        
         val service = activity.sessionBinder?.getService()
         if (service?.isInteractiveSsh(session) == true) {
             val ch = Character.toChars(codePoint)
             val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+            
+            if (sshTerm == null) {
+                Log.w("TerminalBackEnd", "SSH terminal session is null for session")
+                return false
+            }
             
             // Use enhanced input handling with proper control key support
             val inputStr = if (ctrlDown) {
@@ -284,13 +292,17 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
             }
             
             Log.d("TerminalBackEnd", "SSH input - codepoint: $codePoint, char: '${inputStr}', ctrlDown: $ctrlDown")
-            sshTerm?.sendInput(inputStr)
+            Log.d("TerminalBackEnd", "SSH connection info: ${sshTerm.getConnectionInfo()}")
+            
+            sshTerm.sendInput(inputStr)
             
             // Force terminal update to show the character being typed
             activity.runOnUiThread {
                 terminal.onScreenUpdated()
             }
             return true
+        } else {
+            Log.v("TerminalBackEnd", "Not an SSH session or service unavailable")
         }
         return false
     }

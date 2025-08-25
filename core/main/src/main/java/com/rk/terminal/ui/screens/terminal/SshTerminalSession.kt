@@ -99,9 +99,12 @@ class SshTerminalSession(
             // Replace TerminalSession streams with SSH channel streams so Terminal handles I/O natively
             replaceTerminalStreams()
             isRunning = true
-            if (!streamsReplaced) {
-                startIoForwarding()
-            }
+            
+            // Always start I/O forwarding to ensure input works properly
+            startIoForwarding()
+            
+            // Log the current status
+            Log.d(TAG, "SSH session setup - Running: $isRunning, Streams replaced: $streamsReplaced")
             
             Log.d(TAG, "SSH terminal session started successfully")
             Result.success(terminalSession!!)
@@ -215,7 +218,7 @@ class SshTerminalSession(
     
     private fun startIoForwarding() {
         // Enhanced I/O forwarding as fallback when stream replacement fails
-        Log.d(TAG, "Starting I/O forwarding for SSH session")
+        Log.d(TAG, "Starting I/O forwarding for SSH session (streams replaced: $streamsReplaced)")
         
         // Forward output from SSH to terminal emulator
         scope.launch {
@@ -284,6 +287,10 @@ class SshTerminalSession(
                     Log.d(TAG, "Sending test command: echo")
                     sshOutputStream!!.write("echo 'SSH connection ready - type commands:'\r\n".toByteArray())
                     sshOutputStream!!.flush()
+                    
+                    // Wait a moment and then show status
+                    kotlinx.coroutines.delay(500)
+                    Log.d(TAG, "SSH terminal ready for input: ${getConnectionInfo()}")
                 }
                 
                 Log.d(TAG, "SSH terminal initialization completed")
@@ -298,26 +305,30 @@ class SshTerminalSession(
             if (isRunning && sshOutputStream != null) {
                 val inputStr = String(data)
                 Log.d(TAG, "Sending input to SSH: '$inputStr' (${data.size} bytes)")
+                Log.d(TAG, "SSH status - Running: $isRunning, Channel connected: ${shellChannel?.isConnected}, Streams replaced: $streamsReplaced")
                 
                 // Write to SSH output stream
                 sshOutputStream!!.write(data)
                 sshOutputStream!!.flush()
                 
-                // If stream replacement failed, manually echo the input for better UX
-                if (!streamsReplaced && terminalSession != null) {
-                    Log.d(TAG, "Manually echoing input since streams not replaced")
+                // Always manually echo the input so user can see typing immediately
+                if (terminalSession != null) {
+                    Log.d(TAG, "Echoing input to terminal display")
                     // Echo the input to the terminal so user can see what they're typing
                     if (inputStr.isNotEmpty() && !inputStr.contains('\n') && !inputStr.contains('\r')) {
-                        // Echo character by character for better visual feedback
+                        // Echo character by character for immediate visual feedback
                         for (byte in data) {
                             terminalSession!!.emulator?.append(byteArrayOf(byte), 1)
                         }
+                        
+                        // Force terminal update
+                        terminalSessionClient.onTextChanged(terminalSession!!)
                     }
                 }
                 
-                Log.v(TAG, "Input sent successfully to SSH")
+                Log.d(TAG, "Input sent successfully to SSH and echoed to terminal")
             } else {
-                Log.w(TAG, "Cannot send input - SSH not running or output stream null")
+                Log.w(TAG, "Cannot send input - Running: $isRunning, OutputStream null: ${sshOutputStream == null}")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send input to SSH", e)
@@ -363,7 +374,16 @@ class SshTerminalSession(
     }
     
     fun getConnectionInfo(): String {
-        return "SSH Session: $sshSessionId, Running: $isRunning, Streams replaced: $streamsReplaced, Channel connected: ${shellChannel?.isConnected}"
+        return "SSH Session: $sshSessionId, Running: $isRunning, Streams replaced: $streamsReplaced, Channel connected: ${shellChannel?.isConnected}, Input stream: ${sshInputStream != null}, Output stream: ${sshOutputStream != null}"
+    }
+    
+    fun testInput() {
+        Log.d(TAG, "Testing SSH input with 'ls' command")
+        sendCommand("ls")
+    }
+    
+    fun isReady(): Boolean {
+        return isRunning && shellChannel?.isConnected == true && sshInputStream != null && sshOutputStream != null
     }
     
     fun resize(cols: Int, rows: Int) {
