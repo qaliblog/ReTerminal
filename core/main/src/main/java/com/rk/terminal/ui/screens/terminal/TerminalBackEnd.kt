@@ -272,7 +272,7 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
             // Use enhanced input handling with proper control key support
             val inputStr = if (ctrlDown) {
                 // Handle Ctrl+key combinations
-                when (codePoint.toChar().toLowerCase()) {
+                when (codePoint.toChar().lowercaseChar()) {
                     'c' -> "\u0003" // Ctrl+C (SIGINT)
                     'd' -> "\u0004" // Ctrl+D (EOF)
                     'z' -> "\u001a" // Ctrl+Z (SIGTSTP)
