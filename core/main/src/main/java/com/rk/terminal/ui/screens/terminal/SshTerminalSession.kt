@@ -313,6 +313,11 @@ class SshTerminalSession(
                     kotlinx.coroutines.delay(3000)
                     Log.d(TAG, "Auto-testing: simulating 'ls' command")
                     simulateCommand("ls")
+                    
+                    // Additional test after more delay
+                    kotlinx.coroutines.delay(5000)
+                    Log.d(TAG, "Auto-testing: simulating 'whoami' command")
+                    simulateCommand("whoami")
                 }
                 
                 Log.d(TAG, "SSH terminal initialization completed")

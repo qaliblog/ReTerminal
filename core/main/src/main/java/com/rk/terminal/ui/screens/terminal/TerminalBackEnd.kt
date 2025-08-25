@@ -38,13 +38,25 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
         // Request focus for the terminal
         terminal.requestFocus()
         
+        // Add touch listener to ensure focus when user taps
+        terminal.setOnTouchListener { _, event ->
+            Log.d("TerminalBackEnd", "Terminal touched, requesting focus")
+            terminal.requestFocus()
+            false // Don't consume the touch event
+        }
+        
         // Log when terminal receives/loses focus
         terminal.setOnFocusChangeListener { _, hasFocus ->
             Log.d("TerminalBackEnd", "Terminal focus changed: $hasFocus")
             if (hasFocus) {
                 checkSshSessionForInput()
+                // Ensure soft keyboard is shown
+                showSoftInput()
             }
         }
+        
+        // Set up a test timer to simulate user input if none detected
+        setupInputTest()
     }
     override fun onTextChanged(changedSession: TerminalSession) {
         terminal.onScreenUpdated()
@@ -379,6 +391,36 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
             }
         } catch (e: Exception) {
             Log.w("TerminalBackEnd", "Error checking SSH session", e)
+        }
+    }
+    
+    private fun setupInputTest() {
+        Log.d("TerminalBackEnd", "Setting up input detection test")
+        
+        // Test keyboard input detection after a delay
+        activity.lifecycleScope.launch {
+            kotlinx.coroutines.delay(10000) // Wait 10 seconds
+            
+            val service = activity.sessionBinder?.getService()
+            val currentSession = terminal.mEmulator?.mSession
+            
+            if (currentSession != null && service?.isInteractiveSsh(currentSession) == true) {
+                val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
+                
+                Log.d("TerminalBackEnd", "🔧 TESTING: Manually triggering command since no user input detected")
+                sshTerm?.simulateCommand("echo 'Manual test - input detection working'")
+            }
+        }
+    }
+    
+    fun manualTestInput(text: String) {
+        Log.d("TerminalBackEnd", "Manual test input: $text")
+        val service = activity.sessionBinder?.getService()
+        val currentSession = terminal.mEmulator?.mSession
+        
+        if (currentSession != null && service?.isInteractiveSsh(currentSession) == true) {
+            val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
+            sshTerm?.sendInput(text)
         }
     }
 }

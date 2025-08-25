@@ -147,4 +147,55 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
+    
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        android.util.Log.d("MainActivity", "🔥🔥 ACTIVITY onKeyDown - keyCode: $keyCode, char: '${event?.unicodeChar?.toChar()}'")
+        
+        // Try to forward input to SSH session if available
+        val service = sessionBinder?.getService()
+        if (service != null) {
+            // Get the current session and check if it's SSH
+            val currentSessionId = service.currentSession.value.first
+            val currentSession = service.getSession(currentSessionId)
+            
+            if (currentSession != null && service.isInteractiveSsh(currentSession)) {
+                val sshTerm = service.getSshTerminalSessionForTerminalSession(currentSession)
+                
+                if (sshTerm != null) {
+                    android.util.Log.d("MainActivity", "🔥🔥 Forwarding key to SSH: $keyCode")
+                    
+                    // Handle specific keys
+                    when (keyCode) {
+                        android.view.KeyEvent.KEYCODE_ENTER -> {
+                            sshTerm.sendInput("\r\n")
+                            return true
+                        }
+                        android.view.KeyEvent.KEYCODE_DEL -> {
+                            sshTerm.sendInput("\u007f")
+                            return true
+                        }
+                        in android.view.KeyEvent.KEYCODE_A..android.view.KeyEvent.KEYCODE_Z -> {
+                            val char = ('a' + (keyCode - android.view.KeyEvent.KEYCODE_A)).toString()
+                            android.util.Log.d("MainActivity", "🔥🔥 Sending letter: $char")
+                            sshTerm.sendInput(char)
+                            return true
+                        }
+                        in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
+                            val char = ('0' + (keyCode - android.view.KeyEvent.KEYCODE_0)).toString()
+                            android.util.Log.d("MainActivity", "🔥🔥 Sending number: $char")
+                            sshTerm.sendInput(char)
+                            return true
+                        }
+                        android.view.KeyEvent.KEYCODE_SPACE -> {
+                            android.util.Log.d("MainActivity", "🔥🔥 Sending space")
+                            sshTerm.sendInput(" ")
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        
+        return super.onKeyDown(keyCode, event)
+    }
 }
