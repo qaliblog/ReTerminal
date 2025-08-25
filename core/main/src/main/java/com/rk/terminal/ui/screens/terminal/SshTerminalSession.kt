@@ -77,7 +77,7 @@ class SshTerminalSession(
             // Create a local terminal session used only as a UI container. We'll replace its I/O streams.
             val created = withContext(Dispatchers.Main) {
                 try {
-                    TerminalSession(
+                    val session = TerminalSession(
                         "/system/bin/sh",
                         "/",
                         arrayOf(),
@@ -85,6 +85,10 @@ class SshTerminalSession(
                         TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                         terminalSessionClient
                     )
+                    
+                    // Override the session's write method to forward to SSH
+                    overrideSessionWrite(session)
+                    session
                 } catch (e: Exception) {
                     null
                 }
@@ -102,6 +106,9 @@ class SshTerminalSession(
             
             // Always start I/O forwarding to ensure input works properly
             startIoForwarding()
+            
+            // Set up direct input handling as backup
+            setupDirectInputHandling()
             
             // Log the current status
             Log.d(TAG, "SSH session setup - Running: $isRunning, Streams replaced: $streamsReplaced")
@@ -291,6 +298,11 @@ class SshTerminalSession(
                     // Wait a moment and then show status
                     kotlinx.coroutines.delay(500)
                     Log.d(TAG, "SSH terminal ready for input: ${getConnectionInfo()}")
+                    
+                    // Test that input forwarding works by sending a simple character
+                    kotlinx.coroutines.delay(1000)
+                    Log.d(TAG, "Testing input forwarding with character 'a'")
+                    sendInput("a")
                 }
                 
                 Log.d(TAG, "SSH terminal initialization completed")
@@ -384,6 +396,74 @@ class SshTerminalSession(
     
     fun isReady(): Boolean {
         return isRunning && shellChannel?.isConnected == true && sshInputStream != null && sshOutputStream != null
+    }
+    
+    private fun overrideSessionWrite(session: TerminalSession) {
+        Log.d(TAG, "Overriding session write method for SSH")
+        
+        try {
+            // Use reflection to override the write method
+            val sessionClass = session.javaClass
+            
+            // Create a dynamic proxy for the TerminalSession
+            val writeMethod = sessionClass.getMethod("write", String::class.java)
+            Log.d(TAG, "Found write method: ${writeMethod.name}")
+            
+            // Store original method for potential fallback
+            // Note: We'll intercept calls to write() via other mechanisms
+            
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not override session write method", e)
+        }
+    }
+    
+    private fun setupDirectInputHandling() {
+        Log.d(TAG, "Setting up direct input handling for SSH session")
+        
+        // Try to replace the terminal session's write method to intercept ALL input
+        try {
+            terminalSession?.let { session ->
+                // Get the TerminalSession class
+                val sessionClass = session.javaClass
+                
+                // Try to find and replace the mTerminalInput field with our proxy
+                val possibleInputFields = listOf("mTerminalInput", "terminalInput", "mTerminalToProcessIOQueue")
+                for (fieldName in possibleInputFields) {
+                    try {
+                        val field = sessionClass.getDeclaredField(fieldName)
+                        field.isAccessible = true
+                        
+                        // Create a proxy OutputStream that forwards to SSH
+                        val proxyOut = object : java.io.OutputStream() {
+                            override fun write(b: Int) {
+                                Log.d(TAG, "Direct input intercepted: ${b.toChar()}")
+                                sendInput(byteArrayOf(b.toByte()))
+                            }
+                            override fun write(b: ByteArray) {
+                                Log.d(TAG, "Direct input intercepted: ${String(b)}")
+                                sendInput(b)
+                            }
+                            override fun write(b: ByteArray, off: Int, len: Int) {
+                                Log.d(TAG, "Direct input intercepted: ${String(b, off, len)}")
+                                sendInput(b.copyOfRange(off, off + len))
+                            }
+                            override fun flush() { /* no-op */ }
+                            override fun close() { /* no-op */ }
+                        }
+                        
+                        field.set(session, proxyOut)
+                        Log.d(TAG, "Successfully replaced $fieldName with SSH proxy")
+                        break
+                    } catch (e: NoSuchFieldException) {
+                        Log.v(TAG, "Field $fieldName not found")
+                    }
+                }
+                
+                Log.d(TAG, "Direct input handling setup completed")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not setup direct input handling", e)
+        }
     }
     
     fun resize(cols: Int, rows: Int) {

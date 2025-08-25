@@ -166,20 +166,46 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     override fun copyModeChanged(copyMode: Boolean) {}
     
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-                    if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
-                activity.sessionBinder?.terminateSession(activity.sessionBinder!!.getService().currentSession.value.first)
-                if (activity.sessionBinder!!.getService().sessionList.isEmpty()){
-                    // Move app to background instead of closing
-                    activity.moveTaskToBack(true)
-                }else{
-                    changeSession(activity,activity.sessionBinder!!.getService().sessionList.keys.first())
-                }
-                return true
+        Log.v("TerminalBackEnd", "onKeyDown called - keyCode: $keyCode, session: ${session.javaClass.simpleName}")
+        
+        // Handle session termination on Enter for non-running sessions
+        if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
+            activity.sessionBinder?.terminateSession(activity.sessionBinder!!.getService().currentSession.value.first)
+            if (activity.sessionBinder!!.getService().sessionList.isEmpty()){
+                // Move app to background instead of closing
+                activity.moveTaskToBack(true)
+            }else{
+                changeSession(activity,activity.sessionBinder!!.getService().sessionList.keys.first())
             }
-        // For interactive SSH, forward navigation/control keys explicitly if needed
+            return true
+        }
+        
+        // For interactive SSH, forward ALL keys explicitly
         val service = activity.sessionBinder?.getService()
         if (service?.isInteractiveSsh(session) == true) {
+            Log.d("TerminalBackEnd", "SSH session detected in onKeyDown for keyCode: $keyCode")
             val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+            
+            // Handle regular character keys that might not go through onCodePoint
+            when (keyCode) {
+                in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> {
+                    val char = ('a' + (keyCode - KeyEvent.KEYCODE_A)).toString()
+                    Log.d("TerminalBackEnd", "Intercepting letter key: $char")
+                    sshTerm?.sendInput(char)
+                    return true
+                }
+                in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> {
+                    val char = ('0' + (keyCode - KeyEvent.KEYCODE_0)).toString()
+                    Log.d("TerminalBackEnd", "Intercepting number key: $char")
+                    sshTerm?.sendInput(char)
+                    return true
+                }
+                KeyEvent.KEYCODE_SPACE -> {
+                    Log.d("TerminalBackEnd", "Intercepting space key")
+                    sshTerm?.sendInput(" ")
+                    return true
+                }
+            }
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     Log.v("TerminalBackEnd", "Sending UP arrow key to SSH")
