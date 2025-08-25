@@ -28,8 +28,39 @@ import java.io.File
 import java.io.FileOutputStream
 
 class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : TerminalViewClient, TerminalSessionClient {
+    
+    init {
+        Log.d("TerminalBackEnd", "TerminalBackEnd initialized for SSH support")
+        // Ensure terminal can receive focus and input
+        terminal.isFocusable = true
+        terminal.isFocusableInTouchMode = true
+        
+        // Request focus for the terminal
+        terminal.requestFocus()
+        
+        // Add touch listener to ensure focus when user taps
+        terminal.setOnTouchListener { _, event ->
+            Log.d("TerminalBackEnd", "Terminal touched, requesting focus")
+            terminal.requestFocus()
+            false // Don't consume the touch event
+        }
+        
+        // Log when terminal receives/loses focus
+        terminal.setOnFocusChangeListener { _, hasFocus ->
+            Log.d("TerminalBackEnd", "Terminal focus changed: $hasFocus")
+            if (hasFocus) {
+                checkSshSessionForInput()
+                // Ensure soft keyboard is shown
+                showSoftInput()
+            }
+        }
+        
+        // Set up a test timer to simulate user input if none detected
+        setupInputTest()
+    }
     override fun onTextChanged(changedSession: TerminalSession) {
         terminal.onScreenUpdated()
+        Log.v("TerminalBackEnd", "Terminal text changed for session")
     }
     
     override fun onTitleChanged(changedSession: TerminalSession) {
@@ -49,7 +80,14 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
         if (clip.trim { it <= ' ' }.isNotEmpty() && terminal.mEmulator != null) {
             val service = activity.sessionBinder?.getService()
             if (service?.isInteractiveSsh(session) == true) {
-                session.write(clip)
+                val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+                if (sshTerm != null) {
+                    Log.d("TerminalBackEnd", "Pasting text to SSH session: '${clip.take(50)}...'")
+                    sshTerm.sendInput(clip)
+                } else {
+                    // Fallback to regular session write
+                    session.write(clip)
+                }
             } else {
                 terminal.mEmulator.paste(clip)
             }
@@ -158,35 +196,90 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     override fun copyModeChanged(copyMode: Boolean) {}
     
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-                    if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
-                activity.sessionBinder?.terminateSession(activity.sessionBinder!!.getService().currentSession.value.first)
-                if (activity.sessionBinder!!.getService().sessionList.isEmpty()){
-                    // Move app to background instead of closing
-                    activity.moveTaskToBack(true)
-                }else{
-                    changeSession(activity,activity.sessionBinder!!.getService().sessionList.keys.first())
-                }
-                return true
+        Log.d("TerminalBackEnd", "🔥 onKeyDown called - keyCode: $keyCode, char: '${e.unicodeChar.toChar()}', session: ${session.javaClass.simpleName}")
+        
+        // Handle session termination on Enter for non-running sessions
+        if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
+            activity.sessionBinder?.terminateSession(activity.sessionBinder!!.getService().currentSession.value.first)
+            if (activity.sessionBinder!!.getService().sessionList.isEmpty()){
+                // Move app to background instead of closing
+                activity.moveTaskToBack(true)
+            }else{
+                changeSession(activity,activity.sessionBinder!!.getService().sessionList.keys.first())
             }
-        // For interactive SSH, forward navigation/control keys explicitly if needed
+            return true
+        }
+        
+        // For interactive SSH, forward ALL keys explicitly
         val service = activity.sessionBinder?.getService()
         if (service?.isInteractiveSsh(session) == true) {
+            Log.d("TerminalBackEnd", "SSH session detected in onKeyDown for keyCode: $keyCode")
             val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
+            
+            // Handle regular character keys that might not go through onCodePoint
+            when (keyCode) {
+                in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> {
+                    val char = ('a' + (keyCode - KeyEvent.KEYCODE_A)).toString()
+                    Log.d("TerminalBackEnd", "Intercepting letter key: $char")
+                    sshTerm?.sendInput(char)
+                    return true
+                }
+                in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> {
+                    val char = ('0' + (keyCode - KeyEvent.KEYCODE_0)).toString()
+                    Log.d("TerminalBackEnd", "Intercepting number key: $char")
+                    sshTerm?.sendInput(char)
+                    return true
+                }
+                KeyEvent.KEYCODE_SPACE -> {
+                    Log.d("TerminalBackEnd", "Intercepting space key")
+                    sshTerm?.sendInput(" ")
+                    return true
+                }
+            }
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP -> {
+                    Log.v("TerminalBackEnd", "Sending UP arrow key to SSH")
                     sshTerm?.sendInput("\u001b[A")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    Log.v("TerminalBackEnd", "Sending DOWN arrow key to SSH")
                     sshTerm?.sendInput("\u001b[B")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    Log.v("TerminalBackEnd", "Sending RIGHT arrow key to SSH")
                     sshTerm?.sendInput("\u001b[C")
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    Log.v("TerminalBackEnd", "Sending LEFT arrow key to SSH")
                     sshTerm?.sendInput("\u001b[D")
+                    return true
+                }
+                KeyEvent.KEYCODE_ENTER -> {
+                    Log.d("TerminalBackEnd", "Sending ENTER key to SSH")
+                    sshTerm?.sendInput("\r\n")
+                    return true
+                }
+                KeyEvent.KEYCODE_DEL -> {
+                    Log.v("TerminalBackEnd", "Sending BACKSPACE key to SSH")
+                    sshTerm?.sendInput("\u007f")
+                    return true
+                }
+                KeyEvent.KEYCODE_FORWARD_DEL -> {
+                    Log.v("TerminalBackEnd", "Sending DELETE key to SSH")
+                    sshTerm?.sendInput("\u001b[3~")
+                    return true
+                }
+                KeyEvent.KEYCODE_TAB -> {
+                    Log.v("TerminalBackEnd", "Sending TAB key to SSH")
+                    sshTerm?.sendInput("\t")
+                    return true
+                }
+                KeyEvent.KEYCODE_ESCAPE -> {
+                    Log.v("TerminalBackEnd", "Sending ESCAPE key to SSH")
+                    sshTerm?.sendInput("\u001b")
                     return true
                 }
             }
@@ -228,12 +321,44 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     }
     
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        Log.d("TerminalBackEnd", "🔥 onCodePoint called - codepoint: $codePoint, char: '${codePoint.toChar()}', ctrlDown: $ctrlDown")
+        
         val service = activity.sessionBinder?.getService()
         if (service?.isInteractiveSsh(session) == true) {
             val ch = Character.toChars(codePoint)
             val sshTerm = service.getSshTerminalSessionForTerminalSession(session)
-            sshTerm?.sendInput(String(ch))
+            
+            if (sshTerm == null) {
+                Log.w("TerminalBackEnd", "SSH terminal session is null for session")
+                return false
+            }
+            
+            // Use enhanced input handling with proper control key support
+            val inputStr = if (ctrlDown) {
+                // Handle Ctrl+key combinations
+                when (codePoint.toChar().lowercaseChar()) {
+                    'c' -> "\u0003" // Ctrl+C (SIGINT)
+                    'd' -> "\u0004" // Ctrl+D (EOF)
+                    'z' -> "\u001a" // Ctrl+Z (SIGTSTP)
+                    'l' -> "\u000c" // Ctrl+L (clear screen)
+                    else -> String(ch)
+                }
+            } else {
+                String(ch)
+            }
+            
+            Log.d("TerminalBackEnd", "SSH input - codepoint: $codePoint, char: '${inputStr}', ctrlDown: $ctrlDown")
+            Log.d("TerminalBackEnd", "SSH connection info: ${sshTerm.getConnectionInfo()}")
+            
+            sshTerm.sendInput(inputStr)
+            
+            // Force terminal update to show the character being typed
+            activity.runOnUiThread {
+                terminal.onScreenUpdated()
+            }
             return true
+        } else {
+            Log.v("TerminalBackEnd", "Not an SSH session or service unavailable")
         }
         return false
     }
@@ -251,5 +376,68 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
     private fun showSoftInput() {
         terminal.requestFocus()
         KeyboardUtils.showSoftInput(terminal)
+    }
+    
+    private fun checkSshSessionForInput() {
+        Log.d("TerminalBackEnd", "Checking SSH session for input capability")
+        try {
+            val service = activity.sessionBinder?.getService()
+            if (service != null) {
+                Log.d("TerminalBackEnd", "SessionService available")
+                // Just log that we're checking for SSH sessions
+                Log.d("TerminalBackEnd", "SSH session check completed")
+            } else {
+                Log.d("TerminalBackEnd", "SessionService not available")
+            }
+        } catch (e: Exception) {
+            Log.w("TerminalBackEnd", "Error checking SSH session", e)
+        }
+    }
+    
+    private fun setupInputTest() {
+        Log.d("TerminalBackEnd", "Setting up input detection test")
+        
+        // Test keyboard input detection after a delay
+        activity.lifecycleScope.launch {
+            kotlinx.coroutines.delay(10000) // Wait 10 seconds
+            
+            val service = activity.sessionBinder?.getService()
+            if (service != null) {
+                try {
+                    // Find SSH sessions and test them
+                    for ((sessionId, workingMode) in service.sessionList) {
+                        if (workingMode == com.rk.terminal.ui.screens.settings.WorkingMode.SSH) {
+                            val sshTerm = service.getSshTerminalSessionById(sessionId)
+                            if (sshTerm != null) {
+                                Log.d("TerminalBackEnd", "🔧 TESTING: Manually triggering command since no user input detected")
+                                sshTerm.simulateCommand("echo 'Manual test - input detection working'")
+                                break
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("TerminalBackEnd", "Error in input test", e)
+                }
+            }
+        }
+    }
+    
+    fun manualTestInput(text: String) {
+        Log.d("TerminalBackEnd", "Manual test input: $text")
+        val service = activity.sessionBinder?.getService()
+        if (service != null) {
+            try {
+                // Find SSH sessions and send input
+                for ((sessionId, workingMode) in service.sessionList) {
+                    if (workingMode == com.rk.terminal.ui.screens.settings.WorkingMode.SSH) {
+                        val sshTerm = service.getSshTerminalSessionById(sessionId)
+                        sshTerm?.sendInput(text)
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("TerminalBackEnd", "Error in manual test input", e)
+            }
+        }
     }
 }

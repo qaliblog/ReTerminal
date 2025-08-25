@@ -336,17 +336,30 @@ Use the file manager to browse remote files.
 
                      // Attempt to create an interactive SSH terminal session
                      try {
+                         Log.d("MkSession", "Creating interactive SSH terminal session")
                          val sshTerminal = SshTerminalSession(sshSessionId, sessionClient)
-                         val terminalResult = withContext(Dispatchers.IO) { sshTerminal.start() }
+                         val terminalResult = withContext(Dispatchers.IO) { 
+                             try {
+                                 sshTerminal.start()
+                             } catch (e: Exception) {
+                                 Log.e("MkSession", "SSH terminal start error", e)
+                                 Result.failure(e)
+                             }
+                         }
+                         
                          if (terminalResult.isSuccess) {
+                             Log.d("MkSession", "SSH interactive session created successfully")
                              // Register this interactive SSH session with the service for I/O bridging
                              activity.sessionBinder?.getService()?.setSshTerminalSession(session_id, sshTerminal)
                              return@withContext terminalResult.getOrThrow()
                          } else {
-                             Log.w("MkSession", "SSH interactive session fallback to bridge: ${terminalResult.exceptionOrNull()?.message}")
+                             val error = terminalResult.exceptionOrNull()
+                             Log.w("MkSession", "SSH interactive session failed, will try bridge fallback", error)
+                             // Continue to bridge fallback instead of returning error immediately
                          }
                      } catch (e: Exception) {
-                         Log.w("MkSession", "SSH interactive session start failed, using bridge", e)
+                         Log.w("MkSession", "SSH interactive session creation failed completely", e)
+                         // Continue to bridge fallback
                      }
 
                      // Fallback: create an SSH bridge session that can execute remote-like commands
