@@ -132,7 +132,7 @@ chat 9999 server-ip
 | Key Combination | Action |
 |----------------|--------|
 | `Ctrl-a` | Prefix key |
-| `Ctrl-a \|` | Split horizontally |
+| `Ctrl-a |` | Split horizontally |
 | `Ctrl-a -` | Split vertically |
 | `Alt + arrows` | Navigate panes |
 | `Ctrl-a r` | Reload config |
@@ -160,6 +160,29 @@ fix-terminal
 stty echo
 reset
 export TERM=xterm-256color
+```
+
+### Termux SSH: Input/Enter not working
+- Press Ctrl-Q to resume if the session froze (XON/XOFF flow control)
+- Force a proper TTY when connecting:
+```bash
+ssh -tt user@host -p 8022
+```
+- Restore sane TTY with canonical mode, echo, and CR/LF mapping:
+```bash
+stty sane -ixon -ixoff icrnl -inlcr -igncr iutf8; reset
+```
+- Alternatively:
+```bash
+stty cooked echo icrnl onlcr -ixon -ixoff
+```
+- Persist this fix for interactive shells by adding to ~/.bashrc:
+```bash
+if [ -t 0 ]; then
+  stty sane -ixon -ixoff icrnl -inlcr -igncr iutf8
+  export TERM=xterm-256color
+  export LANG=C.UTF-8
+fi
 ```
 
 ### Tmux Session Issues

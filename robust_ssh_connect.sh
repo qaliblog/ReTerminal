@@ -76,8 +76,9 @@ print_status "Method 4: Interactive connection with terminal fix..."
 ssh -tt -p "$SSH_PORT" "$SSH_HOST" << 'EOF'
 # Immediate terminal fixes
 export TERM=xterm-256color
-stty echo
 stty sane
+stty cooked echo icrnl onlcr -ixon -ixoff iutf8
+reset
 clear
 
 echo "🔧 Terminal fixed automatically!"

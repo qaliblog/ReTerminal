@@ -5,11 +5,10 @@
 echo "🔧 Emergency SSH Terminal Fix"
 echo "================================"
 
-# Step 1: Fix terminal echo
-echo "Step 1: Fixing terminal echo..."
-stty echo
-stty icanon
-stty -raw
+# Step 1: Fix terminal echo and line discipline
+echo "Step 1: Fixing terminal echo and line discipline..."
+stty sane
+stty cooked echo icrnl onlcr -ixon -ixoff iutf8
 
 # Step 2: Set proper terminal type
 echo "Step 2: Setting terminal type..."
@@ -22,7 +21,7 @@ reset
 # Step 4: Apply comprehensive fixes
 echo "Step 4: Applying comprehensive fixes..."
 stty sane
-stty echo
+stty cooked echo icrnl onlcr -ixon -ixoff iutf8
 stty erase ^H
 stty kill ^U
 stty intr ^C

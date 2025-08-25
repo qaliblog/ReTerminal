@@ -66,11 +66,12 @@ fi
 print_status "Connecting to SSH server and running setup..."
 
 # Connect to SSH and run setup, then start interactive session
-ssh -t -p "$SSH_PORT" "$SSH_HOST" << 'EOF'
+ssh -tt -p "$SSH_PORT" "$SSH_HOST" << 'EOF'
 # Fix terminal issues first
 export TERM=xterm-256color
-stty echo
 stty sane
+stty cooked echo icrnl onlcr -ixon -ixoff iutf8
+reset
 
 echo "🚀 Running SSH environment setup..."
 
