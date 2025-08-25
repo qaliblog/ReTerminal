@@ -220,16 +220,29 @@ class SshTerminalSession(
         // Forward output from SSH to terminal emulator
         scope.launch {
             try {
-                val buffer = ByteArray(1024) // Smaller buffer for better responsiveness
+                val buffer = ByteArray(256) // Smaller buffer for immediate responsiveness
+                Log.d(TAG, "Starting SSH output forwarding")
                 while (isRunning && sshInputStream != null) {
                     val bytesRead = sshInputStream!!.read(buffer)
                     if (bytesRead > 0) {
                         val output = String(buffer, 0, bytesRead)
-                        Log.v(TAG, "SSH output: $output")
+                        Log.v(TAG, "SSH output ($bytesRead bytes): '$output'")
+                        
+                        // Forward to terminal emulator
                         terminalSession?.emulator?.append(buffer, bytesRead)
+                        
+                        // Force screen update
+                        terminalSession?.let { session ->
+                            withContext(Dispatchers.Main) {
+                                terminalSessionClient.onTextChanged(session)
+                            }
+                        }
                     } else if (bytesRead == -1) {
                         Log.d(TAG, "SSH input stream closed")
                         break
+                    } else {
+                        // No data available, small delay to prevent busy waiting
+                        kotlinx.coroutines.delay(10)
                     }
                 }
             } catch (e: Exception) {
@@ -237,6 +250,7 @@ class SshTerminalSession(
                     Log.e(TAG, "Error forwarding output from SSH", e)
                 }
             }
+            Log.d(TAG, "SSH output forwarding ended")
         }
         
         // Initialize the terminal with a welcome message and prompt
@@ -248,16 +262,28 @@ class SshTerminalSession(
                 // Send initial commands to set up the terminal properly
                 val initCommands = listOf(
                     "stty echo",           // Ensure echo is enabled
+                    "stty icanon",         // Enable canonical input processing
+                    "export TERM=xterm-256color", // Set proper terminal type
+                    "cd /data/data/com.termux/files/home 2>/dev/null || cd ~", // Set proper working directory
                     "export PS1='\\u@\\h:\\w\\$ '", // Set a proper prompt
-                    "clear"                // Clear the screen
+                    "pwd",                 // Show current directory
+                    ""                     // Empty line to finish initialization
                 )
                 
                 for (cmd in initCommands) {
-                    if (isRunning && sshOutputStream != null) {
-                        sshOutputStream!!.write((cmd + "\n").toByteArray())
+                    if (isRunning && sshOutputStream != null && cmd.isNotEmpty()) {
+                        Log.d(TAG, "Sending init command: $cmd")
+                        sshOutputStream!!.write((cmd + "\r\n").toByteArray())
                         sshOutputStream!!.flush()
-                        kotlinx.coroutines.delay(100) // Small delay between commands
+                        kotlinx.coroutines.delay(200) // Small delay between commands
                     }
+                }
+                
+                // Send a test command to verify the connection is interactive
+                if (isRunning && sshOutputStream != null) {
+                    Log.d(TAG, "Sending test command: echo")
+                    sshOutputStream!!.write("echo 'SSH connection ready - type commands:'\r\n".toByteArray())
+                    sshOutputStream!!.flush()
                 }
                 
                 Log.d(TAG, "SSH terminal initialization completed")
@@ -270,18 +296,28 @@ class SshTerminalSession(
     fun sendInput(data: ByteArray) {
         try {
             if (isRunning && sshOutputStream != null) {
-                Log.v(TAG, "Sending input to SSH: ${String(data)}")
+                val inputStr = String(data)
+                Log.d(TAG, "Sending input to SSH: '$inputStr' (${data.size} bytes)")
+                
+                // Write to SSH output stream
                 sshOutputStream!!.write(data)
                 sshOutputStream!!.flush()
                 
                 // If stream replacement failed, manually echo the input for better UX
                 if (!streamsReplaced && terminalSession != null) {
+                    Log.d(TAG, "Manually echoing input since streams not replaced")
                     // Echo the input to the terminal so user can see what they're typing
-                    val echoStr = String(data)
-                    if (echoStr.isNotEmpty() && !echoStr.contains('\n') && !echoStr.contains('\r')) {
-                        terminalSession!!.emulator?.append(data, data.size)
+                    if (inputStr.isNotEmpty() && !inputStr.contains('\n') && !inputStr.contains('\r')) {
+                        // Echo character by character for better visual feedback
+                        for (byte in data) {
+                            terminalSession!!.emulator?.append(byteArrayOf(byte), 1)
+                        }
                     }
                 }
+                
+                Log.v(TAG, "Input sent successfully to SSH")
+            } else {
+                Log.w(TAG, "Cannot send input - SSH not running or output stream null")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send input to SSH", e)
@@ -308,6 +344,26 @@ class SshTerminalSession(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send input with echo to SSH", e)
         }
+    }
+    
+    fun sendCommand(command: String) {
+        try {
+            if (isRunning && sshOutputStream != null) {
+                Log.d(TAG, "Sending command: $command")
+                val fullCommand = command + "\r\n"
+                sshOutputStream!!.write(fullCommand.toByteArray())
+                sshOutputStream!!.flush()
+                Log.d(TAG, "Command sent successfully")
+            } else {
+                Log.w(TAG, "Cannot send command - SSH not running or output stream null")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send command to SSH", e)
+        }
+    }
+    
+    fun getConnectionInfo(): String {
+        return "SSH Session: $sshSessionId, Running: $isRunning, Streams replaced: $streamsReplaced, Channel connected: ${shellChannel?.isConnected}"
     }
     
     fun resize(cols: Int, rows: Int) {

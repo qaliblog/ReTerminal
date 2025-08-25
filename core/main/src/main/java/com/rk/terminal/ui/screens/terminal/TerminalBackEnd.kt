@@ -201,8 +201,8 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
                     return true
                 }
                 KeyEvent.KEYCODE_ENTER -> {
-                    Log.v("TerminalBackEnd", "Sending ENTER key to SSH")
-                    sshTerm?.sendInput("\r")
+                    Log.d("TerminalBackEnd", "Sending ENTER key to SSH")
+                    sshTerm?.sendInput("\r\n")
                     return true
                 }
                 KeyEvent.KEYCODE_DEL -> {
@@ -283,8 +283,13 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
                 String(ch)
             }
             
-            Log.v("TerminalBackEnd", "Sending codepoint: $codePoint, char: '${inputStr}', ctrlDown: $ctrlDown")
+            Log.d("TerminalBackEnd", "SSH input - codepoint: $codePoint, char: '${inputStr}', ctrlDown: $ctrlDown")
             sshTerm?.sendInput(inputStr)
+            
+            // Force terminal update to show the character being typed
+            activity.runOnUiThread {
+                terminal.onScreenUpdated()
+            }
             return true
         }
         return false

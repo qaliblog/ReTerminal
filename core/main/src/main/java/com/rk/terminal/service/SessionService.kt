@@ -99,8 +99,12 @@ class SessionService : Service() {
             return MkSession.createSshSession(activity, client, id, config).also {
                 sessions[id] = it
                 sessionList[id] = com.rk.terminal.ui.screens.settings.WorkingMode.SSH
-                // SSH sessions start in the home directory
-                fileManagerWorkingDirBySession[id] = "/home/${config.username}"
+                // SSH sessions start in the proper Termux home directory
+                val sshWorkingDir = when {
+                    config.host.contains("termux") || config.host.contains("localhost") -> "/data/data/com.termux/files/home"
+                    else -> "/home/${config.username}"
+                }
+                fileManagerWorkingDirBySession[id] = sshWorkingDir
                 updateNotification()
             }
         }
