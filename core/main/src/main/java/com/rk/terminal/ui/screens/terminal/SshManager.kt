@@ -128,7 +128,7 @@ class SshManager {
                 Log.d(TAG, "Password set for session")
             }
             
-            // Configure session properties with comprehensive settings
+            // Configure session properties with enhanced settings for reliability
             val sessionConfig = Properties()
             sessionConfig["StrictHostKeyChecking"] = "no"
             sessionConfig["UserKnownHostsFile"] = "/dev/null"
@@ -138,14 +138,23 @@ class SshManager {
             sessionConfig["PubkeyAuthentication"] = if (config.useKey) "yes" else "no"
             sessionConfig["HostKeyAlgorithms"] = "+ssh-rsa,ssh-dss"
             sessionConfig["server_host_key"] = "ssh-rsa,ssh-dss,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521"
+            
+            // Add keepalive and connection stability settings
+            sessionConfig["ServerAliveInterval"] = "60"
+            sessionConfig["ServerAliveCountMax"] = "3"
+            sessionConfig["TCPKeepAlive"] = "yes"
+            sessionConfig["ConnectTimeout"] = "15"
+            sessionConfig["Compression"] = "yes"
+            sessionConfig["CompressionLevel"] = "6"
+            
+            // Terminal-specific settings
+            sessionConfig["RequestTTY"] = "force"
+            sessionConfig["SendEnv"] = "TERM,LANG,LC_ALL"
+            
             session.setConfig(sessionConfig)
             Log.d(TAG, "Enhanced session configuration applied")
             Log.d(TAG, "Auth methods: ${sessionConfig["PreferredAuthentications"]}")
-            Log.d(TAG, "Password auth: ${sessionConfig["PasswordAuthentication"]}")
-            Log.d(TAG, "Keyboard auth: ${sessionConfig["KbdInteractiveAuthentication"]}")
-            
-            // Debug authentication methods before connecting
-            Log.d(TAG, "Available authentication methods for ${config.username}@${config.host}")
+            Log.d(TAG, "Keepalive: ${sessionConfig["ServerAliveInterval"]}s")
             
             // Set timeout and connect
             Log.d(TAG, "Attempting to connect with 15s timeout...")
@@ -153,16 +162,16 @@ class SshManager {
             Log.d(TAG, "  Host: ${config.host}")
             Log.d(TAG, "  Port: ${config.port}")
             Log.d(TAG, "  Username: ${config.username}")
-            Log.d(TAG, "  Password length: ${config.password.length}")
+            Log.d(TAG, "  Password provided: ${config.password.isNotEmpty()}")
             Log.d(TAG, "  Use key: ${config.useKey}")
             
             try {
-                session.connect(15000) // 15 seconds timeout (reduced for better UX)
+                session.connect(15000) // 15 seconds timeout
             } catch (e: com.jcraft.jsch.JSchException) {
                 Log.e(TAG, "JSch connection failed with specific error: ${e.message}")
                 Log.e(TAG, "JSch error code: ${e.javaClass.simpleName}")
                 
-                // Try to provide more specific error information
+                // Provide more specific error information
                 when {
                     e.message?.contains("Auth fail") == true -> {
                         throw Exception("Authentication failed. Please verify username and password are correct.")
@@ -172,6 +181,12 @@ class SshManager {
                     }
                     e.message?.contains("Connection refused") == true -> {
                         throw Exception("Connection refused. Check if SSH server is running on ${config.host}:${config.port}")
+                    }
+                    e.message?.contains("UnknownHostException") == true -> {
+                        throw Exception("Unknown host: ${config.host}. Check the hostname or IP address.")
+                    }
+                    e.message?.contains("Network is unreachable") == true -> {
+                        throw Exception("Network unreachable. Check your internet connection.")
                     }
                     else -> {
                         throw Exception("SSH connection failed: ${e.message}")
@@ -185,12 +200,38 @@ class SshManager {
             
             Log.d(TAG, "SSH session connected successfully")
             
-            // Quick validation - try to open a channel to verify connection works
+            // Validate connection with a simple test
             try {
-                val testChannel = session.openChannel("exec")
-                testChannel.connect(3000) // 3 second timeout for test
+                val testChannel = session.openChannel("exec") as ChannelExec
+                testChannel.setCommand("echo 'connection_test_ok'")
+                testChannel.connect(5000) // 5 second timeout for test
+                
+                val inputStream = testChannel.inputStream
+                val output = StringBuilder()
+                val buffer = ByteArray(1024)
+                
+                var attempts = 0
+                while (testChannel.isConnected && attempts < 10) {
+                    if (inputStream.available() > 0) {
+                        val bytesRead = inputStream.read(buffer)
+                        if (bytesRead > 0) {
+                            output.append(String(buffer, 0, bytesRead))
+                        }
+                    }
+                    if (testChannel.isClosed) break
+                    Thread.sleep(100)
+                    attempts++
+                }
+                
                 testChannel.disconnect()
-                Log.d(TAG, "SSH connection validation successful")
+                
+                val result = output.toString().trim()
+                if (result.contains("connection_test_ok")) {
+                    Log.d(TAG, "SSH connection validation successful")
+                } else {
+                    Log.w(TAG, "SSH connection validation returned unexpected output: '$result'")
+                }
+                
             } catch (e: Exception) {
                 Log.w(TAG, "SSH connection validation failed, but proceeding: ${e.message}")
                 // Don't fail the connection for validation issues
@@ -203,6 +244,9 @@ class SshManager {
             connectionStatus.value = "Connected to ${config.host}"
             
             Log.d(TAG, "Successfully connected to ${config.username}@${config.host}:${config.port}")
+            
+            // Start connection monitoring
+            startConnectionMonitoring(sessionId, session)
             
             Result.success(sessionId)
             
@@ -230,6 +274,33 @@ class SshManager {
             }
             
             Result.failure(e)
+        }
+    }
+    
+    private fun startConnectionMonitoring(sessionId: String, session: Session) {
+        Log.d(TAG, "Starting connection monitoring for session: $sessionId")
+        
+        CoroutineScope(Dispatchers.IO).launch {
+            while (sessions.containsKey(sessionId) && session.isConnected) {
+                try {
+                    // Send keepalive every 30 seconds
+                    session.sendKeepAliveMsg()
+                    Log.v(TAG, "Sent keepalive for session: $sessionId")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to send keepalive for session: $sessionId", e)
+                    // Connection might be dead, remove from sessions
+                    if (!session.isConnected) {
+                        Log.w(TAG, "Session $sessionId appears disconnected, cleaning up")
+                        disconnect(sessionId)
+                        break
+                    }
+                }
+                
+                // Wait 30 seconds before next keepalive
+                delay(30000)
+            }
+            
+            Log.d(TAG, "Connection monitoring ended for session: $sessionId")
         }
     }
     

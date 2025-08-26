@@ -410,7 +410,7 @@ class TerminalBackEnd(val terminal: TerminalView,val activity: MainActivity) : T
                             val sshTerm = service.getSshTerminalSessionById(sessionId)
                             if (sshTerm != null) {
                                 Log.d("TerminalBackEnd", "🔧 TESTING: Manually triggering command since no user input detected")
-                                sshTerm.simulateCommand("echo 'Manual test - input detection working'")
+                                sshTerm.sendCommand("echo 'Manual test - input detection working'")
                                 break
                             }
                         }
