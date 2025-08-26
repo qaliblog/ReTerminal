@@ -1,9 +1,8 @@
 import java.io.ByteArrayOutputStream
 
 plugins {
-    alias(libs.plugins.androidLibrary)
-    alias(libs.plugins.kotlinAndroid)
-    alias(libs.plugins.compose.compiler)
+    id("com.android.library")
+    id("org.jetbrains.kotlin.android")
 }
 
 fun safeGit(vararg args: String): String {
@@ -37,89 +36,107 @@ fun getFullGitCommitHash(): String {
 
 android {
     namespace = "com.rk.terminal"
-    android.buildFeatures.buildConfig = true
     compileSdk = 34
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 26
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+        
+        // Enable native library support
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DANDROID_TOOLCHAIN=clang"
+                )
+            }
+        }
+        
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+        }
     }
 
     buildTypes {
         release {
-            buildConfigField("String", "GIT_COMMIT_HASH", "\"${getFullGitCommitHash()}\"")
-            buildConfigField("String", "GIT_SHORT_COMMIT_HASH", "\"${getGitCommitHash()}\"")
-            buildConfigField("String", "GIT_COMMIT_DATE", "\"${getGitCommitDate()}\"")
             isMinifyEnabled = false
-            isShrinkResources = false
             proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
             )
         }
-        debug{
-            buildConfigField("String", "GIT_COMMIT_HASH", "\"${getFullGitCommitHash()}\"")
-            buildConfigField("String", "GIT_SHORT_COMMIT_HASH", "\"${getGitCommitHash()}\"")
-            buildConfigField("String", "GIT_COMMIT_DATE", "\"${getGitCommitDate()}\"")
+        debug {
+            isMinifyEnabled = false
+            isDebuggable = true
         }
     }
-
-
+    
+    // Configure native build
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+    
+    // Pack native libraries
+    packagingOptions {
+        pickFirst("**/libc++_shared.so")
+        pickFirst("**/libcrypto.so")
+        pickFirst("**/libssl.so")
+    }
+    
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
     kotlinOptions {
-        jvmTarget = "17"
+        jvmTarget = "1.8"
     }
-
     buildFeatures {
-        viewBinding = true
         compose = true
     }
-
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.15"
+        kotlinCompilerExtensionVersion = "1.5.4"
     }
-
-
 }
 
 dependencies {
-    api(libs.appcompat)
-    api(libs.material)
-    api(libs.constraintlayout)
-    api(libs.navigation.fragment)
-    api(libs.navigation.ui)
-    api(libs.asynclayoutinflater)
-    api(libs.navigation.fragment.ktx)
-    api(libs.navigation.ui.ktx)
-    api(libs.activity)
-    api(libs.lifecycle.livedata.ktx)
-    api(libs.lifecycle.viewmodel.ktx)
-    api(libs.lifecycle.runtime.ktx)
-    api(libs.activity.compose)
-    api(platform(libs.compose.bom))
-    api(libs.ui)
-    api(libs.ui.graphics)
-    api(libs.material3)
-    api(libs.navigation.compose)
-    api(libs.terminal.view)
-    api(libs.terminal.emulator)
-    api(libs.utilcode)
-    //api(libs.commons.net)
-    api(libs.okhttp)
-    api(libs.anrwatchdog)
-    api(libs.androidx.palette)
-    api(libs.accompanist.systemuicontroller)
-    api(libs.material.icons.extended)
 
-    api(project(":core:resources"))
-    api(project(":core:components"))
-    // For extracting tar archives from Hugging Face bundles
-    api("org.apache.commons:commons-compress:1.26.2")
-    api(libs.security.crypto)
+    implementation("androidx.core:core-ktx:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
+    implementation("androidx.activity:activity-compose:1.8.0")
+    implementation(platform("androidx.compose:compose-bom:2023.03.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.navigation:navigation-compose:2.7.4")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     
-    // SSH support
-    api("com.github.mwiede:jsch:0.2.17")
+    // File manager
+    implementation("androidx.documentfile:documentfile:1.0.1")
+    
+    // Terminal components (keep existing Termux components as fallback)
+    implementation("com.github.termux.termux-app:terminal-emulator:a2b448c93f")
+    implementation("com.github.termux.termux-app:terminal-view:a2b448c93f")
+    
+    // SSH support (keep JSch as fallback)
+    implementation("com.github.mwiede:jsch:0.2.17")
+    
+    // Native library dependencies
+    implementation("androidx.annotation:annotation:1.7.0")
+    
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2023.03.00"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
