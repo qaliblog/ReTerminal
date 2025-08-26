@@ -1,23 +1,8 @@
 pluginManagement {
     repositories {
-        google {
-            content {
-                includeGroupByRegex("com\\.android.*")
-                includeGroupByRegex("com\\.google.*")
-                includeGroupByRegex("androidx.*")
-            }
-        }
+        google()
         mavenCentral()
         gradlePluginPortal()
-        maven { url = uri("https://jitpack.io")}
-        maven {
-            url = uri("https://oss.sonatype.org/content/repositories/snapshots/")
-        }
-        maven("https://oss.sonatype.org/content/repositories/snapshots/")
-     
-    }
-    plugins {
-        kotlin("jvm") version "2.1.10"
     }
 }
 dependencyResolutionManagement {
@@ -25,17 +10,15 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io")}
-        maven {
-            url = uri("https://oss.sonatype.org/content/repositories/snapshots/")
-        }
-        maven("https://oss.sonatype.org/content/repositories/snapshots/")
+        maven { url = uri("https://jitpack.io") }
+        maven { url = uri("https://oss.sonatype.org/content/repositories/snapshots/") }
+        maven { url = uri("https://oss.sonatype.org/content/repositories/snapshots/") }
     }
 }
 
 rootProject.name = "ReTerminal"
-include(":app")
 include(":core:main")
-
-include(":core:components")
-include(":core:resources")
+// Temporarily disabled to focus on SSH fixes
+// include(":app")
+// include(":core:resources")
+// include(":core:components")
