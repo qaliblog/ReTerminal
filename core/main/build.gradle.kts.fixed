@@ -1,38 +1,7 @@
-import java.io.ByteArrayOutputStream
-
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
 }
-
-fun safeGit(vararg args: String): String {
-    val stdout = ByteArrayOutputStream()
-    return try {
-        exec {
-            commandLine("git", *args)
-            isIgnoreExitValue = true
-            standardOutput = stdout
-            errorOutput = ByteArrayOutputStream()
-        }
-        val out = stdout.toString().trim()
-        if (out.isBlank()) "unknown" else out
-    } catch (e: Exception) {
-        "unknown"
-    }
-}
-
-fun getGitCommitHash(): String {
-    return safeGit("rev-parse", "--short=8", "HEAD")
-}
-
-fun getGitCommitDate(): String {
-    return safeGit("show", "-s", "--format=%cI", "HEAD")
-}
-
-fun getFullGitCommitHash(): String {
-    return safeGit("rev-parse", "HEAD")
-}
-
 
 android {
     namespace = "com.rk.terminal"
@@ -40,24 +9,8 @@ android {
 
     defaultConfig {
         minSdk = 26
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
-        
-        // Enable native library support
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-                arguments += listOf(
-                    "-DANDROID_STL=c++_shared",
-                    "-DANDROID_TOOLCHAIN=clang"
-                )
-            }
-        }
-        
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-        }
     }
 
     buildTypes {
@@ -70,26 +23,6 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            // Note: isDebuggable is automatically true for debug builds
-        }
-    }
-    
-    // Configure native build
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
-    
-    // Pack native libraries - Updated to use new API
-    packaging {
-        jniLibs {
-            pickFirsts += setOf(
-                "**/libc++_shared.so",
-                "**/libcrypto.so", 
-                "**/libssl.so"
-            )
         }
     }
     
@@ -109,7 +42,6 @@ android {
 }
 
 dependencies {
-
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.activity:activity-compose:1.8.0")
@@ -126,15 +58,12 @@ dependencies {
     // File manager
     implementation("androidx.documentfile:documentfile:1.0.1")
     
-    // Terminal components (keep existing Termux components as fallback)
+    // Terminal components
     implementation("com.github.termux.termux-app:terminal-emulator:a2b448c93f")
     implementation("com.github.termux.termux-app:terminal-view:a2b448c93f")
     
-    // SSH support (keep JSch as fallback)
+    // SSH support
     implementation("com.github.mwiede:jsch:0.2.17")
-    
-    // Native library dependencies
-    implementation("androidx.annotation:annotation:1.7.0")
     
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
