@@ -844,8 +844,8 @@ fun changeSession(mainActivityActivity: MainActivity, session_id: String) {
                 terminalView.get()?.mTermSession?.let { VirtualKeysListener(it) }
         }
 
+        mainActivityActivity.sessionBinder!!.getService().currentSession.value = Pair(session_id,mainActivityActivity.sessionBinder!!.getService().sessionList[session_id]!!)
     }
-    mainActivityActivity.sessionBinder!!.getService().currentSession.value = Pair(session_id,mainActivityActivity.sessionBinder!!.getService().sessionList[session_id]!!)
 
 }
 

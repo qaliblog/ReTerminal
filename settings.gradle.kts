@@ -18,8 +18,8 @@ dependencyResolutionManagement {
 
 rootProject.name = "ReTerminal"
 include(":core:main")
+include(":core:resources")
+include(":core:components")
 // Temporarily disabled to focus on SSH fixes
 // include(":app")
-// include(":core:resources")
-// include(":core:components")
 include(":ssh-module")
