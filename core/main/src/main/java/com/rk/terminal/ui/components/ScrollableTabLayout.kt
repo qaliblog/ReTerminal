@@ -1,5 +1,6 @@
 package com.rk.terminal.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +18,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ScrollableTabLayout(modifier: Modifier,tabs: MutableList<String>,content: @Composable (index:Int) -> Unit,animation:Boolean = false) {
     val pagerState = rememberPagerState(pageCount = { tabs.size })

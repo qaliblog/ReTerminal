@@ -41,7 +41,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BasicAlertDialog
+
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
@@ -251,13 +251,14 @@ fun TerminalScreen(
         }
 
         if (showAddDialog){
+            // TODO: Replace with proper dialog implementation
+            // BasicAlertDialog is not available in current Compose version
+            /*
             BasicAlertDialog(
                 onDismissRequest = {
                     showAddDialog = false
                 }
             ) {
-
-                fun createSession(workingMode:Int){
                     fun generateUniqueString(existingStrings: List<String>): String {
                         var index = 1
                         var newString: String
@@ -564,7 +565,9 @@ fun TerminalScreen(
 
                 }
 
-            })
+            }
+            */
+        }
     }
 }
 
@@ -768,6 +771,7 @@ fun SetStatusBarTextColor(isDarkIcons: Boolean) {
 
 
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SelectableCard(
     selected: Boolean,

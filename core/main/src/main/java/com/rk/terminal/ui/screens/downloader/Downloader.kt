@@ -78,7 +78,7 @@ fun Downloader(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(progressText, style = MaterialTheme.typography.bodyLarge)
                     Spacer(modifier = Modifier.height(16.dp))
-                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth(0.8f))
+                    LinearProgressIndicator(progress = progress, modifier = Modifier.fillMaxWidth(0.8f))
                 }
             }
         } else {
