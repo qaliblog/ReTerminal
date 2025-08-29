@@ -14,7 +14,7 @@ object Res{
 }
 
 inline fun Int.getString():String{
-    return ContextCompat.getString(Res.application!!, this)
+    return Res.application!!.getString(this)
 }
 
 inline fun Int.getDrawable():Drawable?{

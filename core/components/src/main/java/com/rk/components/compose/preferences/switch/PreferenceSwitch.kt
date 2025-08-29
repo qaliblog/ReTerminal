@@ -14,7 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.ripple
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -47,7 +47,7 @@ fun PreferenceSwitch(
         modifier =
             modifier.combinedClickable(
                 enabled = enabled,
-                indication = ripple(),
+                indication = rememberRipple(),
                 onLongClick = {
                     if (onLongClick != null) {
                         onLongClick()
@@ -81,14 +81,7 @@ fun PreferenceSwitch(
                 onCheckedChange = onCheckedChange,
                 enabled = enabled,
                 interactionSource = interactionSource,
-                colors =
-                    SwitchDefaults.colors()
-                        .copy(
-                            uncheckedThumbColor = MaterialTheme.colorScheme.background,
-                            uncheckedTrackColor =
-                                MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                            uncheckedBorderColor = Color.Transparent,
-                        ),
+                colors = SwitchDefaults.colors(),
             )
         },
         enabled = enabled,

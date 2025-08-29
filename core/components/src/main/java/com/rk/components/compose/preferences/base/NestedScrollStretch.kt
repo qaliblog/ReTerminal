@@ -19,8 +19,9 @@ package com.rk.components.compose.preferences.base
 import android.content.Context
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -43,8 +44,8 @@ import com.rk.components.compose.edges.StretchEdgeEffect
  */
 @Composable
 fun NestedScrollStretch(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val invalidateTick = remember { mutableIntStateOf(0) }
-    val invalidate = Runnable { invalidateTick.intValue++ }
+    val invalidateTick = remember { mutableStateOf(0) }
+    val invalidate = Runnable { invalidateTick.value++ }
 
     val context = LocalContext.current
     val connection = remember { NestedScrollStretchConnection(context, invalidate) }
@@ -62,7 +63,7 @@ fun NestedScrollStretch(modifier: Modifier = Modifier, content: @Composable () -
                 }
                 .drawWithContent {
                     // Redraw when this value changes
-                    invalidateTick.intValue
+                    invalidateTick.value
 
                     connection.topEdgeEffect.draw(tmpOut, StretchEdgeEffect.POSITION_TOP, this) {
                         connection.bottomEdgeEffect.draw(
@@ -118,7 +119,7 @@ private class NestedScrollStretchConnection(context: Context, invalidate: Runnab
     override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
         val availableY = available.y
         when {
-            source != NestedScrollSource.UserInput || height == 0 -> return Offset.Zero
+            source != NestedScrollSource.Drag || height == 0 -> return Offset.Zero
             availableY != 0f -> {
                 if (availableY < 0f) {
                     val consumed = topEdgeEffect.onPullDistance(availableY / height, 0f)
@@ -142,7 +143,7 @@ private class NestedScrollStretchConnection(context: Context, invalidate: Runnab
     ): Offset {
         val availableY = available.y
         when {
-            source != NestedScrollSource.UserInput || height == 0 -> return Offset.Zero
+            source != NestedScrollSource.Drag || height == 0 -> return Offset.Zero
             availableY != 0f -> {
                 if (availableY > 0f) {
                     topEdgeEffect.onPull(availableY / height)

@@ -7,7 +7,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
-import androidx.compose.material3.ripple
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,7 +76,7 @@ fun SettingsToggle(
         PreferenceTemplate(
             modifier = modifier.combinedClickable(
                 enabled = isEnabled,
-                indication = ripple(),
+                indication = rememberRipple(),
                 interactionSource = interactionSource,
                 onLongClick = onLongClick,
                 onClick = { sideEffect?.invoke(false) }
