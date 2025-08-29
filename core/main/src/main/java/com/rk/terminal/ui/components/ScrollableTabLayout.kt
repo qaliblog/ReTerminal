@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Divider
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -53,7 +53,7 @@ fun ScrollableTabLayout(modifier: Modifier,tabs: MutableList<String>,content: @C
             }
         }
 
-        HorizontalDivider(Modifier.fillMaxWidth())
+        Divider(Modifier.fillMaxWidth())
 
         HorizontalPager(
             state = pagerState,

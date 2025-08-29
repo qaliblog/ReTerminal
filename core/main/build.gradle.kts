@@ -35,6 +35,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.3"
@@ -54,6 +55,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.navigation:navigation-compose:2.7.4")
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.material:material")
     implementation("com.google.android.material:material:1.10.0")
     implementation("androidx.datastore:datastore-preferences:1.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -67,6 +69,30 @@ dependencies {
     
     // SSH support
     implementation("com.github.mwiede:jsch:0.2.17")
+    
+    // HTTP client
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    
+    // Security crypto for EncryptedSharedPreferences
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    
+    // ANR Watchdog
+    implementation("com.github.anrwatchdog:anrwatchdog:1.4.0")
+    
+    // Utility libraries
+    implementation("com.blankj:utilcodex:1.31.1")
+    
+    // Palette for color extraction
+    implementation("androidx.palette:palette:1.0.0")
+    
+    // Commons Net for network utilities
+    implementation("commons-net:commons-net:3.11.1")
+    
+    // Apache Commons Compress for tar archives
+    implementation("org.apache.commons:commons-compress:1.24.0")
+    
+    // Accompanist for system UI controller
+    implementation("com.google.accompanist:accompanist-systemuicontroller:0.30.1")
     
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

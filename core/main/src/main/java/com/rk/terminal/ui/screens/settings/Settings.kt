@@ -9,13 +9,13 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.ripple
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.runtime.*
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -52,7 +52,7 @@ fun SettingsCard(
         modifier = modifier
             .combinedClickable(
                 enabled = isEnabled,
-                indication = ripple(),
+                indication = rememberRipple(),
                 interactionSource = interactionSource,
                 onClick = onClick
             ),
