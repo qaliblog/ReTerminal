@@ -62,8 +62,8 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     
     // Terminal components
-    implementation("com.github.termux.termux-app:terminal-emulator:a2b448c93f")
-    implementation("com.github.termux.termux-app:terminal-view:a2b448c93f")
+    implementation("com.github.termux.termux-app:terminal-emulator:0.118.1")
+    implementation("com.github.termux.termux-app:terminal-view:0.118.1")
     
     // SSH support
     implementation("com.github.mwiede:jsch:0.2.17")

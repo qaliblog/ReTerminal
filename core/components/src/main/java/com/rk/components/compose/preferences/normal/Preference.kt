@@ -6,7 +6,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
-import androidx.compose.material3.ripple
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -33,7 +33,7 @@ fun Preference(
     PreferenceTemplate(
         modifier =
             modifier.clickable(
-                indication = ripple(),
+                indication = rememberRipple(),
                 interactionSource = interactionSource,
                 onClick = { onClick?.invoke() },
             ),
