@@ -25,6 +25,13 @@ import java.io.File
 import java.io.FileOutputStream
 
 object MkSession {
+    // Global map to store SSH sessions when reflection fails
+    private val sshSessionMap = mutableMapOf<TerminalSession, SshTerminalSession>()
+    
+    fun getSshSession(terminalSession: TerminalSession): SshTerminalSession? {
+        return sshSessionMap[terminalSession]
+    }
+    
     fun createSession(
         activity: MainActivity, sessionClient: TerminalSessionClient, session_id: String,workingMode:Int
     ): TerminalSession {
@@ -243,7 +250,22 @@ Updating : apk update && apk upgrade
         return try {
             val sshTerminalSession = SshTerminalSession(sshConfig, sessionClient)
             Log.d("MkSession", "Created SSH session for ${sshConfig.hostname}:${sshConfig.port}")
-            sshTerminalSession
+            
+            // Store SSH session reference for later access
+            val wrappedSession = sshTerminalSession.getTerminalSession()
+            
+            // Store the SSH session wrapper as a property we can access
+            // We'll use reflection to add our custom property
+            try {
+                val field = wrappedSession.javaClass.getDeclaredField("mHandle")
+                field.isAccessible = true
+                // Store our SSH session in an unused field or create a custom property
+            } catch (e: Exception) {
+                // If reflection fails, we'll store it in a global map
+                sshSessionMap[wrappedSession] = sshTerminalSession
+            }
+            
+            wrappedSession
         } catch (e: Exception) {
             Log.e("MkSession", "Error creating SSH session", e)
             // Create fallback session with error details

@@ -118,9 +118,7 @@ import com.rk.terminal.ssh.SshConfigManager
 import com.rk.terminal.ssh.SshFileManagerView
 import com.rk.terminal.ssh.SshFileManager
 import com.rk.terminal.ssh.SshFileOpenBus
-import com.rk.terminal.ssh.SshTerminalEmulator
 import com.rk.terminal.ssh.SshTextEditorView
-import com.rk.terminal.ssh.SshTerminalBackEnd
 import com.rk.terminal.ssh.SshTerminalSession
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysConstants
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysInfo
@@ -747,7 +745,7 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
     if (workingMode == WorkingMode.SSH) {
         // SSH File Manager
         val session = service.getSession(sessionId)
-        val sshTerminalSession = session as? SshTerminalSession
+        val sshTerminalSession = session?.let { MkSession.getSshSession(it) }
         val sshFileManager = remember(sessionId) { 
             sshTerminalSession?.getSshFileManager()
         }

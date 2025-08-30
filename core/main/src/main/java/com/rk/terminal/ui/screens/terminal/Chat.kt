@@ -67,6 +67,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import com.rk.settings.Settings
 import androidx.compose.foundation.layout.PaddingValues
 import com.rk.terminal.ui.screens.terminal.MainShell
+import com.rk.terminal.ui.screens.terminal.MkSession
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ssh.SshTerminalSession
 import java.text.SimpleDateFormat
@@ -84,7 +85,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     val sshContext = remember(sessionId, workingMode) {
         if (workingMode == WorkingMode.SSH) {
             val session = service.getSession(sessionId)
-            val sshTerminalSession = session as? SshTerminalSession
+            val sshTerminalSession = session?.let { MkSession.getSshSession(it) }
             sshTerminalSession?.getSshSession()?.getSessionInfo()
         } else null
     }

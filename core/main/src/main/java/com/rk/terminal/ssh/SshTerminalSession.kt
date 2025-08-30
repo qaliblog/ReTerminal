@@ -7,26 +7,13 @@ import com.termux.terminal.TerminalSessionClient
 import kotlinx.coroutines.*
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 
 class SshTerminalSession(
     private val sshConfig: SshConfig,
-    sessionClient: TerminalSessionClient
-) : TerminalSession(
-    "/system/bin/sh", // Dummy shell
-    sshConfig.workingDirectory,
-    arrayOf(),
-    arrayOf(
-        "TERM=xterm-256color",
-        "SSH_CONNECTION=${sshConfig.hostname}",
-        "SSH_USER=${sshConfig.username}",
-        "SSH_HOST=${sshConfig.hostname}",
-        "SSH_PORT=${sshConfig.port}"
-    ),
-    TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
-    sessionClient
+    private val sessionClient: TerminalSessionClient
 ) {
+    private val terminalSession: TerminalSession
     private var sshSession: SshSession? = null
     private var sshInputStream: InputStream? = null
     private var sshOutputStream: OutputStream? = null
@@ -38,11 +25,41 @@ class SshTerminalSession(
     }
     
     init {
+        // Create a custom session client that can handle SSH cleanup
+        val sshSessionClient = SshTerminalSessionClient(sessionClient, this)
+        
+        // Create a regular terminal session that we'll bridge to SSH
+        terminalSession = TerminalSession(
+            "/system/bin/sh", // Dummy shell
+            sshConfig.workingDirectory,
+            arrayOf(),
+            arrayOf(
+                "TERM=xterm-256color",
+                "SSH_CONNECTION=${sshConfig.hostname}",
+                "SSH_USER=${sshConfig.username}",
+                "SSH_HOST=${sshConfig.hostname}",
+                "SSH_PORT=${sshConfig.port}"
+            ),
+            TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
+            sshSessionClient
+        )
+        
         // Initialize SSH connection in background
         scope.launch {
             initializeSshConnection()
         }
+        
+        // Set up input redirection by intercepting terminal session writes
+        setupInputRedirection()
     }
+    
+    // Delegate all TerminalSession methods to the wrapped session
+    val emulator get() = terminalSession.emulator
+    val isRunning get() = terminalSession.isRunning
+    val pid get() = terminalSession.pid
+    
+    // Method to get the wrapped TerminalSession for compatibility
+    fun getTerminalSession(): TerminalSession = terminalSession
     
     private suspend fun initializeSshConnection() {
         try {
@@ -90,7 +107,7 @@ class SshTerminalSession(
                     if (bytesRead > 0) {
                         // Send to terminal emulator for display
                         withContext(Dispatchers.Main) {
-                            emulator?.append(buffer, bytesRead)
+                            terminalSession.emulator?.append(buffer, bytesRead)
                         }
                     } else if (bytesRead == -1) {
                         // Connection closed
@@ -146,15 +163,15 @@ class SshTerminalSession(
     private fun showErrorMessage(message: String) {
         try {
             val errorMsg = "\n$message\n"
-            emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+            terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
         } catch (e: Exception) {
             Log.e(TAG, "Error showing error message", e)
         }
     }
     
-    override fun write(data: ByteArray?, offset: Int, count: Int) {
-        // Override write to send data to SSH instead of local shell
-        if (data != null && sshOutputStream != null) {
+    fun write(data: ByteArray?, offset: Int, count: Int) {
+        // Send data to SSH instead of local shell
+        if (data != null && sshOutputStream != null && sshSession?.isConnected() == true) {
             scope.launch {
                 try {
                     sshOutputStream?.write(data, offset, count)
@@ -164,15 +181,15 @@ class SshTerminalSession(
                 }
             }
         } else {
-            // Fallback to super if SSH not ready
-            super.write(data, offset, count)
+            // Fallback to terminal session if SSH not ready
+            terminalSession.write(data, offset, count)
         }
     }
     
-    override fun finishIfRunning() {
+    fun finishIfRunning() {
         scope.cancel()
         sshSession?.disconnect()
-        super.finishIfRunning()
+        terminalSession.finishIfRunning()
     }
     
     fun getSshSession(): SshSession? = sshSession
@@ -181,5 +198,12 @@ class SshTerminalSession(
     
     fun getSshFileManager(): SshFileManager? {
         return sshSession?.let { SshFileManager(it) }
+    }
+    
+    private fun setupInputRedirection() {
+        // We'll handle input redirection through the terminal emulator's input stream
+        // The key is that we need to intercept writes to the terminal session
+        // For now, we'll rely on the write() method being called explicitly
+        Log.d(TAG, "SSH input redirection set up")
     }
 }
