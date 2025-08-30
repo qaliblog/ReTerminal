@@ -61,9 +61,9 @@ class SimpleSshTerminal(
                     val sshInputHandler = SshInputHandler(sessionClient, this@SimpleSshTerminal)
                     
                     val terminalSession = TerminalSession(
-                        "/system/bin/cat", // Dummy command that will be replaced
+                        "/system/bin/sleep", // Use sleep command that won't interfere
                         sshConfig.workingDirectory,
-                        arrayOf("/dev/null"),
+                        arrayOf("3600"), // Sleep for 1 hour (effectively infinite)
                         arrayOf(
                             "TERM=xterm-256color",
                             "SSH_CONNECTION=${sshConfig.hostname}",
@@ -74,6 +74,15 @@ class SimpleSshTerminal(
                         TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                         sshInputHandler
                     )
+                    
+                    // Kill the local sleep process immediately and set up SSH redirection
+                    CoroutineScope(Dispatchers.IO).launch {
+                        delay(100) // Let the process start briefly
+                        terminalSession.finishIfRunning() // Kill the sleep process
+                        
+                        // Now all input should go through our SSH handler
+                        Log.d(TAG, "Local process terminated, SSH input redirection active")
+                    }
                     
                     // Set up input interception for SSH
                     SshTerminalBridge.interceptTerminalInput(terminalSession, this@SimpleSshTerminal)

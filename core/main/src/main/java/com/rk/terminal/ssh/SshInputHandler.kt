@@ -46,10 +46,11 @@ class SshInputHandler(
     }
     
     override fun onPasteTextFromClipboard(session: TerminalSession) {
-        // Intercept paste and send to SSH
-        val clipboardText = getClipboardText()
-        if (clipboardText.isNotEmpty() && sshTerminal.isConnected()) {
-            sshTerminal.writeToSsh(clipboardText)
+        // Always intercept paste and send to SSH if connected
+        if (sshTerminal.isConnected()) {
+            Log.d(TAG, "Intercepting paste for SSH")
+            // For now, let the original client handle it and we'll intercept at process level
+            originalClient.onPasteTextFromClipboard(session)
         } else {
             originalClient.onPasteTextFromClipboard(session)
         }

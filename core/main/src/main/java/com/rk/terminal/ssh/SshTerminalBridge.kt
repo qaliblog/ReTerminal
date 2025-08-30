@@ -5,38 +5,49 @@ import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.lang.reflect.Field
 
 object SshTerminalBridge {
     private const val TAG = "SshTerminalBridge"
     
     fun interceptTerminalInput(terminalSession: TerminalSession, sshTerminal: SimpleSshTerminal) {
-        try {
-            // Use reflection to intercept the terminal session's process input
-            val sessionClass = terminalSession.javaClass
-            val processField = sessionClass.getDeclaredField("mProcess")
-            processField.isAccessible = true
-            val process = processField.get(terminalSession)
-            
-            if (process != null) {
-                val processClass = process.javaClass
-                val outputStreamField = processClass.getDeclaredField("mOutputStream")
-                outputStreamField.isAccessible = true
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                // Wait a moment for the terminal session to initialize
+                delay(200)
                 
-                // Get the original output stream
-                val originalOutputStream = outputStreamField.get(process)
+                // Kill the local process
+                terminalSession.finishIfRunning()
                 
-                // Create a proxy output stream that redirects to SSH
-                val sshProxyStream = SshProxyOutputStream(sshTerminal, originalOutputStream)
-                outputStreamField.set(process, sshProxyStream)
+                // Use reflection to replace the process's output stream
+                val sessionClass = terminalSession.javaClass
+                val processField = sessionClass.getDeclaredField("mProcess")
+                processField.isAccessible = true
+                val process = processField.get(terminalSession)
                 
-                Log.d(TAG, "Successfully intercepted terminal input for SSH redirection")
+                if (process != null) {
+                    val processClass = process.javaClass
+                    val outputStreamField = processClass.getDeclaredField("mOutputStream")
+                    outputStreamField.isAccessible = true
+                    
+                    // Replace with SSH redirect stream
+                    val sshRedirectStream = SshProxyOutputStream(sshTerminal, null)
+                    outputStreamField.set(process, sshRedirectStream)
+                    
+                    Log.d(TAG, "Successfully replaced process output stream with SSH redirect")
+                } else {
+                    Log.w(TAG, "No process found to intercept")
+                }
+                
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not intercept terminal input: ${e.message}")
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not intercept terminal input: ${e.message}")
-            // Fallback: manual input handling
         }
     }
+    
+
     
     private class SshProxyOutputStream(
         private val sshTerminal: SimpleSshTerminal,
