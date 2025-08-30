@@ -96,31 +96,75 @@ class SshSession(private val config: SshConfig) {
     
     suspend fun openShellChannel(): Pair<InputStream?, OutputStream?> = withContext(Dispatchers.IO) {
         try {
+            Log.d(TAG, "Opening shell channel...")
+            
+            // Open shell channel with basic configuration
             shellChannel = session?.openChannel("shell") as? ChannelShell
             
-            // Configure shell channel for stability
-            shellChannel?.setPtyType("xterm-256color")
-            shellChannel?.setPtySize(120, 30, 960, 720) // Larger terminal size
-            shellChannel?.setAgentForwarding(false)
-            shellChannel?.setXForwarding(config.forwardX11)
-            
-            // Set environment variables
-            config.environmentVariables.forEach { (key, value) ->
-                shellChannel?.setEnv(key, value)
+            if (shellChannel == null) {
+                Log.e(TAG, "Failed to create any type of shell channel")
+                return@withContext Pair(null, null)
             }
             
-            // Add standard environment variables for better shell experience
-            shellChannel?.setEnv("LANG", "en_US.UTF-8")
-            shellChannel?.setEnv("LC_ALL", "en_US.UTF-8")
-            shellChannel?.setEnv("SHELL", "/bin/bash")
+            Log.d(TAG, "Configuring shell channel...")
             
-            // Connect with timeout
-            shellChannel?.connect(config.connectTimeout)
-            Log.d(TAG, "Shell channel opened successfully with enhanced configuration")
+            // Configure shell channel with minimal, compatible settings
+            try {
+                Log.d(TAG, "Setting PTY type...")
+                shellChannel?.setPtyType("vt100") // Most compatible terminal type
+                
+                Log.d(TAG, "Setting PTY size...")
+                shellChannel?.setPtySize(80, 24, 640, 480) // Standard size
+                
+                Log.d(TAG, "Configuring forwarding...")
+                shellChannel?.setAgentForwarding(false)
+                shellChannel?.setXForwarding(false)
+                
+                // Set only essential environment variables
+                try {
+                    shellChannel?.setEnv("TERM", "vt100")
+                    Log.d(TAG, "Set TERM environment variable")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not set TERM variable: ${e.message}")
+                }
+                
+                Log.d(TAG, "Connecting shell channel with timeout ${config.connectTimeout}ms...")
+                
+                // Connect with shorter timeout for faster failure detection
+                shellChannel?.connect(15000) // 15 second timeout
+                
+                // Verify channel is connected
+                if (shellChannel?.isConnected != true) {
+                    Log.e(TAG, "Shell channel failed to connect")
+                    return@withContext Pair(null, null)
+                }
+                
+                Log.d(TAG, "Shell channel connected successfully")
+                
+                // Get streams and verify they're available
+                val inputStream = shellChannel?.inputStream
+                val outputStream = shellChannel?.outputStream
+                
+                if (inputStream == null || outputStream == null) {
+                    Log.e(TAG, "Shell channel streams are null")
+                    shellChannel?.disconnect()
+                    return@withContext Pair(null, null)
+                }
+                
+                Log.d(TAG, "Shell channel streams obtained successfully")
+                Pair(inputStream, outputStream)
+                
+            } catch (configException: Exception) {
+                Log.e(TAG, "Error configuring shell channel", configException)
+                shellChannel?.disconnect()
+                Pair(null, null)
+            }
             
-            Pair(shellChannel?.inputStream, shellChannel?.outputStream)
         } catch (e: JSchException) {
-            Log.e(TAG, "Failed to open shell channel", e)
+            Log.e(TAG, "JSch error opening shell channel: ${e.message}", e)
+            Pair(null, null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error opening shell channel: ${e.message}", e)
             Pair(null, null)
         }
     }

@@ -288,7 +288,13 @@ Updating : apk update && apk upgrade
                 onError = { error ->
                     try {
                         Log.e("MkSession", "SSH connection failed: $error")
-                        val errorMsg = "\n❌ $error\n\nFalling back to Android shell.\n\n"
+                        val errorMsg = "\n❌ SSH Error: $error\n\n" +
+                                      "Troubleshooting:\n" +
+                                      "• Check if SSH server allows shell access\n" +
+                                      "• Verify user has shell permissions\n" +
+                                      "• Try different authentication method\n" +
+                                      "• Check server SSH configuration\n\n" +
+                                      "Falling back to Android shell.\n\n"
                         terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
                     } catch (e: Exception) {
                         Log.e("MkSession", "Error showing error message", e)
