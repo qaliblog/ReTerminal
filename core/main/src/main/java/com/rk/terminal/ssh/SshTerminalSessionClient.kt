@@ -30,11 +30,23 @@ class SshTerminalSessionClient(
         originalClient.onColorsChanged(session)
     }
     
+    override fun onTerminalCursorStateChange(state: Boolean) {
+        originalClient.onTerminalCursorStateChange(state)
+    }
+    
     override fun onCopyTextToClipboard(session: TerminalSession, text: String) {
         originalClient.onCopyTextToClipboard(session, text)
     }
     
     override fun onPasteTextFromClipboard(session: TerminalSession) {
         originalClient.onPasteTextFromClipboard(session)
+    }
+    
+    override fun getTerminalCursorStyle(): Int {
+        return originalClient.getTerminalCursorStyle()
+    }
+    
+    override fun logError(tag: String?, message: String?) {
+        originalClient.logError(tag, message)
     }
 }
