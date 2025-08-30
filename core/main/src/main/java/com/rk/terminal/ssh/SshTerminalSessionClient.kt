@@ -49,4 +49,28 @@ class SshTerminalSessionClient(
     override fun logError(tag: String?, message: String?) {
         originalClient.logError(tag, message)
     }
+    
+    override fun logWarn(tag: String?, message: String?) {
+        originalClient.logWarn(tag, message)
+    }
+    
+    override fun logInfo(tag: String?, message: String?) {
+        originalClient.logInfo(tag, message)
+    }
+    
+    override fun logDebug(tag: String?, message: String?) {
+        originalClient.logDebug(tag, message)
+    }
+    
+    override fun logVerbose(tag: String?, message: String?) {
+        originalClient.logVerbose(tag, message)
+    }
+    
+    override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {
+        originalClient.logStackTraceWithMessage(tag, message, e)
+    }
+    
+    override fun logStackTrace(tag: String?, e: Exception?) {
+        originalClient.logStackTrace(tag, e)
+    }
 }
