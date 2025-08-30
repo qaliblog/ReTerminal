@@ -119,7 +119,7 @@ import com.rk.terminal.ssh.SshFileManagerView
 import com.rk.terminal.ssh.SshFileManager
 import com.rk.terminal.ssh.SshFileOpenBus
 import com.rk.terminal.ssh.SshTextEditorView
-import com.rk.terminal.ssh.SimpleSshTerminal
+import com.rk.terminal.ssh.SafeSshTerminal
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysConstants
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysInfo
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysListener

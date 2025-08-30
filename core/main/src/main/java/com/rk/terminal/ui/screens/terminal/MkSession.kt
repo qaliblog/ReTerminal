@@ -16,7 +16,7 @@ import com.rk.terminal.BuildConfig
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ssh.SshConfig
-import com.rk.terminal.ssh.SimpleSshTerminal
+import com.rk.terminal.ssh.SafeSshTerminal
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
@@ -30,9 +30,9 @@ import java.io.FileOutputStream
 
 object MkSession {
     // Global map to store SSH terminals
-    private val sshTerminalMap = mutableMapOf<TerminalSession, SimpleSshTerminal>()
+    private val sshTerminalMap = mutableMapOf<TerminalSession, SafeSshTerminal>()
     
-    fun getSshTerminal(terminalSession: TerminalSession): SimpleSshTerminal? {
+    fun getSshTerminal(terminalSession: TerminalSession): SafeSshTerminal? {
         return sshTerminalMap[terminalSession]
     }
     
@@ -251,45 +251,61 @@ Updating : apk update && apk upgrade
         session_id: String,
         sshConfig: SshConfig
     ): TerminalSession {
-        // Create a placeholder terminal session immediately (non-blocking)
-        val placeholderSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
+        // Create a regular terminal session immediately (non-blocking)
+        val terminalSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
         
-        // Show connecting message immediately
-        val connectingMsg = "🔗 Connecting to SSH server ${sshConfig.hostname}:${sshConfig.port}...\n⏳ Please wait while establishing connection...\n\n"
-        placeholderSession.emulator?.append(connectingMsg.toByteArray(), connectingMsg.length)
-        
-        // Create SSH terminal and start connection asynchronously
-        val sshTerminal = SimpleSshTerminal(sshConfig, sessionClient)
-        
-        // Store for later access
-        sshTerminalMap[placeholderSession] = sshTerminal
-        
-        // Start connection in background (completely non-blocking)
-        sshTerminal.createSessionAsync { sshSession ->
-            if (sshSession != null) {
-                // SSH connection successful
-                Log.d("MkSession", "SSH connection successful for ${sshConfig.hostname}:${sshConfig.port}")
-                
-                // Clear connecting message and show success
-                placeholderSession.emulator?.reset()
-                val successMsg = "✅ SSH connection established to ${sshConfig.hostname}:${sshConfig.port}!\n\n"
-                placeholderSession.emulator?.append(successMsg.toByteArray(), successMsg.length)
-                
-            } else {
-                // SSH connection failed
-                Log.e("MkSession", "Failed to connect to SSH server")
-                placeholderSession.emulator?.reset()
-                val errorMsg = "❌ Failed to connect to SSH server: ${sshConfig.hostname}:${sshConfig.port}\n\n" +
-                              "Please check:\n" +
-                              "• Hostname and port are correct\n" +
-                              "• Username and password are valid\n" +
-                              "• Server is reachable\n" +
-                              "• Network connection is available\n\n" +
-                              "Falling back to Android shell.\n\n"
-                placeholderSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+        try {
+            // Show initial connecting message
+            val connectingMsg = "🔗 Connecting to SSH server ${sshConfig.hostname}:${sshConfig.port}...\n"
+            terminalSession.emulator?.append(connectingMsg.toByteArray(), connectingMsg.length)
+            
+            // Create safe SSH terminal
+            val safeSshTerminal = SafeSshTerminal(sshConfig)
+            
+            // Store for later access
+            sshTerminalMap[terminalSession] = safeSshTerminal
+            
+            // Start connection asynchronously with progress updates
+            safeSshTerminal.connectAsync(
+                terminalSession = terminalSession,
+                onProgress = { message ->
+                    try {
+                        val progressMsg = "$message\n"
+                        terminalSession.emulator?.append(progressMsg.toByteArray(), progressMsg.length)
+                    } catch (e: Exception) {
+                        Log.e("MkSession", "Error showing progress", e)
+                    }
+                },
+                onSuccess = {
+                    try {
+                        Log.d("MkSession", "SSH connection successful for ${sshConfig.hostname}:${sshConfig.port}")
+                        val successMsg = "\n✅ SSH connection established!\n\n"
+                        terminalSession.emulator?.append(successMsg.toByteArray(), successMsg.length)
+                    } catch (e: Exception) {
+                        Log.e("MkSession", "Error showing success message", e)
+                    }
+                },
+                onError = { error ->
+                    try {
+                        Log.e("MkSession", "SSH connection failed: $error")
+                        val errorMsg = "\n❌ $error\n\nFalling back to Android shell.\n\n"
+                        terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+                    } catch (e: Exception) {
+                        Log.e("MkSession", "Error showing error message", e)
+                    }
+                }
+            )
+            
+        } catch (e: Exception) {
+            Log.e("MkSession", "Error creating SSH session", e)
+            try {
+                val errorMsg = "❌ SSH setup error: ${e.message}\nUsing Android shell instead.\n\n"
+                terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+            } catch (appendError: Exception) {
+                Log.e("MkSession", "Error showing setup error", appendError)
             }
         }
         
-        return placeholderSession
+        return terminalSession
     }
 }
