@@ -15,6 +15,7 @@ import com.rk.resources.drawables
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.Settings
 import com.rk.terminal.ui.screens.terminal.MkSession
+import com.rk.terminal.ssh.SshConfig
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import okhttp3.internal.wait
@@ -57,6 +58,16 @@ class SessionService : Service() {
                     "/sdcard"
                 }
                 fileManagerWorkingDirBySession[id] = defaultPath
+                updateNotification()
+            }
+        }
+        
+        fun createSshSession(id: String, client: TerminalSessionClient, activity: MainActivity, sshConfig: SshConfig): TerminalSession {
+            return MkSession.createSshSession(activity, client, id, sshConfig).also {
+                sessions[id] = it
+                sessionList[id] = com.rk.terminal.ui.screens.settings.WorkingMode.SSH
+                // Initialize File Manager working directory for SSH session to remote working directory
+                fileManagerWorkingDirBySession[id] = sshConfig.workingDirectory
                 updateNotification()
             }
         }

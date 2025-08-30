@@ -111,6 +111,17 @@ import com.rk.terminal.ui.components.SettingsToggle
 import com.rk.terminal.ui.routes.MainActivityRoutes
 import com.rk.terminal.ui.screens.settings.SettingsCard
 import com.rk.terminal.ui.screens.settings.WorkingMode
+import com.rk.terminal.ssh.SshConfig
+import com.rk.terminal.ssh.SshConfigDialog
+import com.rk.terminal.ssh.SavedSshConfigsDialog
+import com.rk.terminal.ssh.SshConfigManager
+import com.rk.terminal.ssh.SshFileManagerView
+import com.rk.terminal.ssh.SshFileManager
+import com.rk.terminal.ssh.SshFileOpenBus
+import com.rk.terminal.ssh.SshTerminalEmulator
+import com.rk.terminal.ssh.SshTextEditorView
+import com.rk.terminal.ssh.SshTerminalBackEnd
+import com.rk.terminal.ssh.SshTerminalSession
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysConstants
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysInfo
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysListener
@@ -233,6 +244,9 @@ fun TerminalScreen(
         val screenWidthDp = configuration.screenWidthDp
         val drawerWidth = (screenWidthDp * 0.84).dp
         var showAddDialog by remember { mutableStateOf(false) }
+        var showSshConfigDialog by remember { mutableStateOf(false) }
+        var showSavedSshConfigsDialog by remember { mutableStateOf(false) }
+        val sshConfigManager = remember { SshConfigManager(context) }
 
         BackHandler(enabled = drawerState.isOpen) {
             scope.launch {
@@ -299,8 +313,104 @@ fun TerminalScreen(
                             createSession(workingMode = WorkingMode.ANDROID)
                             showAddDialog = false
                         })
+                        
+                    SettingsCard(
+                        title = { Text("SSH Session") },
+                        description = {Text("Connect to remote server via SSH")},
+                        onClick = {
+                            showAddDialog = false
+                            showSshConfigDialog = true
+                        })
+                        
+                    SettingsCard(
+                        title = { Text("Saved SSH Configs") },
+                        description = {Text("Use previously saved SSH configurations")},
+                        onClick = {
+                            showAddDialog = false
+                            showSavedSshConfigsDialog = true
+                        })
                 }
             }
+        }
+
+        // SSH Configuration Dialog
+        if (showSshConfigDialog) {
+            SshConfigDialog(
+                onDismiss = { showSshConfigDialog = false },
+                onSave = { config, shouldSave ->
+                    if (shouldSave) {
+                        sshConfigManager.saveConfig(config)
+                    }
+                    
+                    // Create SSH session
+                    fun generateUniqueString(existingStrings: List<String>): String {
+                        var index = 1
+                        var newString: String
+
+                        do {
+                            newString = "ssh$index"
+                            index++
+                        } while (newString in existingStrings)
+
+                        return newString
+                    }
+
+                    val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
+
+                    terminalView.get()?.let { termView ->
+                        val client = TerminalBackEnd(termView, mainActivityActivity)
+                        mainActivityActivity.sessionBinder!!.createSshSession(
+                            sessionId,
+                            client,
+                            mainActivityActivity,
+                            config
+                        )
+                    }
+
+                    changeSession(mainActivityActivity, sessionId)
+                    showSshConfigDialog = false
+                }
+            )
+        }
+
+        // Saved SSH Configurations Dialog
+        if (showSavedSshConfigsDialog) {
+            SavedSshConfigsDialog(
+                onDismiss = { showSavedSshConfigsDialog = false },
+                onConfigSelected = { config ->
+                    showSavedSshConfigsDialog = false
+                    
+                    // Create SSH session directly with saved config
+                    fun generateUniqueString(existingStrings: List<String>): String {
+                        var index = 1
+                        var newString: String
+
+                        do {
+                            newString = "ssh$index"
+                            index++
+                        } while (newString in existingStrings)
+
+                        return newString
+                    }
+
+                    val sessionId = generateUniqueString(mainActivityActivity.sessionBinder!!.getService().sessionList.keys.toList())
+
+                    terminalView.get()?.let { termView ->
+                        val client = TerminalBackEnd(termView, mainActivityActivity)
+                        mainActivityActivity.sessionBinder!!.createSshSession(
+                            sessionId,
+                            client,
+                            mainActivityActivity,
+                            config
+                        )
+                    }
+
+                    changeSession(mainActivityActivity, sessionId)
+                },
+                onConfigDeleted = { config ->
+                    // Config is already deleted in the dialog
+                }
+            )
         }
 
         ModalNavigationDrawer(
@@ -627,28 +737,79 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
     val sessionId = mainActivityActivity.sessionBinder?.getService()?.currentSession?.value?.first ?: return
     val service = mainActivityActivity.sessionBinder?.getService() ?: return
     val workingDirState = remember { mutableStateOf(service.fileManagerWorkingDirBySession[sessionId] ?: "/sdcard") }
+    val workingMode = service.sessionList[sessionId] ?: WorkingMode.ANDROID
 
     // Ensure session map stays in sync
     LaunchedEffect(sessionId) {
         workingDirState.value = service.fileManagerWorkingDirBySession[sessionId] ?: workingDirState.value
     }
 
-    FileManagerView(
-        currentPath = workingDirState.value,
-        onNavigate = { newPath ->
-            service.fileManagerWorkingDirBySession[sessionId] = newPath
-            workingDirState.value = newPath
-        },
-        onEditFile = { file ->
-            // Send to editor and switch to Editor tab
-            FileOpenBus.open(file)
+    if (workingMode == WorkingMode.SSH) {
+        // SSH File Manager
+        val session = service.getSession(sessionId)
+        val sshTerminalSession = session as? SshTerminalSession
+        val sshFileManager = remember(sessionId) { 
+            sshTerminalSession?.getSshFileManager()
         }
-    )
+        
+        LaunchedEffect(sshFileManager) {
+            sshFileManager?.initialize()
+        }
+        
+        if (sshFileManager != null) {
+            SshFileManagerView(
+                sshFileManager = sshFileManager,
+                currentPath = workingDirState.value,
+                onNavigate = { newPath ->
+                    service.fileManagerWorkingDirBySession[sessionId] = newPath
+                    workingDirState.value = newPath
+                },
+                onEditFile = { remoteFile ->
+                    // Send to SSH-aware editor and switch to Editor tab
+                    SshFileOpenBus.open(remoteFile, sshFileManager)
+                    TabSwitchBus.request(2) // Switch to editor tab
+                },
+                onDownloadFile = { remoteFile ->
+                    // TODO: Implement download to local storage
+                },
+                onUploadFile = { remotePath ->
+                    // TODO: Implement upload from local storage
+                }
+            )
+        } else {
+            Text(
+                text = "SSH file manager not available",
+                modifier = Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    } else {
+        // Local File Manager
+        FileManagerView(
+            currentPath = workingDirState.value,
+            onNavigate = { newPath ->
+                service.fileManagerWorkingDirBySession[sessionId] = newPath
+                workingDirState.value = newPath
+            },
+            onEditFile = { file ->
+                // Send to editor and switch to Editor tab
+                FileOpenBus.open(file)
+            }
+        )
+    }
 }
 
 @Composable
 private fun TextEditorPane(mainActivityActivity: MainActivity) {
-    TextEditorView(mainActivityActivity)
+    val (remoteFile, sshFileManager) = SshFileOpenBus.current()
+    
+    if (remoteFile != null && sshFileManager != null) {
+        // SSH remote file editor
+        SshTextEditorView(remoteFile, sshFileManager)
+    } else {
+        // Local file editor
+        TextEditorView(mainActivityActivity)
+    }
 }
 
 @Composable

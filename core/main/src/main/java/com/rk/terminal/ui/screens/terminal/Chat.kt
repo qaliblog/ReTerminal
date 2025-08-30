@@ -67,6 +67,8 @@ import androidx.compose.ui.platform.LocalFocusManager
 import com.rk.settings.Settings
 import androidx.compose.foundation.layout.PaddingValues
 import com.rk.terminal.ui.screens.terminal.MainShell
+import com.rk.terminal.ui.screens.settings.WorkingMode
+import com.rk.terminal.ssh.SshTerminalSession
 import java.text.SimpleDateFormat
 import java.util.Date
 
@@ -75,6 +77,17 @@ private data class ChatMessage(val role: String, val content: String)
 @Composable
 fun ChatView(mainActivityActivity: MainActivity) {
     val sessionId = mainActivityActivity.sessionBinder?.getService()?.currentSession?.value?.first ?: return
+    val service = mainActivityActivity.sessionBinder?.getService() ?: return
+    val workingMode = service.sessionList[sessionId] ?: WorkingMode.ANDROID
+    
+    // Get SSH context if this is an SSH session
+    val sshContext = remember(sessionId, workingMode) {
+        if (workingMode == WorkingMode.SSH) {
+            val session = service.getSession(sessionId)
+            val sshTerminalSession = session as? SshTerminalSession
+            sshTerminalSession?.getSshSession()?.getSessionInfo()
+        } else null
+    }
 
     // Chat Session Manager state
     val chatRoot = remember { File(application!!.filesDir, "chat").apply { mkdirs() } }
@@ -352,6 +365,31 @@ fun ChatView(mainActivityActivity: MainActivity) {
     }
 
     Column(modifier = Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
+        // SSH Context Indicator
+        if (sshContext != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Chat,
+                        contentDescription = "SSH Session",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "SSH Session: $sshContext",
+                        modifier = Modifier.padding(start = 8.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        }
+        
         // Tabs
         TabRow(selectedTabIndex = selectedTab) {
             Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Chat") })
@@ -688,7 +726,15 @@ fun ChatView(mainActivityActivity: MainActivity) {
                     val prompt = input.trim()
                     if (prompt.isEmpty()) return@IconButton
                     input = ""
-                    messages.add(ChatMessage("user", prompt))
+                    
+                    // Add SSH context to user message if this is an SSH session
+                    val contextualPrompt = if (sshContext != null) {
+                        "[SSH Session: $sshContext] $prompt"
+                    } else {
+                        prompt
+                    }
+                    
+                    messages.add(ChatMessage("user", contextualPrompt))
                     messages.add(ChatMessage("assistant", if (sendMode == "chat") "…" else "Thinking…"))
                     saveHistory()
 

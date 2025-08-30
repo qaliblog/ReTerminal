@@ -1,6 +1,7 @@
 package com.rk.terminal.ui.screens.terminal
 
 import android.os.Environment
+import android.util.Log
 import com.rk.libcommons.alpineDir
 import com.rk.libcommons.application
 import com.rk.libcommons.child
@@ -14,9 +15,12 @@ import com.rk.terminal.App.Companion.getTempDir
 import com.rk.terminal.BuildConfig
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.WorkingMode
+import com.rk.terminal.ssh.SshConfig
+import com.rk.terminal.ssh.SshTerminalSession
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.FileOutputStream
 
@@ -227,6 +231,26 @@ Updating : apk update && apk upgrade
                 TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                 sessionClient,
             )
+        }
+    }
+    
+    fun createSshSession(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        sshConfig: SshConfig
+    ): TerminalSession {
+        return try {
+            val sshTerminalSession = SshTerminalSession(sshConfig, sessionClient)
+            Log.d("MkSession", "Created SSH session for ${sshConfig.hostname}:${sshConfig.port}")
+            sshTerminalSession
+        } catch (e: Exception) {
+            Log.e("MkSession", "Error creating SSH session", e)
+            // Create fallback session with error details
+            val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
+            val errorMsg = "SSH connection error: ${e.message}\nFalling back to Android shell.\n"
+            fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+            fallbackSession
         }
     }
 }
