@@ -43,20 +43,32 @@ class SshSession(private val config: SshConfig) {
                 session?.setPassword(config.password)
             }
             
-            // Configure session properties
+            // Configure session properties for stability
             val sessionConfig = Properties().apply {
                 put("StrictHostKeyChecking", if (config.strictHostKeyChecking) "yes" else "no")
                 put("compression.s2c", if (config.compressionEnabled) "zlib,none" else "none")
                 put("compression.c2s", if (config.compressionEnabled) "zlib,none" else "none")
+                
+                // Add connection stability settings
+                put("TCPKeepAlive", "yes")
+                put("ServerAliveCountMax", "3")
+                put("ConnectTimeout", (config.connectTimeout / 1000).toString())
+                
                 if (config.forwardX11) {
                     put("ForwardX11", "yes")
                 }
+                
+                // Add additional stability settings
+                put("PreferredAuthentications", "publickey,password")
+                put("GSSAPIAuthentication", "no")
+                put("HashKnownHosts", "no")
             }
             session?.setConfig(sessionConfig)
             
-            // Set timeouts
+            // Set timeouts and keep-alive
             session?.setTimeout(config.connectTimeout)
             session?.setServerAliveInterval(config.keepAliveInterval)
+            session?.setServerAliveCountMax(3)
             
             // Set user info for interactive authentication if needed
             session?.setUserInfo(object : UserInfo {
@@ -85,16 +97,26 @@ class SshSession(private val config: SshConfig) {
     suspend fun openShellChannel(): Pair<InputStream?, OutputStream?> = withContext(Dispatchers.IO) {
         try {
             shellChannel = session?.openChannel("shell") as? ChannelShell
+            
+            // Configure shell channel for stability
             shellChannel?.setPtyType("xterm-256color")
-            shellChannel?.setPtySize(80, 24, 640, 480)
+            shellChannel?.setPtySize(120, 30, 960, 720) // Larger terminal size
+            shellChannel?.setAgentForwarding(false)
+            shellChannel?.setXForwarding(config.forwardX11)
             
             // Set environment variables
             config.environmentVariables.forEach { (key, value) ->
                 shellChannel?.setEnv(key, value)
             }
             
-            shellChannel?.connect()
-            Log.d(TAG, "Shell channel opened successfully")
+            // Add standard environment variables for better shell experience
+            shellChannel?.setEnv("LANG", "en_US.UTF-8")
+            shellChannel?.setEnv("LC_ALL", "en_US.UTF-8")
+            shellChannel?.setEnv("SHELL", "/bin/bash")
+            
+            // Connect with timeout
+            shellChannel?.connect(config.connectTimeout)
+            Log.d(TAG, "Shell channel opened successfully with enhanced configuration")
             
             Pair(shellChannel?.inputStream, shellChannel?.outputStream)
         } catch (e: JSchException) {

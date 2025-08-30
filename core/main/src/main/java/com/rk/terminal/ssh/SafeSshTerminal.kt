@@ -62,6 +62,9 @@ class SafeSshTerminal(
                 // Start output bridge (SSH → Terminal)
                 startOutputBridge(terminalSession)
                 
+                // Start keep-alive mechanism
+                startKeepAlive()
+                
                 // Send initial commands
                 delay(500)
                 sendInitialCommands()
@@ -79,29 +82,60 @@ class SafeSshTerminal(
     private fun startOutputBridge(terminalSession: TerminalSession) {
         scope.launch {
             try {
+                Log.d(TAG, "Starting SSH output bridge")
                 val buffer = ByteArray(BUFFER_SIZE)
+                var connectionStable = false
+                
                 while (scope.isActive && sshSession?.isConnected() == true) {
-                    val bytesRead = sshInputStream?.read(buffer) ?: -1
-                    if (bytesRead > 0) {
-                        withContext(Dispatchers.Main) {
-                            try {
-                                terminalSession.emulator?.append(buffer, bytesRead)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error appending to terminal", e)
+                    try {
+                        val bytesRead = sshInputStream?.read(buffer) ?: -1
+                        
+                        if (bytesRead > 0) {
+                            connectionStable = true
+                            val text = String(buffer, 0, bytesRead, StandardCharsets.UTF_8)
+                            Log.d(TAG, "Received from SSH: $text")
+                            
+                            withContext(Dispatchers.Main) {
+                                try {
+                                    terminalSession.emulator?.append(buffer, bytesRead)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Error appending to terminal", e)
+                                }
                             }
-                        }
-                    } else if (bytesRead == -1) {
-                        withContext(Dispatchers.Main) {
-                            try {
-                                val errorMsg = "\n🔌 SSH connection closed\n"
-                                terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error showing disconnect message", e)
+                        } else if (bytesRead == -1) {
+                            Log.w(TAG, "SSH input stream returned EOF")
+                            if (connectionStable) {
+                                withContext(Dispatchers.Main) {
+                                    try {
+                                        val errorMsg = "\n🔌 SSH connection closed by server\n"
+                                        terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Error showing disconnect message", e)
+                                    }
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    try {
+                                        val errorMsg = "\n⚠️ SSH connection failed to establish properly\nTry reconnecting or check server settings\n"
+                                        terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Error showing connection failure", e)
+                                    }
+                                }
                             }
+                            break
+                        } else {
+                            // bytesRead == 0, continue reading
+                            delay(10) // Small delay to prevent busy waiting
                         }
-                        break
+                    } catch (readException: Exception) {
+                        Log.e(TAG, "Error reading from SSH stream", readException)
+                        delay(100) // Wait before retrying
                     }
                 }
+                
+                Log.d(TAG, "SSH output bridge ended")
+                
             } catch (e: Exception) {
                 Log.e(TAG, "Error in SSH output bridge", e)
                 withContext(Dispatchers.Main) {
@@ -112,6 +146,25 @@ class SafeSshTerminal(
                         Log.e(TAG, "Error showing bridge error message", bridgeError)
                     }
                 }
+            }
+        }
+    }
+    
+    private fun startKeepAlive() {
+        // Send periodic keep-alive to prevent connection timeout
+        scope.launch {
+            try {
+                while (scope.isActive && sshSession?.isConnected() == true) {
+                    delay(30000) // Send keep-alive every 30 seconds
+                    
+                    if (sshSession?.isConnected() == true) {
+                        // Send a harmless command to keep connection alive
+                        writeToSsh("# keep-alive\n")
+                        Log.d(TAG, "Sent SSH keep-alive")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in keep-alive mechanism", e)
             }
         }
     }
@@ -135,7 +188,12 @@ class SafeSshTerminal(
             }
             
             writeToSsh("pwd\n")
-            writeToSsh("echo 'Type commands to execute on remote server'\n")
+            writeToSsh("echo 'SSH session is active - type commands to execute remotely'\n")
+            writeToSsh("echo 'Connection status: Connected to ${sshConfig.hostname}'\n")
+            
+            // Test if the connection stays alive
+            delay(1000)
+            writeToSsh("echo 'Testing connection stability...'\n")
             
         } catch (e: Exception) {
             Log.e(TAG, "Error sending initial commands", e)
