@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.androidLibrary)
     alias(libs.plugins.kotlinAndroid)
     alias(libs.plugins.compose.compiler)
+    kotlin("plugin.serialization") version "1.8.22"
 }
 
 fun safeGit(vararg args: String): String {
@@ -119,4 +120,10 @@ dependencies {
     // For extracting tar archives from Hugging Face bundles
     api("org.apache.commons:commons-compress:1.26.2")
     api(libs.security.crypto)
+    // SSH library for sophisticated SSH connections
+    api("com.jcraft:jsch:0.1.55")
+    api("org.apache.sshd:sshd-core:2.11.0")
+    api("org.apache.sshd:sshd-sftp:2.11.0")
+    // Serialization for SSH config storage
+    api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 }

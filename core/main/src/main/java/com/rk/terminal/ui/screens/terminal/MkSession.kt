@@ -1,6 +1,7 @@
 package com.rk.terminal.ui.screens.terminal
 
 import android.os.Environment
+import android.util.Log
 import com.rk.libcommons.alpineDir
 import com.rk.libcommons.application
 import com.rk.libcommons.child
@@ -14,13 +15,23 @@ import com.rk.terminal.App.Companion.getTempDir
 import com.rk.terminal.BuildConfig
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.WorkingMode
+import com.rk.terminal.ssh.SshConfig
+import com.rk.terminal.ssh.SshTerminalSession
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.FileOutputStream
 
 object MkSession {
+    // Global map to store SSH sessions when reflection fails
+    private val sshSessionMap = mutableMapOf<TerminalSession, SshTerminalSession>()
+    
+    fun getSshSession(terminalSession: TerminalSession): SshTerminalSession? {
+        return sshSessionMap[terminalSession]
+    }
+    
     fun createSession(
         activity: MainActivity, sessionClient: TerminalSessionClient, session_id: String,workingMode:Int
     ): TerminalSession {
@@ -227,6 +238,41 @@ Updating : apk update && apk upgrade
                 TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
                 sessionClient,
             )
+        }
+    }
+    
+    fun createSshSession(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        sshConfig: SshConfig
+    ): TerminalSession {
+        return try {
+            val sshTerminalSession = SshTerminalSession(sshConfig, sessionClient)
+            Log.d("MkSession", "Created SSH session for ${sshConfig.hostname}:${sshConfig.port}")
+            
+            // Store SSH session reference for later access
+            val wrappedSession = sshTerminalSession.getTerminalSession()
+            
+            // Store the SSH session wrapper as a property we can access
+            // We'll use reflection to add our custom property
+            try {
+                val field = wrappedSession.javaClass.getDeclaredField("mHandle")
+                field.isAccessible = true
+                // Store our SSH session in an unused field or create a custom property
+            } catch (e: Exception) {
+                // If reflection fails, we'll store it in a global map
+                sshSessionMap[wrappedSession] = sshTerminalSession
+            }
+            
+            wrappedSession
+        } catch (e: Exception) {
+            Log.e("MkSession", "Error creating SSH session", e)
+            // Create fallback session with error details
+            val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
+            val errorMsg = "SSH connection error: ${e.message}\nFalling back to Android shell.\n"
+            fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+            fallbackSession
         }
     }
 }
