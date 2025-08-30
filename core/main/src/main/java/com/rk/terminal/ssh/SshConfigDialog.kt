@@ -27,6 +27,7 @@ fun SshConfigDialog(
     onDismiss: () -> Unit,
     onSave: (SshConfig, Boolean) -> Unit
 ) {
+    var isConnecting by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val configManager = remember { SshConfigManager(context) }
     
@@ -262,29 +263,37 @@ fun SshConfigDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    val config = SshConfig(
-                        id = initialConfig?.id ?: configManager.generateConfigId(),
-                        name = name.ifBlank { "$username@$hostname" },
-                        hostname = hostname,
-                        port = port.toIntOrNull() ?: 22,
-                        username = username,
-                        password = password,
-                        privateKeyPath = privateKeyPath,
-                        passphrase = passphrase,
-                        authMethod = authMethod,
-                        strictHostKeyChecking = strictHostKeyChecking,
-                        connectTimeout = connectTimeout.toIntOrNull() ?: 30000,
-                        keepAliveInterval = keepAliveInterval.toIntOrNull() ?: 60000,
-                        compressionEnabled = compressionEnabled,
-                        forwardX11 = forwardX11,
-                        workingDirectory = workingDirectory
-                    )
-                    onSave(config, saveConfig)
+                    if (!isConnecting) {
+                        isConnecting = true
+                        val config = SshConfig(
+                            id = initialConfig?.id ?: configManager.generateConfigId(),
+                            name = name.ifBlank { "$username@$hostname" },
+                            hostname = hostname,
+                            port = port.toIntOrNull() ?: 22,
+                            username = username,
+                            password = password,
+                            privateKeyPath = privateKeyPath,
+                            passphrase = passphrase,
+                            authMethod = authMethod,
+                            strictHostKeyChecking = strictHostKeyChecking,
+                            connectTimeout = connectTimeout.toIntOrNull() ?: 30000,
+                            keepAliveInterval = keepAliveInterval.toIntOrNull() ?: 60000,
+                            compressionEnabled = compressionEnabled,
+                            forwardX11 = forwardX11,
+                            workingDirectory = workingDirectory
+                        )
+                        onSave(config, saveConfig)
+                        isConnecting = false
+                    }
                 },
-                enabled = hostname.isNotBlank() && username.isNotBlank() && 
+                enabled = !isConnecting && hostname.isNotBlank() && username.isNotBlank() && 
                          (authMethod == AuthMethod.PRIVATE_KEY || password.isNotBlank())
             ) {
-                Text("Connect")
+                if (isConnecting) {
+                    Text("Connecting...")
+                } else {
+                    Text("Connect")
+                }
             }
         },
         dismissButton = {

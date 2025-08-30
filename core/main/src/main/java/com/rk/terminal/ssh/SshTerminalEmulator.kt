@@ -25,7 +25,7 @@ class SshTerminalEmulator(
         private const val BUFFER_SIZE = 8192
     }
     
-    suspend fun createSession(): TerminalSession? = withContext(Dispatchers.IO) {
+    suspend fun connectAsync(): Boolean = withContext(Dispatchers.IO) {
         try {
             // Initialize SSH connection
             sshSession = SshSession(sshConfig)
@@ -33,7 +33,7 @@ class SshTerminalEmulator(
             
             if (!connected) {
                 Log.e(TAG, "Failed to establish SSH connection")
-                return@withContext null
+                return@withContext false
             }
             
             // Open shell channel
@@ -42,51 +42,22 @@ class SshTerminalEmulator(
             if (inputStream == null || outputStream == null) {
                 Log.e(TAG, "Failed to open SSH shell channel")
                 sshSession?.disconnect()
-                return@withContext null
+                return@withContext false
             }
             
             sshInputStream = inputStream
             sshOutputStream = outputStream
             
-            // Create terminal session with custom client
-            withContext(Dispatchers.Main) {
-                val customClient = SshAwareTerminalSessionClient(sessionClient, this@SshTerminalEmulator)
-                
-                terminalSession = TerminalSession(
-                    "/system/bin/cat", // Dummy command
-                    sshConfig.workingDirectory,
-                    arrayOf("/dev/null"),
-                    arrayOf(
-                        "TERM=xterm-256color",
-                        "SSH_CONNECTION=${sshConfig.hostname}",
-                        "SSH_USER=${sshConfig.username}",
-                        "SSH_HOST=${sshConfig.hostname}",
-                        "SSH_PORT=${sshConfig.port}"
-                    ),
-                    TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
-                    customClient
-                )
-                
-                // Override the terminal session's write method
-                overrideTerminalInput()
-                
-                // Start SSH bridge
-                startSshBridge()
-                
-                // Send initial commands
-                scope.launch {
-                    delay(1000)
-                    sendInitialCommands()
-                }
-            }
-            
-            terminalSession
+            Log.d(TAG, "SSH connection established successfully")
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "Error creating SSH terminal session", e)
+            Log.e(TAG, "Error establishing SSH connection", e)
             cleanup()
-            null
+            false
         }
     }
+    
+
     
     private fun overrideTerminalInput() {
         try {
@@ -231,6 +202,23 @@ class SshTerminalEmulator(
             sshOutputStream?.close()
         } catch (e: Exception) {
             Log.e(TAG, "Error closing SSH streams", e)
+        }
+    }
+    
+    fun bridgeToExistingSession(existingSession: TerminalSession) {
+        // Replace the terminal session with the existing one and start bridging
+        terminalSession = existingSession
+        
+        // Override input redirection for the existing session
+        overrideTerminalInput()
+        
+        // Start SSH bridge for the existing session
+        startSshBridge()
+        
+        // Send initial commands
+        scope.launch {
+            delay(500)
+            sendInitialCommands()
         }
     }
     

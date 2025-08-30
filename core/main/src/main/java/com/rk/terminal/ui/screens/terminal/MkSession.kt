@@ -16,20 +16,24 @@ import com.rk.terminal.BuildConfig
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ssh.SshConfig
-import com.rk.terminal.ssh.SshTerminalEmulator
+import com.rk.terminal.ssh.SimpleSshTerminal
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
 object MkSession {
-    // Global map to store SSH emulators
-    private val sshEmulatorMap = mutableMapOf<TerminalSession, SshTerminalEmulator>()
+    // Global map to store SSH terminals
+    private val sshTerminalMap = mutableMapOf<TerminalSession, SimpleSshTerminal>()
     
-    fun getSshEmulator(terminalSession: TerminalSession): SshTerminalEmulator? {
-        return sshEmulatorMap[terminalSession]
+    fun getSshTerminal(terminalSession: TerminalSession): SimpleSshTerminal? {
+        return sshTerminalMap[terminalSession]
     }
     
     fun createSession(
@@ -247,32 +251,45 @@ Updating : apk update && apk upgrade
         session_id: String,
         sshConfig: SshConfig
     ): TerminalSession {
-        return runBlocking {
-            try {
-                val sshEmulator = SshTerminalEmulator(sshConfig, sessionClient)
-                val terminalSession = sshEmulator.createSession()
+        // Create a placeholder terminal session immediately (non-blocking)
+        val placeholderSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
+        
+        // Show connecting message immediately
+        val connectingMsg = "🔗 Connecting to SSH server ${sshConfig.hostname}:${sshConfig.port}...\n⏳ Please wait while establishing connection...\n\n"
+        placeholderSession.emulator?.append(connectingMsg.toByteArray(), connectingMsg.length)
+        
+        // Create SSH terminal and start connection asynchronously
+        val sshTerminal = SimpleSshTerminal(sshConfig, sessionClient)
+        
+        // Store for later access
+        sshTerminalMap[placeholderSession] = sshTerminal
+        
+        // Start connection in background (completely non-blocking)
+        sshTerminal.createSessionAsync { sshSession ->
+            if (sshSession != null) {
+                // SSH connection successful
+                Log.d("MkSession", "SSH connection successful for ${sshConfig.hostname}:${sshConfig.port}")
                 
-                if (terminalSession == null) {
-                    Log.e("MkSession", "Failed to create SSH session")
-                    // Create fallback session with error message
-                    val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
-                    val errorMsg = "Failed to connect to SSH server: ${sshConfig.hostname}:${sshConfig.port}\nPlease check your connection settings.\n"
-                    fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
-                    fallbackSession
-                } else {
-                    // Store SSH emulator for later access
-                    sshEmulatorMap[terminalSession] = sshEmulator
-                    Log.d("MkSession", "Created SSH session for ${sshConfig.hostname}:${sshConfig.port}")
-                    terminalSession
-                }
-            } catch (e: Exception) {
-                Log.e("MkSession", "Error creating SSH session", e)
-                // Create fallback session with error details
-                val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
-                val errorMsg = "SSH connection error: ${e.message}\nFalling back to Android shell.\n"
-                fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
-                fallbackSession
+                // Clear connecting message and show success
+                placeholderSession.emulator?.reset()
+                val successMsg = "✅ SSH connection established to ${sshConfig.hostname}:${sshConfig.port}!\n\n"
+                placeholderSession.emulator?.append(successMsg.toByteArray(), successMsg.length)
+                
+            } else {
+                // SSH connection failed
+                Log.e("MkSession", "Failed to connect to SSH server")
+                placeholderSession.emulator?.reset()
+                val errorMsg = "❌ Failed to connect to SSH server: ${sshConfig.hostname}:${sshConfig.port}\n\n" +
+                              "Please check:\n" +
+                              "• Hostname and port are correct\n" +
+                              "• Username and password are valid\n" +
+                              "• Server is reachable\n" +
+                              "• Network connection is available\n\n" +
+                              "Falling back to Android shell.\n\n"
+                placeholderSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
             }
         }
+        
+        return placeholderSession
     }
 }
