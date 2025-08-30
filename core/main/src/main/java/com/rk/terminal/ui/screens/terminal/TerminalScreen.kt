@@ -744,7 +744,7 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
 
     if (workingMode == WorkingMode.SSH) {
         // SSH File Manager
-        val session = service.getSession(sessionId)
+        val session = mainActivityActivity.sessionBinder?.getSession(sessionId)
         val sshTerminalSession = session?.let { MkSession.getSshSession(it) }
         val sshFileManager = remember(sessionId) { 
             sshTerminalSession?.getSshFileManager()

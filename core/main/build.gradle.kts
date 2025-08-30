@@ -4,7 +4,7 @@ plugins {
     alias(libs.plugins.androidLibrary)
     alias(libs.plugins.kotlinAndroid)
     alias(libs.plugins.compose.compiler)
-    kotlin("plugin.serialization") version "1.9.10"
+    kotlin("plugin.serialization") version "1.8.22"
 }
 
 fun safeGit(vararg args: String): String {

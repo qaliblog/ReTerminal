@@ -84,7 +84,7 @@ fun ChatView(mainActivityActivity: MainActivity) {
     // Get SSH context if this is an SSH session
     val sshContext = remember(sessionId, workingMode) {
         if (workingMode == WorkingMode.SSH) {
-            val session = service.getSession(sessionId)
+            val session = mainActivityActivity.sessionBinder?.getSession(sessionId)
             val sshTerminalSession = session?.let { MkSession.getSshSession(it) }
             sshTerminalSession?.getSshSession()?.getSessionInfo()
         } else null
