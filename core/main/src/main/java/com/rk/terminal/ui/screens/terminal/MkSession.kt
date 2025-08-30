@@ -16,7 +16,7 @@ import com.rk.terminal.BuildConfig
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ssh.SshConfig
-import com.rk.terminal.ssh.SshTerminalSession
+import com.rk.terminal.ssh.SshTerminalEmulator
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
@@ -25,11 +25,11 @@ import java.io.File
 import java.io.FileOutputStream
 
 object MkSession {
-    // Global map to store SSH sessions when reflection fails
-    private val sshSessionMap = mutableMapOf<TerminalSession, SshTerminalSession>()
+    // Global map to store SSH emulators
+    private val sshEmulatorMap = mutableMapOf<TerminalSession, SshTerminalEmulator>()
     
-    fun getSshSession(terminalSession: TerminalSession): SshTerminalSession? {
-        return sshSessionMap[terminalSession]
+    fun getSshEmulator(terminalSession: TerminalSession): SshTerminalEmulator? {
+        return sshEmulatorMap[terminalSession]
     }
     
     fun createSession(
@@ -247,32 +247,32 @@ Updating : apk update && apk upgrade
         session_id: String,
         sshConfig: SshConfig
     ): TerminalSession {
-        return try {
-            val sshTerminalSession = SshTerminalSession(sshConfig, sessionClient)
-            Log.d("MkSession", "Created SSH session for ${sshConfig.hostname}:${sshConfig.port}")
-            
-            // Store SSH session reference for later access
-            val wrappedSession = sshTerminalSession.getTerminalSession()
-            
-            // Store the SSH session wrapper as a property we can access
-            // We'll use reflection to add our custom property
+        return runBlocking {
             try {
-                val field = wrappedSession.javaClass.getDeclaredField("mHandle")
-                field.isAccessible = true
-                // Store our SSH session in an unused field or create a custom property
+                val sshEmulator = SshTerminalEmulator(sshConfig, sessionClient)
+                val terminalSession = sshEmulator.createSession()
+                
+                if (terminalSession == null) {
+                    Log.e("MkSession", "Failed to create SSH session")
+                    // Create fallback session with error message
+                    val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
+                    val errorMsg = "Failed to connect to SSH server: ${sshConfig.hostname}:${sshConfig.port}\nPlease check your connection settings.\n"
+                    fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+                    fallbackSession
+                } else {
+                    // Store SSH emulator for later access
+                    sshEmulatorMap[terminalSession] = sshEmulator
+                    Log.d("MkSession", "Created SSH session for ${sshConfig.hostname}:${sshConfig.port}")
+                    terminalSession
+                }
             } catch (e: Exception) {
-                // If reflection fails, we'll store it in a global map
-                sshSessionMap[wrappedSession] = sshTerminalSession
+                Log.e("MkSession", "Error creating SSH session", e)
+                // Create fallback session with error details
+                val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
+                val errorMsg = "SSH connection error: ${e.message}\nFalling back to Android shell.\n"
+                fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+                fallbackSession
             }
-            
-            wrappedSession
-        } catch (e: Exception) {
-            Log.e("MkSession", "Error creating SSH session", e)
-            // Create fallback session with error details
-            val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
-            val errorMsg = "SSH connection error: ${e.message}\nFalling back to Android shell.\n"
-            fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
-            fallbackSession
         }
     }
 }
