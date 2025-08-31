@@ -38,20 +38,25 @@ class SshConfigManager(private val context: Context) {
     
     fun saveConfig(config: SshConfig): Boolean {
         return try {
+            android.util.Log.d("SshConfigManager", "Saving SSH config: ${config.name} (${config.hostname}:${config.port})")
             val configs = getSavedConfigs().toMutableList()
             val existingIndex = configs.indexOfFirst { it.id == config.id }
             
             if (existingIndex >= 0) {
                 configs[existingIndex] = config
+                android.util.Log.d("SshConfigManager", "Updated existing config at index $existingIndex")
             } else {
                 configs.add(config)
+                android.util.Log.d("SshConfigManager", "Added new config, total configs: ${configs.size}")
             }
             
             val savedConfigs = SavedSshConfigs(configs)
             val jsonString = json.encodeToString(savedConfigs)
             encryptedPrefs.edit().putString("configs", jsonString).apply()
+            android.util.Log.d("SshConfigManager", "SSH config saved successfully")
             true
         } catch (e: Exception) {
+            android.util.Log.e("SshConfigManager", "Failed to save SSH config", e)
             false
         }
     }

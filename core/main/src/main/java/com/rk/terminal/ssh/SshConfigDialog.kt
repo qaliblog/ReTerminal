@@ -282,6 +282,7 @@ fun SshConfigDialog(
                             forwardX11 = forwardX11,
                             workingDirectory = workingDirectory
                         )
+                        android.util.Log.d("SshConfigDialog", "Calling onSave with saveConfig=$saveConfig for ${config.name}")
                         onSave(config, saveConfig)
                         isConnecting = false
                     }
