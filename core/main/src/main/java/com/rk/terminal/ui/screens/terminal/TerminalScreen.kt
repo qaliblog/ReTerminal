@@ -114,6 +114,7 @@ import com.rk.terminal.ui.screens.settings.SettingsCard
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ssh.SshConfig
 import com.rk.terminal.ssh.SshConfigDialog
+import com.rk.terminal.ssh.AuthMethod
 import com.rk.terminal.ssh.SavedSshConfigsDialog
 import com.rk.terminal.ssh.SshConfigManager
 import com.rk.terminal.ssh.SshFileManagerView
