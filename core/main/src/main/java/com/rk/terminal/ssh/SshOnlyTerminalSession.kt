@@ -22,11 +22,11 @@ class SshOnlyTerminalSession(
     }
     
     init {
-        // Create terminal session that won't start a persistent process
+        // Create terminal session with a long-running command that we can control
         terminalSession = TerminalSession(
-            "/system/bin/echo", // Echo command that exits immediately
+            "/system/bin/cat", // Cat will wait for input indefinitely
             "/",
-            arrayOf("SSH session initializing..."),
+            arrayOf(), // No arguments - cat will wait for stdin
             arrayOf("TERM=xterm", "SSH_MODE=1"),
             TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
             sessionClient
@@ -39,8 +39,8 @@ class SshOnlyTerminalSession(
     private fun initializeSsh() {
         scope.launch {
             try {
-                // Wait for echo command to finish
-                delay(1000)
+                // Wait for cat command to start
+                delay(500)
                 
                 // Now the terminal is ready for SSH-only mode
                 withContext(Dispatchers.Main) {
@@ -62,8 +62,14 @@ class SshOnlyTerminalSession(
                         val successMsg = "\n✅ SSH session active - all input will go to remote server\n\n"
                         terminalSession.emulator?.append(successMsg.toByteArray(), successMsg.length)
                         
-                        // Set up input interception
+                        // Set up input interception by replacing process streams
                         setupInputRedirection()
+                        
+                        // Send a test command to verify SSH is working
+                        scope.launch {
+                            delay(1000)
+                            safeSshTerminal?.writeToSsh("echo 'SSH input redirection active'\n")
+                        }
                     },
                     onError = { error ->
                         Log.e(TAG, "SSH connection failed: $error")
@@ -80,13 +86,37 @@ class SshOnlyTerminalSession(
     
     private fun setupInputRedirection() {
         try {
-            // Override the write method of the terminal session
+            // Replace the cat process's stdin with SSH redirection
             val sessionClass = terminalSession.javaClass
-            val writeMethod = sessionClass.getDeclaredMethod("write", String::class.java)
-            writeMethod.isAccessible = true
+            val processField = sessionClass.getDeclaredField("mProcess")
+            processField.isAccessible = true
+            val process = processField.get(terminalSession)
             
-            // Create a proxy that intercepts write calls
-            Log.d(TAG, "SSH input redirection active")
+            if (process != null) {
+                val processClass = process.javaClass
+                val outputStreamField = processClass.getDeclaredField("mOutputStream")
+                outputStreamField.isAccessible = true
+                
+                // Create SSH redirect stream
+                val sshRedirectStream = object : OutputStream() {
+                    override fun write(b: Int) {
+                        safeSshTerminal?.writeToSsh(byteArrayOf(b.toByte()), 0, 1)
+                        Log.d(TAG, "SSH redirect: ${b.toChar()}")
+                    }
+                    
+                    override fun write(b: ByteArray, off: Int, len: Int) {
+                        safeSshTerminal?.writeToSsh(b, off, len)
+                        val text = String(b, off, len)
+                        Log.d(TAG, "SSH redirect: $text")
+                    }
+                    
+                    override fun flush() {}
+                    override fun close() {}
+                }
+                
+                outputStreamField.set(process, sshRedirectStream)
+                Log.d(TAG, "SSH input redirection set up successfully")
+            }
             
         } catch (e: Exception) {
             Log.w(TAG, "Could not set up input redirection: ${e.message}")
