@@ -71,6 +71,16 @@ class SessionService : Service() {
                 updateNotification()
             }
         }
+        
+        fun createAlpineSshSession(id: String, client: TerminalSessionClient, activity: MainActivity, sshCommand: String, sshConfig: SshConfig): TerminalSession {
+            return MkSession.createAlpineSshSession(activity, client, id, sshCommand, sshConfig).also {
+                sessions[id] = it
+                sessionList[id] = com.rk.terminal.ui.screens.settings.WorkingMode.SSH
+                // Initialize File Manager working directory for SSH session
+                fileManagerWorkingDirBySession[id] = sshConfig.workingDirectory
+                updateNotification()
+            }
+        }
 
         // Hidden session support removed; only visible sessions are supported
         fun getSession(id: String): TerminalSession? {

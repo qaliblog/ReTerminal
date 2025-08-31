@@ -86,7 +86,11 @@ fun ChatView(mainActivityActivity: MainActivity) {
         if (workingMode == WorkingMode.SSH) {
             val session = mainActivityActivity.sessionBinder?.getSession(sessionId)
             val sshTerminal = session?.let { MkSession.getSshTerminal(it) }
-            sshTerminal?.getSshSession()?.getSessionInfo()
+            val sshConfig = session?.let { MkSession.getSshConfig(it) }
+            
+            // Get SSH info from either JSch session or Alpine SSH config
+            sshTerminal?.getSshSession()?.getSessionInfo() 
+                ?: sshConfig?.let { "${it.username}@${it.hostname}:${it.port}" }
         } else null
     }
 

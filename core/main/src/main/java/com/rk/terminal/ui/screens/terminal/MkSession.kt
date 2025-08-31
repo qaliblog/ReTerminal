@@ -10,6 +10,7 @@ import com.rk.libcommons.localBinDir
 import com.rk.libcommons.localDir
 import com.rk.libcommons.localLibDir
 import com.rk.libcommons.pendingCommand
+import com.rk.libcommons.TerminalCommand
 import com.rk.settings.Settings
 import com.rk.terminal.App.Companion.getTempDir
 import com.rk.terminal.BuildConfig
@@ -276,5 +277,44 @@ Updating : apk update && apk upgrade
             fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
             return fallbackSession
         }
+    }
+    
+    fun createAlpineSshSession(
+        activity: MainActivity,
+        sessionClient: TerminalSessionClient,
+        session_id: String,
+        sshCommand: String,
+        sshConfig: SshConfig
+    ): TerminalSession {
+        with(activity) {
+            Log.d("MkSession", "Creating Alpine SSH session with command: $sshCommand")
+            
+            // Set up pending command to execute SSH in Alpine
+            pendingCommand = TerminalCommand(
+                alpine = true,
+                shell = "/bin/sh",
+                args = arrayOf("-l", "-c", "echo 'Installing SSH client if needed...'; apk add --no-cache openssh-client > /dev/null 2>&1; echo 'Connecting to SSH server...'; $sshCommand"),
+                id = session_id,
+                workingMode = WorkingMode.ALPINE,
+                terminatePreviousSession = false,
+                workingDir = "/root",
+                env = arrayOf("HOME=/root", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            )
+            
+            // Create Alpine session that will execute the SSH command
+            val session = createSession(activity, sessionClient, session_id, WorkingMode.ALPINE)
+            
+            // Store SSH config for file manager integration
+            sshConfigMap[session] = sshConfig
+            
+            return session
+        }
+    }
+    
+    // Store SSH configs for Alpine SSH sessions
+    private val sshConfigMap = mutableMapOf<TerminalSession, SshConfig>()
+    
+    fun getSshConfig(terminalSession: TerminalSession): SshConfig? {
+        return sshConfigMap[terminalSession]
     }
 }

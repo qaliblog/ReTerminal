@@ -142,6 +142,51 @@ var virtualKeysView = WeakReference<VirtualKeysView?>(null)
 var darkText = mutableStateOf(Settings.blackTextColor)
 var bitmap = mutableStateOf<ImageBitmap?>(null)
 
+// Function to build Alpine SSH command from config
+private fun buildAlpineSshCommand(config: SshConfig): String {
+    val sshCommand = StringBuilder("ssh")
+    
+    // Add port if not default
+    if (config.port != 22) {
+        sshCommand.append(" -p ${config.port}")
+    }
+    
+    // Add private key if specified
+    if (config.authMethod != AuthMethod.PASSWORD && config.privateKeyPath.isNotEmpty()) {
+        sshCommand.append(" -i ${config.privateKeyPath}")
+    }
+    
+    // Add connection options
+    sshCommand.append(" -o ConnectTimeout=${config.connectTimeout / 1000}")
+    sshCommand.append(" -o ServerAliveInterval=${config.keepAliveInterval / 1000}")
+    sshCommand.append(" -o ServerAliveCountMax=3")
+    
+    if (!config.strictHostKeyChecking) {
+        sshCommand.append(" -o StrictHostKeyChecking=no")
+        sshCommand.append(" -o UserKnownHostsFile=/dev/null")
+    }
+    
+    if (config.compressionEnabled) {
+        sshCommand.append(" -C")
+    }
+    
+    if (config.forwardX11) {
+        sshCommand.append(" -X")
+    }
+    
+    // Add user and hostname
+    sshCommand.append(" ${config.username}@${config.hostname}")
+    
+    // Add working directory command
+    if (config.workingDirectory != "~") {
+        sshCommand.append(" 'cd ${config.workingDirectory} && exec bash -l'")
+    } else {
+        sshCommand.append(" 'exec bash -l'")
+    }
+    
+    return sshCommand.toString()
+}
+
 private val file = application!!.filesDir.child("font.ttf")
 private var font = (if (file.exists() && file.canRead()){
     Typeface.createFromFile(file)
@@ -344,7 +389,10 @@ fun TerminalScreen(
                         Log.d("TerminalScreen", "SSH config not saved (shouldSave = false)")
                     }
                     
-                    // Create SSH session
+                    // Generate SSH command for Alpine
+                    val sshCommand = buildAlpineSshCommand(config)
+                    
+                    // Create Alpine session with SSH command
                     fun generateUniqueString(existingStrings: List<String>): String {
                         var index = 1
                         var newString: String
@@ -361,10 +409,13 @@ fun TerminalScreen(
 
                     terminalView.get()?.let { termView ->
                         val client = TerminalBackEnd(termView, mainActivityActivity)
-                        mainActivityActivity.sessionBinder!!.createSshSession(
+                        
+                        // Create Alpine session with SSH command pre-filled
+                        mainActivityActivity.sessionBinder!!.createAlpineSshSession(
                             sessionId,
                             client,
                             mainActivityActivity,
+                            sshCommand,
                             config
                         )
                     }
@@ -382,7 +433,10 @@ fun TerminalScreen(
                 onConfigSelected = { config ->
                     showSavedSshConfigsDialog = false
                     
-                    // Create SSH session directly with saved config
+                    // Generate SSH command for Alpine
+                    val sshCommand = buildAlpineSshCommand(config)
+                    
+                    // Create Alpine SSH session with saved config
                     fun generateUniqueString(existingStrings: List<String>): String {
                         var index = 1
                         var newString: String
@@ -399,10 +453,11 @@ fun TerminalScreen(
 
                     terminalView.get()?.let { termView ->
                         val client = TerminalBackEnd(termView, mainActivityActivity)
-                        mainActivityActivity.sessionBinder!!.createSshSession(
+                        mainActivityActivity.sessionBinder!!.createAlpineSshSession(
                             sessionId,
                             client,
                             mainActivityActivity,
+                            sshCommand,
                             config
                         )
                     }
@@ -747,11 +802,17 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
     }
 
     if (workingMode == WorkingMode.SSH) {
-        // SSH File Manager
+        // SSH File Manager - check for both JSch SSH and Alpine SSH
         val session = mainActivityActivity.sessionBinder?.getSession(sessionId)
         val sshTerminal = session?.let { MkSession.getSshTerminal(it) }
+        val sshConfig = session?.let { MkSession.getSshConfig(it) }
+        
         val sshFileManager = remember(sessionId) { 
-            sshTerminal?.getSshFileManager()
+            sshTerminal?.getSshFileManager() ?: sshConfig?.let { 
+                // For Alpine SSH sessions, we'll need a different approach
+                // For now, show that it's an SSH session
+                null
+            }
         }
         
         LaunchedEffect(sshFileManager) {
@@ -777,6 +838,13 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
                 onUploadFile = { remotePath ->
                     // TODO: Implement upload from local storage
                 }
+            )
+        } else if (sshConfig != null) {
+            // Alpine SSH session - show message that this is an SSH session
+            Text(
+                text = "SSH Session: ${sshConfig.username}@${sshConfig.hostname}:${sshConfig.port}\n\nFile manager for Alpine SSH sessions will be available in a future update.\nFor now, use terminal commands to manage files.",
+                modifier = Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodyMedium
             )
         } else {
             Text(
