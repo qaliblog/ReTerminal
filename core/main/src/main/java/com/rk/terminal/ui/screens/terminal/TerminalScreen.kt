@@ -2,6 +2,7 @@ package com.rk.terminal.ui.screens.terminal
 
 import android.app.Activity
 import android.content.res.Configuration
+import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -337,7 +338,10 @@ fun TerminalScreen(
                 onDismiss = { showSshConfigDialog = false },
                 onSave = { config, shouldSave ->
                     if (shouldSave) {
-                        sshConfigManager.saveConfig(config)
+                        val saved = sshConfigManager.saveConfig(config)
+                        Log.d("TerminalScreen", "SSH config save result: $saved for ${config.name}")
+                    } else {
+                        Log.d("TerminalScreen", "SSH config not saved (shouldSave = false)")
                     }
                     
                     // Create SSH session

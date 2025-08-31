@@ -13,6 +13,7 @@ class SafeSshTerminal(
     private val sshConfig: SshConfig
 ) {
     private var sshSession: SshSession? = null
+    private var termuxSshSession: TermuxSshSession? = null
     private var sshInputStream: InputStream? = null
     private var sshOutputStream: OutputStream? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -32,30 +33,76 @@ class SafeSshTerminal(
             try {
                 onProgress("🔗 Connecting to ${sshConfig.hostname}:${sshConfig.port}...")
                 
-                // Initialize SSH connection
-                sshSession = SshSession(sshConfig)
-                val connected = sshSession!!.connect()
+                // Try Termux-specific SSH approach first
+                val termuxSsh = TermuxSshSession(sshConfig)
+                val termuxConnected = termuxSsh.connect()
                 
-                if (!connected) {
-                    Log.e(TAG, "Failed to establish SSH connection")
-                    onError("Failed to connect to SSH server")
-                    return@launch
+                if (termuxConnected) {
+                    Log.d(TAG, "Termux SSH connection successful, opening shell...")
+                    onProgress("🔐 Opening Termux shell...")
+                    
+                    val (inputStream, outputStream) = termuxSsh.openTermuxShell()
+                    
+                    if (inputStream != null && outputStream != null) {
+                        // Use Termux SSH session
+                        sshInputStream = inputStream
+                        sshOutputStream = outputStream
+                        
+                        // Store Termux session reference
+                        termuxSshSession = termuxSsh
+                        
+                        Log.d(TAG, "Termux SSH shell opened successfully")
+                    } else {
+                        Log.w(TAG, "Termux shell failed, trying regular SSH...")
+                        termuxSsh.disconnect()
+                        
+                        // Fallback to regular SSH
+                        sshSession = SshSession(sshConfig)
+                        val connected = sshSession!!.connect()
+                        
+                        if (!connected) {
+                            Log.e(TAG, "Failed to establish regular SSH connection")
+                            onError("Failed to connect to SSH server")
+                            return@launch
+                        }
+                        
+                        onProgress("🔐 Authenticating user ${sshConfig.username}...")
+                        
+                        // Open shell channel
+                        val (regInputStream, regOutputStream) = sshSession!!.openShellChannel()
+                        sshInputStream = regInputStream
+                        sshOutputStream = regOutputStream
+                    }
+                } else {
+                    Log.w(TAG, "Termux SSH failed, trying regular SSH...")
+                    
+                    // Fallback to regular SSH
+                    sshSession = SshSession(sshConfig)
+                    val connected = sshSession!!.connect()
+                    
+                    if (!connected) {
+                        Log.e(TAG, "Failed to establish SSH connection")
+                        onError("Failed to connect to SSH server")
+                        return@launch
+                    }
+                    
+                    onProgress("🔐 Authenticating user ${sshConfig.username}...")
+                    
+                    // Open shell channel
+                    val (inputStream, outputStream) = sshSession!!.openShellChannel()
+                    sshInputStream = inputStream
+                    sshOutputStream = outputStream
                 }
                 
-                onProgress("🔐 Authenticating user ${sshConfig.username}...")
-                
-                // Open shell channel
-                val (inputStream, outputStream) = sshSession!!.openShellChannel()
-                
-                if (inputStream == null || outputStream == null) {
+                if (sshInputStream == null || sshOutputStream == null) {
                     Log.e(TAG, "Failed to open SSH shell channel")
                     sshSession?.disconnect()
+                    termuxSshSession?.disconnect()
                     onError("Failed to open SSH shell channel")
                     return@launch
                 }
                 
-                sshInputStream = inputStream
-                sshOutputStream = outputStream
+
                 
                 onProgress("🚀 Setting up SSH shell...")
                 
@@ -237,6 +284,7 @@ class SafeSshTerminal(
         try {
             scope.cancel()
             sshSession?.disconnect()
+            termuxSshSession?.disconnect()
             sshInputStream?.close()
             sshOutputStream?.close()
             Log.d(TAG, "SSH terminal cleaned up")
@@ -246,6 +294,7 @@ class SafeSshTerminal(
     }
     
     fun getSshSession(): SshSession? = sshSession
-    fun isConnected(): Boolean = sshSession?.isConnected() == true
+    fun getTermuxSshSession(): TermuxSshSession? = termuxSshSession
+    fun isConnected(): Boolean = sshSession?.isConnected() == true || termuxSshSession?.isConnected() == true
     fun getSshFileManager(): SshFileManager? = sshSession?.let { SshFileManager(it) }
 }

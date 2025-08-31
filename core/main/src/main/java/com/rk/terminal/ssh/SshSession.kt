@@ -98,40 +98,66 @@ class SshSession(private val config: SshConfig) {
         try {
             Log.d(TAG, "Opening shell channel...")
             
-            // Open shell channel with basic configuration
-            shellChannel = session?.openChannel("shell") as? ChannelShell
+            // Try different approaches for Termux compatibility
+            shellChannel = try {
+                Log.d(TAG, "Trying to open shell channel...")
+                session?.openChannel("shell") as? ChannelShell
+            } catch (e: Exception) {
+                Log.w(TAG, "Shell channel failed, trying exec with bash: ${e.message}")
+                try {
+                    // For Termux, try exec channel with explicit bash
+                    val execChannel = session?.openChannel("exec")
+                    if (execChannel is com.jcraft.jsch.ChannelExec) {
+                        execChannel.setCommand("/data/data/com.termux/files/usr/bin/bash -l")
+                        execChannel.setPty(true)
+                        execChannel as? ChannelShell
+                    } else null
+                } catch (e2: Exception) {
+                    Log.w(TAG, "Exec channel also failed: ${e2.message}")
+                    null
+                }
+            }
             
             if (shellChannel == null) {
-                Log.e(TAG, "Failed to create any type of shell channel")
+                Log.e(TAG, "Failed to create shell or exec channel")
                 return@withContext Pair(null, null)
             }
             
             Log.d(TAG, "Configuring shell channel...")
             
-            // Configure shell channel with minimal, compatible settings
+            // Configure shell channel with Termux-compatible settings
             try {
-                Log.d(TAG, "Setting PTY type...")
-                shellChannel?.setPtyType("vt100") // Most compatible terminal type
+                Log.d(TAG, "Configuring shell channel for Termux compatibility...")
                 
-                Log.d(TAG, "Setting PTY size...")
-                shellChannel?.setPtySize(80, 24, 640, 480) // Standard size
+                // Termux-specific configuration
+                shellChannel?.setPtyType("xterm") // Termux prefers xterm
+                shellChannel?.setPtySize(80, 24, 640, 480)
                 
-                Log.d(TAG, "Configuring forwarding...")
+                // Minimal forwarding settings for Termux
                 shellChannel?.setAgentForwarding(false)
                 shellChannel?.setXForwarding(false)
                 
-                // Set only essential environment variables
+                // Set Termux-compatible environment
                 try {
-                    shellChannel?.setEnv("TERM", "vt100")
-                    Log.d(TAG, "Set TERM environment variable")
+                    shellChannel?.setEnv("TERM", "xterm")
+                    shellChannel?.setEnv("HOME", "/data/data/com.termux/files/home")
+                    shellChannel?.setEnv("PREFIX", "/data/data/com.termux/files/usr")
+                    shellChannel?.setEnv("PATH", "/data/data/com.termux/files/usr/bin")
+                    Log.d(TAG, "Set Termux environment variables")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Could not set TERM variable: ${e.message}")
+                    Log.w(TAG, "Could not set Termux environment: ${e.message}")
                 }
                 
-                Log.d(TAG, "Connecting shell channel with timeout ${config.connectTimeout}ms...")
+                Log.d(TAG, "Connecting shell channel...")
                 
-                // Connect with shorter timeout for faster failure detection
-                shellChannel?.connect(15000) // 15 second timeout
+                // Connect without timeout first, then with timeout if that fails
+                try {
+                    shellChannel?.connect()
+                    Log.d(TAG, "Shell channel connected without timeout")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Connection without timeout failed, trying with timeout: ${e.message}")
+                    shellChannel?.connect(10000) // 10 second timeout
+                }
                 
                 // Verify channel is connected
                 if (shellChannel?.isConnected != true) {
