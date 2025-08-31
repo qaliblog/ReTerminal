@@ -285,6 +285,7 @@ fun SshConfigDialog(
                             workingDirectory = workingDirectory
                         )
                         android.util.Log.d("SshConfigDialog", "Calling onSave with saveConfig=$saveConfig for ${config.name}")
+                        android.util.Log.d("SshConfigDialog", "Config details - ID: ${config.id}, Host: ${config.hostname}:${config.port}, User: ${config.username}")
                         onSave(config, saveConfig)
                         isConnecting = false
                     }

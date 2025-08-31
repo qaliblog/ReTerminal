@@ -121,6 +121,9 @@ import com.rk.terminal.ssh.SshFileManager
 import com.rk.terminal.ssh.SshFileOpenBus
 import com.rk.terminal.ssh.SshTextEditorView
 import com.rk.terminal.ssh.SafeSshTerminal
+import com.rk.terminal.ssh.AlpineSshFileManagerView
+import com.rk.terminal.ssh.AlpineSshFileOpenBus
+import com.rk.terminal.ssh.AlpineSshTextEditorView
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysConstants
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysInfo
 import com.rk.terminal.ui.screens.terminal.virtualkeys.VirtualKeysListener
@@ -840,11 +843,19 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
                 }
             )
         } else if (sshConfig != null) {
-            // Alpine SSH session - show message that this is an SSH session
-            Text(
-                text = "SSH Session: ${sshConfig.username}@${sshConfig.hostname}:${sshConfig.port}\n\nFile manager for Alpine SSH sessions will be available in a future update.\nFor now, use terminal commands to manage files.",
-                modifier = Modifier.padding(16.dp),
-                style = MaterialTheme.typography.bodyMedium
+            // Alpine SSH session - show Alpine SSH file manager
+            AlpineSshFileManagerView(
+                sshConfig = sshConfig,
+                currentPath = workingDirState.value,
+                onNavigate = { newPath ->
+                    service.fileManagerWorkingDirBySession[sessionId] = newPath
+                    workingDirState.value = newPath
+                },
+                onEditFile = { filePath ->
+                    // Send to Alpine SSH editor
+                    AlpineSshFileOpenBus.open(filePath, sshConfig)
+                    TabSwitchBus.request(2) // Switch to editor tab
+                }
             )
         } else {
             Text(
@@ -872,13 +883,21 @@ private fun FileManagerPane(mainActivityActivity: MainActivity) {
 @Composable
 private fun TextEditorPane(mainActivityActivity: MainActivity) {
     val (remoteFile, sshFileManager) = SshFileOpenBus.current()
+    val (alpineSshFile, alpineSshConfig) = AlpineSshFileOpenBus.current()
     
-    if (remoteFile != null && sshFileManager != null) {
-        // SSH remote file editor
-        SshTextEditorView(remoteFile, sshFileManager)
-    } else {
-        // Local file editor
-        TextEditorView(mainActivityActivity)
+    when {
+        remoteFile != null && sshFileManager != null -> {
+            // JSch SSH remote file editor
+            SshTextEditorView(remoteFile, sshFileManager)
+        }
+        alpineSshFile != null && alpineSshConfig != null -> {
+            // Alpine SSH file editor
+            AlpineSshTextEditorView(alpineSshFile, alpineSshConfig)
+        }
+        else -> {
+            // Local file editor
+            TextEditorView(mainActivityActivity)
+        }
     }
 }
 
