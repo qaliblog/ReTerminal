@@ -293,7 +293,7 @@ Updating : apk update && apk upgrade
             pendingCommand = TerminalCommand(
                 alpine = true,
                 shell = "/bin/sh",
-                args = arrayOf("-l", "-c", "echo 'Installing SSH client if needed...'; apk add --no-cache openssh-client > /dev/null 2>&1; echo 'Connecting to SSH server...'; $sshCommand"),
+                args = arrayOf("-l", "-c", "echo 'Installing SSH tools if needed...'; apk add --no-cache openssh-client-default sshpass > /dev/null 2>&1; echo 'SSH tools ready. Connecting to server...'; echo 'Command: $sshCommand'; $sshCommand"),
                 id = session_id,
                 workingMode = WorkingMode.ALPINE,
                 terminatePreviousSession = false,
