@@ -22,11 +22,11 @@ class SshOnlyTerminalSession(
     }
     
     init {
-        // Create terminal session with a long-running command that we can control
+        // Create terminal session with a command that never exits
         terminalSession = TerminalSession(
-            "/system/bin/cat", // Cat will wait for input indefinitely
+            "/system/bin/sleep", // Sleep command that runs for a long time
             "/",
-            arrayOf(), // No arguments - cat will wait for stdin
+            arrayOf("999999"), // Sleep for ~11 days (effectively infinite)
             arrayOf("TERM=xterm", "SSH_MODE=1"),
             TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
             sessionClient
@@ -39,7 +39,7 @@ class SshOnlyTerminalSession(
     private fun initializeSsh() {
         scope.launch {
             try {
-                // Wait for cat command to start
+                // Wait for sleep command to start
                 delay(500)
                 
                 // Now the terminal is ready for SSH-only mode
@@ -86,7 +86,7 @@ class SshOnlyTerminalSession(
     
     private fun setupInputRedirection() {
         try {
-            // Replace the cat process's stdin with SSH redirection
+            // Replace the sleep process's stdin with SSH redirection
             val sessionClass = terminalSession.javaClass
             val processField = sessionClass.getDeclaredField("mProcess")
             processField.isAccessible = true
