@@ -17,6 +17,7 @@ import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ssh.SshConfig
 import com.rk.terminal.ssh.SshOnlyTerminalSession
+import com.rk.terminal.ssh.SafeSshTerminal
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
