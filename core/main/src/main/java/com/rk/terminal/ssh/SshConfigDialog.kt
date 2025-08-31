@@ -265,8 +265,10 @@ fun SshConfigDialog(
                 onClick = {
                     if (!isConnecting) {
                         isConnecting = true
+                        val configId = initialConfig?.id ?: configManager.generateConfigId()
+                        android.util.Log.d("SshConfigDialog", "Creating config with ID: $configId, saveConfig: $saveConfig")
                         val config = SshConfig(
-                            id = initialConfig?.id ?: configManager.generateConfigId(),
+                            id = configId,
                             name = name.ifBlank { "$username@$hostname" },
                             hostname = hostname,
                             port = port.toIntOrNull() ?: 22,

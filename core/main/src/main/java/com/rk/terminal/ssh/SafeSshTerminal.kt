@@ -106,18 +106,17 @@ class SafeSshTerminal(
                 
                 onProgress("🚀 Setting up SSH shell...")
                 
+                // Register this SSH session with the manager
+                SshTerminalManager.registerSshSession(terminalSession, this@SafeSshTerminal)
+                
                 // Start output bridge (SSH → Terminal)
                 startOutputBridge(terminalSession)
-                
-                // Set up input redirection (Terminal → SSH)
-                val inputInterceptor = SshInputInterceptor(terminalSession, this@SafeSshTerminal)
-                inputInterceptor.setupInputRedirection()
                 
                 // Start keep-alive mechanism
                 startKeepAlive()
                 
                 // Send initial commands
-                delay(1000) // Wait longer for input redirection to be set up
+                delay(1000)
                 sendInitialCommands()
                 
                 onSuccess()

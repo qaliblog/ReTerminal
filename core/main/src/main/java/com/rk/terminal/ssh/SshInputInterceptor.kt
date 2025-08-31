@@ -27,9 +27,8 @@ class SshInputInterceptor(
                 // Wait for terminal session to initialize
                 delay(500)
                 
-                // Kill the local process to stop it from handling input
-                terminalSession.finishIfRunning()
-                Log.d(TAG, "Local process terminated")
+                // Don't kill the process, just redirect its streams
+                Log.d(TAG, "Setting up SSH stream redirection without killing process")
                 
                 // Use reflection to replace the process streams
                 replaceProcessStreams()

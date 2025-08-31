@@ -16,7 +16,7 @@ import com.rk.terminal.BuildConfig
 import com.rk.terminal.ui.activities.terminal.MainActivity
 import com.rk.terminal.ui.screens.settings.WorkingMode
 import com.rk.terminal.ssh.SshConfig
-import com.rk.terminal.ssh.SafeSshTerminal
+import com.rk.terminal.ssh.SshOnlyTerminalSession
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
@@ -29,11 +29,15 @@ import java.io.File
 import java.io.FileOutputStream
 
 object MkSession {
-    // Global map to store SSH terminals
-    private val sshTerminalMap = mutableMapOf<TerminalSession, SafeSshTerminal>()
+    // Global map to store SSH-only sessions
+    private val sshOnlySessionMap = mutableMapOf<TerminalSession, SshOnlyTerminalSession>()
+    
+    fun getSshOnlySession(terminalSession: TerminalSession): SshOnlyTerminalSession? {
+        return sshOnlySessionMap[terminalSession]
+    }
     
     fun getSshTerminal(terminalSession: TerminalSession): SafeSshTerminal? {
-        return sshTerminalMap[terminalSession]
+        return sshOnlySessionMap[terminalSession]?.getSshTerminal()
     }
     
     fun createSession(
@@ -251,67 +255,25 @@ Updating : apk update && apk upgrade
         session_id: String,
         sshConfig: SshConfig
     ): TerminalSession {
-        // Create a regular terminal session immediately (non-blocking)
-        val terminalSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
-        
         try {
-            // Show initial connecting message
-            val connectingMsg = "🔗 Connecting to SSH server ${sshConfig.hostname}:${sshConfig.port}...\n"
-            terminalSession.emulator?.append(connectingMsg.toByteArray(), connectingMsg.length)
-            
-            // Create safe SSH terminal
-            val safeSshTerminal = SafeSshTerminal(sshConfig)
+            // Create SSH-only terminal session
+            val sshOnlySession = SshOnlyTerminalSession(sshConfig, sessionClient)
+            val terminalSession = sshOnlySession.getTerminalSession()
             
             // Store for later access
-            sshTerminalMap[terminalSession] = safeSshTerminal
+            sshOnlySessionMap[terminalSession] = sshOnlySession
             
-            // Start connection asynchronously with progress updates
-            safeSshTerminal.connectAsync(
-                terminalSession = terminalSession,
-                onProgress = { message ->
-                    try {
-                        val progressMsg = "$message\n"
-                        terminalSession.emulator?.append(progressMsg.toByteArray(), progressMsg.length)
-                    } catch (e: Exception) {
-                        Log.e("MkSession", "Error showing progress", e)
-                    }
-                },
-                onSuccess = {
-                    try {
-                        Log.d("MkSession", "SSH connection successful for ${sshConfig.hostname}:${sshConfig.port}")
-                        val successMsg = "\n✅ SSH connection established!\n\n"
-                        terminalSession.emulator?.append(successMsg.toByteArray(), successMsg.length)
-                    } catch (e: Exception) {
-                        Log.e("MkSession", "Error showing success message", e)
-                    }
-                },
-                onError = { error ->
-                    try {
-                        Log.e("MkSession", "SSH connection failed: $error")
-                        val errorMsg = "\n❌ SSH Error: $error\n\n" +
-                                      "Troubleshooting:\n" +
-                                      "• Check if SSH server allows shell access\n" +
-                                      "• Verify user has shell permissions\n" +
-                                      "• Try different authentication method\n" +
-                                      "• Check server SSH configuration\n\n" +
-                                      "Falling back to Android shell.\n\n"
-                        terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
-                    } catch (e: Exception) {
-                        Log.e("MkSession", "Error showing error message", e)
-                    }
-                }
-            )
+            Log.d("MkSession", "Created SSH-only session for ${sshConfig.hostname}:${sshConfig.port}")
+            return terminalSession
             
         } catch (e: Exception) {
-            Log.e("MkSession", "Error creating SSH session", e)
-            try {
-                val errorMsg = "❌ SSH setup error: ${e.message}\nUsing Android shell instead.\n\n"
-                terminalSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
-            } catch (appendError: Exception) {
-                Log.e("MkSession", "Error showing setup error", appendError)
-            }
+            Log.e("MkSession", "Error creating SSH-only session", e)
+            
+            // Fallback to regular session with error message
+            val fallbackSession = createSession(activity, sessionClient, session_id, WorkingMode.ANDROID)
+            val errorMsg = "❌ SSH session creation error: ${e.message}\nUsing Android shell instead.\n\n"
+            fallbackSession.emulator?.append(errorMsg.toByteArray(), errorMsg.length)
+            return fallbackSession
         }
-        
-        return terminalSession
     }
 }
